@@ -1,0 +1,90 @@
+{
+  "title": "Normalización masiva — operación",
+  "uid": "normalizacion-op",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Backlog por estado",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum by (estado) (norm_backlog)", "legendFormat": "{{estado}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Throughput (HECHO, delta 5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "delta(norm_backlog{estado=\"HECHO\"}[5m])",
+          "legendFormat": "archivos a HECHO / 5m"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Decisión del filtro (archivos)",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "expr": "sum by (ruta_decision) (norm_archivos_por_ruta)",
+          "legendFormat": "{{ruta_decision}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Errores por motivo (dead-letter)",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "targets": [
+        { "expr": "topk(10, norm_errores_por_motivo)", "legendFormat": "{{motivo}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Discos: puerta de integridad",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 9 },
+      "targets": [
+        { "expr": "norm_discos_seguros", "legendFormat": "seguros" },
+        { "expr": "norm_discos_pendientes", "legendFormat": "pendientes" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Pausado",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 13 },
+      "targets": [{ "expr": "norm_pausado", "legendFormat": "pausado" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Bytes por decisión",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "targets": [
+        {
+          "expr": "sum by (ruta_decision) (norm_bytes_por_ruta)",
+          "legendFormat": "{{ruta_decision}}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Luis Magaña/Documents/GitHub/**)",
+      "Read(//c/Users/Luis Magaña/Documents/GitHub/Normalizacion masiva de datos/docs/**)"
+    ]
+  }
+}

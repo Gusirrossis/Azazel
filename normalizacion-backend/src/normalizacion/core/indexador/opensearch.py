@@ -1,0 +1,161 @@
+"""Backend OpenSearch del indexador: bulk con triple trigger, retry y dead-letter.
+
+Patrones de producción (fscrawler):
+- Flush por TRES disparadores (⚙K13): nº de acciones, bytes acumulados, timer.
+- Retry con backoff exponencial (⚙K14) ante errores de transporte/429; agotados los
+  reintentos, los docs van a dead-letter con motivo — jamás se pierden en silencio.
+- `_id = archivo_id` → idempotente: reindexar sobrescribe, nunca duplica.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from normalizacion.core.config import Config
+from normalizacion.core.modelo import DocumentoArchivo
+from normalizacion.core.observabilidad import obtener_logger
+
+log = obtener_logger("indexador")
+
+
+def indice_escritura(config: Config) -> str:
+    """Índice físico de escritura; el alias de lectura agrupa los rotados (ISM)."""
+    return f"{config.indice_alias}-000001"
+
+
+def crear_cliente(config: Config) -> Any:
+    from opensearchpy import OpenSearch
+
+    return OpenSearch(
+        hosts=[config.opensearch_url],
+        use_ssl=False,
+        verify_certs=False,
+        ssl_show_warn=False,
+        timeout=30,
+    )
+
+
+class SinkOpenSearch:
+    """Bulk indexer con backpressure natural: el flush es síncrono — si OpenSearch
+    va lento, el worker se frena solo (nada empuja sin límite)."""
+
+    def __init__(self, config: Config, cliente: Any | None = None) -> None:
+        self._perillas = config.indexador
+        self._indice = indice_escritura(config)
+        self._cliente = cliente if cliente is not None else crear_cliente(config)
+        self._buffer: list[tuple[str, str]] = []  # (archivo_id, doc_json)
+        self._bytes = 0
+        self._ultimo_flush = time.monotonic()
+        self._confirmados: list[str] = []
+        self._muertos: list[tuple[str, str, bool]] = []
+        self.total_indexados = 0
+
+    # ------------------------------------------------------------- Sink
+    def entregar(self, doc: DocumentoArchivo) -> None:
+        linea = doc.model_dump_json()
+        self._buffer.append((doc.archivo_id, linea))
+        self._bytes += len(linea)
+        if self._toca_flush():
+            self._flush()
+
+    def drenar(self) -> tuple[list[str], list[tuple[str, str, bool]]]:
+        self._flush()
+        confirmados, muertos = self._confirmados, self._muertos
+        self._confirmados, self._muertos = [], []
+        self.total_indexados += len(confirmados)
+        return confirmados, muertos
+
+    def cerrar(self) -> None:
+        self.drenar()
+
+    # ------------------------------------------------------------- interno
+    def _toca_flush(self) -> bool:
+        return (
+            len(self._buffer) >= self._perillas.flush_acciones
+            or self._bytes >= self._perillas.flush_bytes
+            or (time.monotonic() - self._ultimo_flush) >= self._perillas.flush_segundos
+        )
+
+    def _flush(self) -> None:
+        if not self._buffer:
+            return
+        lote = self._buffer
+        self._buffer = []
+        self._bytes = 0
+        self._ultimo_flush = time.monotonic()
+
+        cuerpo = "".join(
+            json.dumps({"index": {"_index": self._indice, "_id": aid}}) + "\n" + linea + "\n"
+            for aid, linea in lote
+        )
+        respuesta: dict[str, Any] | None = None
+        for intento in range(self._perillas.reintentos_max + 1):
+            try:
+                respuesta = self._cliente.bulk(body=cuerpo)
+                break
+            except Exception as exc:  # transporte caído / 429 / timeout
+                if intento >= self._perillas.reintentos_max:
+                    # TRANSITORIO: OpenSearch caído no es culpa del doc — reintentable
+                    motivo = f"transporte: {exc}"[:300]
+                    self._muertos.extend((aid, motivo, True) for aid, _ in lote)
+                    log.error("bulk_agotado", docs=len(lote), error=str(exc)[:200])
+                    return
+                espera = self._perillas.backoff_base_s * (2**intento)
+                log.warning("bulk_reintento", intento=intento + 1, espera_s=espera)
+                time.sleep(espera)
+
+        assert respuesta is not None
+        if not respuesta.get("errors"):
+            self._confirmados.extend(aid for aid, _ in lote)
+            return
+        for (aid, _), item in zip(lote, respuesta.get("items", []), strict=False):
+            error = item.get("index", {}).get("error")
+            if error:
+                # PERMANENTE: el índice rechazó ESTE doc (mapeo, etc.) → dead-letter
+                self._muertos.append((aid, str(error)[:300], False))
+            else:
+                self._confirmados.append(aid)
+
+
+# ------------------------------------------------------------------ administración
+
+
+def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
+    """Aplica el index template + política ISM y crea el índice inicial con su alias.
+
+    Idempotente: re-aplicar no rompe nada (la política existente se respeta)."""
+    cliente = crear_cliente(config)
+
+    template = json.loads((ruta_deploy / "mappings" / "archivos.json").read_text(encoding="utf-8"))
+    cliente.indices.put_index_template(name="archivos", body=template)
+
+    politica = json.loads(
+        (ruta_deploy / "ism" / "politica_archivos.json").read_text(encoding="utf-8")
+    )
+    try:
+        cliente.transport.perform_request("PUT", "/_plugins/_ism/policies/archivos", body=politica)
+    except Exception as exc:  # 409 = ya existe; otros: dev sin plugin ISM
+        log.warning("ism_no_aplicada", detalle=str(exc)[:200])
+
+    indice = indice_escritura(config)
+    if not cliente.indices.exists(index=indice):
+        cliente.indices.create(index=indice, body={"aliases": {config.indice_alias: {}}})
+    log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
+
+
+def buscar_por_nombre(config: Config, texto: str, limite: int = 20) -> list[dict[str, Any]]:
+    """Búsqueda de demo por nombre (wildcard field — la decisión de costo del diseño)."""
+    cliente = crear_cliente(config)
+    respuesta = cliente.search(
+        index=config.indice_alias,
+        body={
+            "size": limite,
+            "query": {
+                "wildcard": {"nombre": {"value": f"*{texto.lower()}*", "case_insensitive": True}}
+            },
+        },
+    )
+    return [hit["_source"] for hit in respuesta["hits"]["hits"]]

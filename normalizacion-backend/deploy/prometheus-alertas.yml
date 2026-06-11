@@ -1,0 +1,50 @@
+# Alertas de operación (Fase 6). Cada alerta tiene su runbook en deploy/RUNBOOKS.md.
+groups:
+  - name: normalizacion
+    rules:
+      - alert: ErroresEnDeadLetter
+        expr: sum(norm_backlog{estado="ERROR"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          resumen: "Hay {{ $value }} archivos en dead-letter"
+          runbook: "deploy/RUNBOOKS.md#erroresendeadletter"
+
+      - alert: BacklogEstancado
+        expr: >
+          sum(norm_backlog{estado=~"PENDIENTE|PRECALIFICADO|INDEXADO"}) > 0
+          and delta(norm_backlog{estado="HECHO"}[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          resumen: "Hay trabajo en cola pero nada llega a HECHO desde hace 15m"
+          runbook: "deploy/RUNBOOKS.md#backlogestancado"
+
+      - alert: SistemaPausadoOlvidado
+        expr: norm_pausado == 1
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          resumen: "El sistema lleva 30m en pausa — ¿fue intencional?"
+          runbook: "deploy/RUNBOOKS.md#sistemapausadoolvidado"
+
+      - alert: DiscosSinPuertaVerde
+        expr: norm_discos_pendientes > 0
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          resumen: "{{ $value }} discos llevan horas sin alcanzar 'seguro para desechar'"
+          runbook: "deploy/RUNBOOKS.md#discossinpuertaverde"
+
+      - alert: ExportadorCaido
+        expr: up{job="normalizacion"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          resumen: "Sin métricas: el exportador (o su Postgres) está caído"
+          runbook: "deploy/RUNBOOKS.md#exportadorcaido"

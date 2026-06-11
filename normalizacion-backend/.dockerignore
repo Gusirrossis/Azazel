@@ -1,0 +1,10 @@
+.venv/
+.git/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+tests/_discos_generados/
+_almacen_dev/
+_frio_dev/
+dist/
+*.log

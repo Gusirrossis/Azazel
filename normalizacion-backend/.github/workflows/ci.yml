@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  calidad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sincronizar entorno
+        run: uv sync --group dev --extra workers --extra api
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Tipos (mypy --strict)
+        run: uv run mypy
+
+      - name: Tests unitarios
+        run: uv run pytest -m "not integracion"
+
+      - name: Licencias (riesgo L1 — sin GPL)
+        run: >
+          uv run pip-licenses
+          --fail-on="GNU General Public License v3 (GPLv3);GNU General Public License (GPL);GNU Affero General Public License v3 (AGPLv3)"
+
+  integracion:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: norm
+          POSTGRES_PASSWORD: norm
+          POSTGRES_DB: normalizacion
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U norm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      opensearch:
+        image: opensearchproject/opensearch:2.19.0
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        ports: ["9200:9200"]
+        options: >-
+          --health-cmd "curl -fs http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NORM_POSTGRES_DSN: postgresql://norm:norm@localhost:5432/normalizacion
+      NORM_OPENSEARCH_URL: http://localhost:9200
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sincronizar entorno
+        run: uv sync --group dev --extra workers --extra api
+      - name: Tests de integración (migraciones)
+        run: uv run pytest -m integracion

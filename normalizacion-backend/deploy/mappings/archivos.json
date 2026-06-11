@@ -1,0 +1,47 @@
+{
+  "index_patterns": ["archivos-*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "campos_extraidos_strings": {
+            "path_match": "campos_extraidos.*",
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 1024,
+              "fields": { "texto": { "type": "text" } }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "archivo_id": { "type": "keyword" },
+        "disco_id": { "type": "keyword" },
+        "nombre": { "type": "wildcard" },
+        "ruta_original": { "type": "wildcard" },
+        "extension": { "type": "keyword" },
+        "tipo_real": { "type": "keyword" },
+        "tamano": { "type": "long" },
+        "mtime": { "type": "date" },
+        "hash_contenido": { "type": "keyword" },
+        "clave_almacen": { "type": "keyword", "index": false },
+        "puntaje": { "type": "short" },
+        "ruta_decision": { "type": "keyword" },
+        "motivo": { "type": "keyword" },
+        "version_filtro": { "type": "keyword" },
+        "senales": { "type": "flat_object" },
+        "perfil_calidad": { "type": "flat_object" },
+        "procedencias": { "type": "keyword" },
+        "limites_alcanzados": { "type": "keyword" },
+        "texto_indexable": { "type": "text" }
+      }
+    }
+  }
+}

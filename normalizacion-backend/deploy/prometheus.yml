@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alertas.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+  # El exportador: en el HOST (dev nativo) o como contenedor (perfil app)
+  - job_name: normalizacion
+    static_configs:
+      - targets: ["host.docker.internal:9108", "exportador:9108"]
