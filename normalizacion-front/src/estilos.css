@@ -53,9 +53,10 @@ h4,
 }
 
 .aplicacion {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 0 28px 56px;
+  /* Ancho completo: la información manda. Padding fluido para no pegar al borde. */
+  max-width: none;
+  margin: 0;
+  padding: 0 clamp(24px, 3vw, 64px) 56px;
 }
 
 /* ----- cabecera ----- */
@@ -356,7 +357,7 @@ button.enlace:hover {
 .celda-tipo {
   color: var(--silver);
   font-size: 13px;
-  max-width: 260px;
+  max-width: 22vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -422,7 +423,7 @@ button.enlace:hover {
   position: fixed;
   top: 0;
   right: 0;
-  width: min(500px, 92vw);
+  width: min(700px, 94vw);
   height: 100vh;
   overflow-y: auto;
   background: var(--panel);
@@ -1476,7 +1477,7 @@ button.chip-estado.activo .chip-clave {
   font-size: 11.5px;
   color: var(--silver);
   font-style: italic;
-  max-width: 320px;
+  max-width: 42vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
