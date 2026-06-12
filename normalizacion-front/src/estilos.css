@@ -1627,3 +1627,39 @@ button.chip-estado.activo .chip-clave {
   color: var(--silver);
   font-style: italic;
 }
+
+/* ---- lista de tipos MIME en filas legibles (la lista blanca completa) ---- */
+.lista-tipos {
+  display: flex;
+  flex-direction: column;
+  max-height: 380px;
+  overflow-y: auto;
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+}
+.fila-tipo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 0.5px solid var(--line);
+}
+.fila-tipo:last-child { border-bottom: none; }
+.fila-tipo:hover { background: var(--gold-faint); }
+.fila-tipo-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.fila-tipo-humano {
+  font-size: 14.5px;
+  color: var(--ink);
+}
+.fila-tipo-codigo {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: var(--silver);
+  overflow-wrap: anywhere;
+}

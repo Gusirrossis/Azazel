@@ -270,23 +270,53 @@ export function esCausaDeError(clave: string): boolean {
 export function etiquetaTipo(mime: string): string {
   if (mime === "sin_tipificar") return "sin tipificar";
   const CORTOS: Record<string, string> = {
+    // documentos
+    "application/pdf": "PDF",
+    "application/rtf": "RTF",
+    "application/x-ole-storage": "Office legado (doc/xls/ppt/msg)",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word (docx)",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel (xlsx)",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint (pptx)",
-    "application/x-ole-storage": "Office legado (OLE)",
-    "application/pdf": "PDF",
+    "application/vnd.oasis.opendocument.text": "OpenDocument texto (odt)",
+    "application/vnd.oasis.opendocument.spreadsheet": "OpenDocument hoja (ods)",
+    "application/vnd.oasis.opendocument.presentation": "OpenDocument presentación (odp)",
+    "application/epub+zip": "libro EPUB",
+    "application/vnd.wordperfect": "WordPerfect (wpd)",
+    "image/vnd.djvu": "escaneo DjVu",
+    "application/vnd.ms-xpsdocument": "XPS",
+    "application/x-iwork": "iWork (Pages/Numbers/Keynote)",
+    // correos
+    "message/rfc822": "correo (eml/mbox)",
+    "application/vnd.ms-outlook-pst": "buzón Outlook (pst/ost)",
+    "application/x-dbx": "Outlook Express (dbx)",
+    "application/x-nsf": "Lotus Notes (nsf)",
+    // datos
     "application/json": "JSON",
+    "application/x-ndjson": "NDJSON (json por línea)",
     "application/xml": "XML",
-    "application/sql": "SQL",
-    "application/zip": "ZIP",
-    "application/x-7z-compressed": "7z",
-    "application/vnd.rar": "RAR",
-    "application/octet-stream": "binario",
-    "application/x-dosexec": "ejecutable",
+    "application/sql": "dump SQL",
+    "application/vnd.sqlite3": "base SQLite (db)",
+    "application/x-msaccess": "Access (mdb/accdb)",
+    "application/vnd.apache.parquet": "Parquet",
+    "application/x-dbf": "dBase/FoxPro (dbf)",
+    "application/x-pgdump": "respaldo pg_dump",
+    "application/x-mssql-backup": "respaldo SQL Server (bak)",
+    "application/avro": "Avro",
+    "application/orc": "ORC",
+    // texto / web
     "text/plain": "texto plano",
     "text/csv": "CSV",
     "text/html": "HTML",
-    "message/rfc822": "correo (eml)",
+    // contenedores y binarios
+    "application/zip": "ZIP",
+    "application/x-7z-compressed": "7z",
+    "application/vnd.rar": "RAR",
+    "application/x-tar": "tar",
+    "application/gzip": "gzip",
+    "application/octet-stream": "binario",
+    "application/x-dosexec": "ejecutable Windows",
+    "application/x-executable": "ejecutable Linux",
+    "text/": "familia texto (txt, csv, logs…)",
   };
   return CORTOS[mime] ?? mime.replace(/^application\//, "").replace(/^text\//, "");
 }

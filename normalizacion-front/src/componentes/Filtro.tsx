@@ -4,15 +4,21 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { guardarFiltro, obtenerFiltro, rescoreFrio, restablecerFiltro } from "../api";
+import { etiquetaTipo } from "../motivos";
 import type { FiltroVisible, RespuestaFiltro, SolicitudFiltro } from "../tipos";
 
-function ChipsEditables({
+// Lista editable en FILAS (no chips): los tipos MIME largos
+// (application/vnd.openxmlformats-…) se leen completos — nombre humano a la
+// izquierda, código entero abajo en mono, quitar a la derecha.
+function ListaEditable({
   valores,
   placeholder,
+  conNombreHumano = false,
   onCambiar,
 }: {
   valores: string[];
   placeholder: string;
+  conNombreHumano?: boolean;
   onCambiar: (nuevos: string[]) => void;
 }) {
   const [nuevo, setNuevo] = useState("");
@@ -23,18 +29,21 @@ function ChipsEditables({
   };
   return (
     <div className="chips-editables">
-      <div className="chips-lista">
+      <div className="lista-tipos">
         {valores.map((v) => (
-          <span key={v} className="chip ok chip-removible">
-            {v}
+          <div key={v} className="fila-tipo">
+            <span className="fila-tipo-texto">
+              {conNombreHumano && <span className="fila-tipo-humano">{etiquetaTipo(v)}</span>}
+              <code className="fila-tipo-codigo">{v}</code>
+            </span>
             <button
               className="chip-quitar"
-              title="quitar"
+              title={`quitar ${v}`}
               onClick={() => onCambiar(valores.filter((x) => x !== v))}
             >
               ×
             </button>
-          </span>
+          </div>
         ))}
         {valores.length === 0 && <span className="sin-sub">ninguno</span>}
       </div>
@@ -206,16 +215,21 @@ export default function Filtro() {
             />
             Negra (legado): bloquear solo los tipos no objetivo
           </label>
-          <h4>Prefijos de interés</h4>
-          <ChipsEditables
+          <h4>Prefijos de interés (familias completas)</h4>
+          <p className="panel-nota">
+            Todo tipo que EMPIECE así entra (text/ cubre txt, csv, logs…), salvo los
+            excluidos de abajo.
+          </p>
+          <ListaEditable
             valores={edicion.tipos_interes_prefijos}
             placeholder="prefijo MIME (text/)…"
             onCambiar={(v) => editar({ tipos_interes_prefijos: v })}
           />
           <h4>Excluidos (excepciones a los prefijos)</h4>
-          <ChipsEditables
+          <ListaEditable
             valores={edicion.tipos_excluidos}
             placeholder="tipo MIME (text/html)…"
+            conNombreHumano
             onCambiar={(v) => editar({ tipos_excluidos: v })}
           />
         </article>
@@ -227,9 +241,10 @@ export default function Filtro() {
             nuevo de ese tipo a frío (reversible); añadirlo + re-puntuar frío rescata
             lo ya excluido.
           </p>
-          <ChipsEditables
+          <ListaEditable
             valores={edicion.tipos_interes}
             placeholder="tipo MIME (application/pdf)…"
+            conNombreHumano
             onCambiar={(v) => editar({ tipos_interes: v })}
           />
         </article>
