@@ -485,6 +485,104 @@ def preservados_sin_explorar(config: Config, limite: int = 200) -> dict[str, Any
     }
 
 
+_COLUMNAS_COLA = (
+    "archivo_id, disco_id, ruta, nombre, extension, tamano, mtime, estado, prioridad,"
+    " intentos, error_motivo, puntaje, ruta_decision, tipo_real, senales, motivo,"
+    " version_filtro, hash_contenido, actualizado_en"
+)
+
+
+def listar_archivos_cola(
+    config: Config,
+    *,
+    estado: str | None = None,
+    ruta_decision: str | None = None,
+    motivo: str | None = None,
+    error_motivo: str | None = None,
+    extension: str | None = None,
+    nombre: str | None = None,
+    disco_id: str | None = None,
+    cursor: str | None = None,
+    limite: int = 50,
+) -> dict[str, Any]:
+    """Para GET /cola/archivos: el plano de control fila por fila, con filtros.
+
+    A diferencia de /buscar (índice: solo lo INDEXADO), aquí se ve TODO — COLD,
+    ERROR, pendientes — con puntaje, motivo y señales (entropía incluida). Es la
+    vista para auditar si el filtro está decidiendo bien.
+
+    Paginación keyset por `archivo_id` (índice ix_archivos_estado_id): el `cursor`
+    es el archivo_id de la última fila vista; estable aunque la cola se mueva."""
+    from normalizacion.core.modelo import Estado, RutaDecision
+
+    limite = max(1, min(limite, 200))
+    if estado is not None and estado not in {e.value for e in Estado}:
+        raise ValueError(f"estado desconocido: {estado}")
+    if ruta_decision is not None and ruta_decision not in {r.value for r in RutaDecision}:
+        raise ValueError(f"ruta_decision desconocida: {ruta_decision}")
+
+    condiciones: list[str] = []
+    parametros: list[Any] = []
+    for columna, valor in (
+        ("estado", estado),
+        ("ruta_decision", ruta_decision),
+        ("disco_id", disco_id),
+        ("extension", (extension or "").lower() or None),
+    ):
+        if valor is not None:
+            condiciones.append(f"{columna} = %s")
+            parametros.append(valor)
+    if motivo:
+        condiciones.append("motivo LIKE %s")
+        parametros.append(f"{motivo}%")
+    if error_motivo:
+        condiciones.append("error_motivo ILIKE %s")
+        parametros.append(f"%{error_motivo}%")
+    if nombre:
+        condiciones.append("nombre ILIKE %s")
+        parametros.append(f"%{nombre}%")
+    where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
+
+    with psycopg.connect(config.postgres_dsn) as conn:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM archivos{where}", parametros).fetchone()[0])  # type: ignore[index]
+        paginado = f"{where}{' AND' if where else ' WHERE'} archivo_id > %s" if cursor else where
+        filas = conn.execute(
+            f"SELECT {_COLUMNAS_COLA} FROM archivos{paginado}"
+            " ORDER BY archivo_id LIMIT %s",
+            [*parametros, *([cursor] if cursor else []), limite],
+        ).fetchall()
+
+    archivos = [
+        {
+            "archivo_id": f[0],
+            "disco_id": f[1],
+            "ruta": f[2],
+            "nombre": f[3],
+            "extension": f[4],
+            "tamano": int(f[5]),
+            "mtime": f[6],
+            "estado": f[7],
+            "prioridad": int(f[8]),
+            "intentos": int(f[9]),
+            "error_motivo": f[10],
+            "puntaje": f[11],
+            "ruta_decision": f[12],
+            "tipo_real": f[13],
+            "senales": f[14],
+            "motivo": f[15],
+            "version_filtro": f[16],
+            "hash_contenido": f[17],
+            "actualizado_en": f[18],
+        }
+        for f in filas
+    ]
+    return {
+        "total": total,
+        "archivos": archivos,
+        "cursor": archivos[-1]["archivo_id"] if len(archivos) == limite else None,
+    }
+
+
 def validar_dentro_de_raiz(ruta: Path, raiz: str | None) -> Path:
     """Si hay carpeta raíz configurada (Docker: /datos), nada sale de ella."""
     resuelta = ruta.expanduser().resolve()

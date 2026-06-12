@@ -31,6 +31,44 @@ class TestDefaults:
         assert config.filtro.bytes_t1 >= 2048
 
 
+class TestPrioridadPorExtension:
+    """Orden de procesamiento por extensión (decisión 2026-06-11): .txt → .7z → .rar
+    → .zip → resto. Valores >100 ganan a prioridad=puntaje y a contenedores (90)."""
+
+    def test_orden_pedido(self) -> None:
+        filtro = Config(_env_file=None).filtro
+        p = filtro.prioridad_extensiones
+        assert p[".txt"] > p[".7z"] > p[".rar"] > p[".zip"] > 100
+
+    def test_extension_listada_gana_al_hint_de_contenedor(self) -> None:
+        filtro = Config(_env_file=None).filtro
+        assert filtro.prioridad_para_extension(".7z") == filtro.prioridad_extensiones[".7z"]
+        assert filtro.prioridad_para_extension(".zip") == filtro.prioridad_extensiones[".zip"]
+
+    def test_contenedor_no_listado_conserva_hint(self) -> None:
+        filtro = Config(_env_file=None).filtro
+        assert filtro.prioridad_para_extension(".gz") == filtro.prioridad_inicial_contenedores
+        assert filtro.prioridad_para_extension(".iso") == filtro.prioridad_inicial_contenedores
+
+    def test_resto_y_sin_extension_a_cero(self) -> None:
+        filtro = Config(_env_file=None).filtro
+        assert filtro.prioridad_para_extension(".csv") == 0
+        assert filtro.prioridad_para_extension(None) == 0
+
+    def test_mayusculas_normalizadas(self) -> None:
+        filtro = Config(_env_file=None).filtro
+        assert filtro.prioridad_para_extension(".TXT") == filtro.prioridad_extensiones[".txt"]
+
+    def test_editable_por_entorno(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "NORM_FILTRO__PRIORIDAD_EXTENSIONES", '{".pdf": 150, ".txt": 140}'
+        )
+        filtro = Config(_env_file=None).filtro
+        assert filtro.prioridad_para_extension(".pdf") == 150
+        # .zip ya no listada → cae al hint de contenedor (50)
+        assert filtro.prioridad_para_extension(".zip") == filtro.prioridad_inicial_contenedores
+
+
 class TestOverridePorEntorno:
     def test_perilla_anidada_por_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Cambiar comportamiento = cambiar config, no código: NORM_FILTRO__UMBRAL_HOT."""

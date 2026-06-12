@@ -1,5 +1,6 @@
 import { formatearBytes, urlContenido } from "../api";
 import type { DocumentoArchivo } from "../tipos";
+import Senales from "./Senales";
 
 interface Props {
   doc: DocumentoArchivo;
@@ -44,6 +45,13 @@ export default function Detalle({ doc, onCerrar }: Props) {
       <Fila etiqueta="Hash (sha256)" valor={<code>{doc.hash_contenido?.slice(0, 16)}…</code>} />
       {doc.limites_alcanzados.length > 0 && (
         <Fila etiqueta="Avisos" valor={doc.limites_alcanzados.join(", ")} />
+      )}
+
+      {Object.keys(doc.senales).length > 0 && (
+        <>
+          <h3>Señales del filtro</h3>
+          <Senales senales={doc.senales} />
+        </>
       )}
 
       {Object.keys(doc.campos_extraidos).length > 0 && (

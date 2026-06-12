@@ -101,12 +101,12 @@ def catalogar_disco(config: Config, raiz: Path, disco_id: str | None = None) -> 
                                         nombre=entrada.name,
                                         tamano=st.st_size,
                                         mtime_ns=st.st_mtime_ns,
-                                        # Hint de PRIORIDAD: comprimidos primero (la
-                                        # extensión solo ordena, JAMÁS decide el tipo)
-                                        prioridad=(
-                                            config.filtro.prioridad_inicial_contenedores
-                                            if sufijo in config.filtro.extensiones_contenedor_hint
-                                            else 0
+                                        # Hint de PRIORIDAD: orden por extensión (txt,
+                                        # 7z, rar, zip…) y comprimidos antes que el
+                                        # resto (la extensión solo ordena, JAMÁS
+                                        # decide el tipo)
+                                        prioridad=config.filtro.prioridad_para_extension(
+                                            sufijo
                                         ),
                                     )
                                 )

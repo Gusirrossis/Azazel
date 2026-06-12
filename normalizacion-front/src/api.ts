@@ -5,9 +5,13 @@ import type {
   EstadoPipeline,
   RespuestaBusqueda,
   RespuestaCarpetas,
+  RespuestaColaArchivos,
+  RespuestaFiltro,
   RespuestaPreservados,
+  RespuestaReprocesar,
   ResumenPanel,
   SolicitudBusqueda,
+  SolicitudFiltro,
 } from "./tipos";
 
 const BASE = "/api";
@@ -79,12 +83,60 @@ export function ejecutarPipeline(
   });
 }
 
-export function estadoPipeline(): Promise<EstadoPipeline> {
-  return pedir<EstadoPipeline>("/pipeline/estado");
+export function estadoPipeline(historial?: number): Promise<EstadoPipeline> {
+  const sufijo = historial ? `?historial=${historial}` : "";
+  return pedir<EstadoPipeline>(`/pipeline/estado${sufijo}`);
 }
 
 export function preservados(): Promise<RespuestaPreservados> {
   return pedir<RespuestaPreservados>("/pipeline/preservados");
+}
+
+// ----- explorador de cola -----
+
+export interface FiltrosCola {
+  estado?: string;
+  ruta_decision?: string;
+  motivo?: string;
+  error_motivo?: string;
+  extension?: string;
+  nombre?: string;
+  disco_id?: string;
+  cursor?: string;
+  limite?: number;
+}
+
+export function archivosCola(filtros: FiltrosCola): Promise<RespuestaColaArchivos> {
+  const params = new URLSearchParams();
+  for (const [clave, valor] of Object.entries(filtros)) {
+    if (valor !== undefined && valor !== null && valor !== "") params.set(clave, String(valor));
+  }
+  return pedir<RespuestaColaArchivos>(`/cola/archivos?${params.toString()}`);
+}
+
+export function reprocesarErrores(motivoComo?: string): Promise<RespuestaReprocesar> {
+  return pedir<RespuestaReprocesar>("/cola/reprocesar-errores", {
+    method: "POST",
+    body: JSON.stringify(motivoComo ? { motivo_como: motivoComo } : {}),
+  });
+}
+
+export function rescoreFrio(): Promise<{ re_encolados: number }> {
+  return pedir<{ re_encolados: number }>("/cola/rescore-frio", { method: "POST" });
+}
+
+// ----- filtro editable -----
+
+export function obtenerFiltro(): Promise<RespuestaFiltro> {
+  return pedir<RespuestaFiltro>("/filtro");
+}
+
+export function guardarFiltro(cambios: SolicitudFiltro): Promise<RespuestaFiltro> {
+  return pedir<RespuestaFiltro>("/filtro", { method: "PUT", body: JSON.stringify(cambios) });
+}
+
+export function restablecerFiltro(): Promise<RespuestaFiltro> {
+  return pedir<RespuestaFiltro>("/filtro", { method: "DELETE" });
 }
 
 export function urlContenido(archivoId: string): string {

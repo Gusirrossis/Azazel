@@ -19,18 +19,24 @@ from normalizacion.api.esquemas import (
     Corrida,
     Estadisticas,
     EstadoPipeline,
+    FiltroVisible,
     RespuestaAutocompletar,
+    RespuestaColaArchivos,
+    RespuestaFiltro,
+    RespuestaReprocesar,
     ResumenPanel,
     RespuestaBusqueda,
     RespuestaCarpetas,
     RespuestaPreservados,
     SolicitudBusqueda,
     SolicitudCarpetaNueva,
+    SolicitudFiltro,
     SolicitudPipeline,
+    SolicitudReprocesar,
 )
 from normalizacion.api.seguridad import LimitadorPorMinuto, llave_valida
 from normalizacion.core.almacen import Almacen, crear_almacen
-from normalizacion.core.config import Config, cargar_config
+from normalizacion.core.config import Config, PerillasFiltro, cargar_config
 
 _BLOQUE_DESCARGA = 1024 * 1024
 
@@ -49,7 +55,7 @@ def crear_app(config: Config) -> FastAPI:
     aplicacion.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.api_cors_origenes),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "X-API-Key"],
     )
     aplicacion.state.config = config
@@ -216,6 +222,11 @@ def crear_app(config: Config) -> FastAPI:
                     raise ValueError("este despliegue no tiene carpeta de destino montada")
                 validar_dentro_de_raiz(RutaFs(solicitud.destino), cfg.api_carpeta_destino_raiz)
             cfg_corrida = config_con_destino(cfg, solicitud.destino)
+            # Perillas editadas desde la UI (lista blanca, umbrales…): aplican a
+            # ESTA corrida — el thread y sus workers reciben la config mergeada.
+            from normalizacion.core.config_overrides import aplicar_overrides
+
+            cfg_corrida = aplicar_overrides(cfg_corrida)
             corrida_id, disco_id = iniciar_corrida(
                 cfg_corrida, RutaFs(solicitud.ruta), solicitud.disco_id, destino=solicitud.destino
             )
@@ -241,12 +252,14 @@ def crear_app(config: Config) -> FastAPI:
         return {"corrida_id": corrida_id, "disco_id": disco_id}
 
     @aplicacion.get("/pipeline/estado", response_model=EstadoPipeline)
-    def get_pipeline_estado(_: Autorizado, request: Request) -> EstadoPipeline:
+    def get_pipeline_estado(
+        _: Autorizado, request: Request, historial: int = 10
+    ) -> EstadoPipeline:
         """Corrida en curso (fase + métricas en vivo), historial y DESTINOS."""
         from normalizacion.ingesta.pipeline import consultar_estado, resolver_workers
 
         cfg = request.app.state.config
-        crudo = consultar_estado(cfg)
+        crudo = consultar_estado(cfg, historial=max(0, min(historial, 200)))
         return EstadoPipeline(
             en_curso=Corrida.model_validate(crudo["en_curso"]) if crudo["en_curso"] else None,
             historial=[Corrida.model_validate(c) for c in crudo["historial"]],
@@ -266,6 +279,165 @@ def crear_app(config: Config) -> FastAPI:
         return RespuestaPreservados.model_validate(
             preservados_sin_explorar(request.app.state.config)
         )
+
+    # ------------------------------------------------------ explorador de cola
+
+    @aplicacion.get("/cola/archivos", response_model=RespuestaColaArchivos)
+    def get_cola_archivos(
+        _: Autorizado,
+        request: Request,
+        estado: str | None = None,
+        ruta_decision: str | None = None,
+        motivo: str | None = None,
+        error_motivo: str | None = None,
+        extension: str | None = None,
+        nombre: str | None = None,
+        disco_id: str | None = None,
+        cursor: str | None = None,
+        limite: int = 50,
+    ) -> RespuestaColaArchivos:
+        """El plano de control fila por fila: TODO lo catalogado (COLD, ERROR,
+        pendientes…) con puntaje, motivo y señales — lo que el índice no ve.
+        Es la vista para auditar si el filtro (entropía, lista blanca) decide bien."""
+        from normalizacion.ingesta.pipeline import listar_archivos_cola
+
+        try:
+            return RespuestaColaArchivos.model_validate(
+                listar_archivos_cola(
+                    request.app.state.config,
+                    estado=estado,
+                    ruta_decision=ruta_decision,
+                    motivo=motivo,
+                    error_motivo=error_motivo,
+                    extension=extension,
+                    nombre=nombre,
+                    disco_id=disco_id,
+                    cursor=cursor,
+                    limite=limite,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @aplicacion.post("/cola/reprocesar-errores", response_model=RespuestaReprocesar)
+    def post_reprocesar_errores(
+        solicitud: SolicitudReprocesar, _: Autorizado, request: Request
+    ) -> RespuestaReprocesar:
+        """Dead-letter → de vuelta a su etapa de origen. Las filas devueltas se
+        procesan en la SIGUIENTE corrida (re-indexar la carpeta las drena)."""
+        import psycopg
+
+        from normalizacion.core import cola
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            destinos_reproceso = cola.reprocesar_errores(conn, solicitud.motivo_como)
+            conn.commit()
+        return RespuestaReprocesar(
+            total=sum(destinos_reproceso.values()), destinos=destinos_reproceso
+        )
+
+    @aplicacion.post("/cola/rescore-frio")
+    def post_rescore_frio(_: Autorizado, request: Request) -> dict[str, int]:
+        """COLD → PENDIENTE: re-evaluar el frío con el filtro vigente (p. ej. tras
+        ampliar la lista blanca). Se puntúa de nuevo en la siguiente corrida."""
+        import psycopg
+
+        from normalizacion.core import cola
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            re_encolados = cola.rescore_frio(conn)
+            conn.commit()
+        return {"re_encolados": re_encolados}
+
+    # --------------------------------------------------------- filtro editable
+
+    def _filtro_visible(filtro: PerillasFiltro) -> FiltroVisible:
+        return FiltroVisible(
+            modo_lista=filtro.modo_lista,
+            tipos_interes=sorted(filtro.tipos_interes),
+            tipos_interes_prefijos=list(filtro.tipos_interes_prefijos),
+            tipos_excluidos=sorted(filtro.tipos_excluidos),
+            entropia_texto_max=filtro.entropia_texto_max,
+            entropia_comprimido_min=filtro.entropia_comprimido_min,
+            ratio_imprimibles_min=filtro.ratio_imprimibles_min,
+            umbral_hot=filtro.umbral_hot,
+            umbral_cold=filtro.umbral_cold,
+            prioridad_contenedores=filtro.prioridad_contenedores,
+            prioridad_extensiones=dict(filtro.prioridad_extensiones),
+            version_filtro=filtro.version_filtro,
+        )
+
+    def _respuesta_filtro(cfg: Config, overrides: dict[str, Any]) -> RespuestaFiltro:
+        from normalizacion.core.config_overrides import filtro_efectivo
+
+        return RespuestaFiltro(
+            efectivo=_filtro_visible(filtro_efectivo(cfg, overrides)),
+            overrides=overrides,
+            hay_overrides=bool(overrides),
+        )
+
+    @aplicacion.get("/filtro", response_model=RespuestaFiltro)
+    def get_filtro(_: Autorizado, request: Request) -> RespuestaFiltro:
+        """El filtro EFECTIVO de la siguiente corrida (config base + overrides).
+        Siempre se lee de la BD — nunca de la config del proceso."""
+        import psycopg
+
+        from normalizacion.core.config_overrides import leer_overrides
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            overrides = leer_overrides(conn)
+        return _respuesta_filtro(cfg, overrides)
+
+    @aplicacion.put("/filtro", response_model=RespuestaFiltro)
+    def put_filtro(
+        solicitud: SolicitudFiltro, _: Autorizado, request: Request
+    ) -> RespuestaFiltro:
+        """Edita perillas del filtro (merge sobre lo ya editado). Aplica a la
+        SIGUIENTE corrida; el frío existente se re-evalúa con /cola/rescore-frio.
+        Si no se manda version_filtro, se deriva una auditada (+ov-<huella>)."""
+        import psycopg
+
+        from normalizacion.core.config_overrides import (
+            derivar_version,
+            filtro_efectivo,
+            guardar_overrides,
+            leer_overrides,
+        )
+
+        cfg: Config = request.app.state.config
+        nuevos = solicitud.model_dump(exclude_none=True)
+        if not nuevos:
+            raise HTTPException(status_code=400, detail="nada que editar")
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            overrides = leer_overrides(conn)
+            overrides.update(nuevos)
+            if "version_filtro" not in nuevos:
+                overrides["version_filtro"] = derivar_version(
+                    cfg.filtro.version_filtro, overrides
+                )
+            try:
+                filtro_efectivo(cfg, overrides)  # re-valida ANTES de persistir
+                guardar_overrides(conn, overrides)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            conn.commit()
+        return _respuesta_filtro(cfg, overrides)
+
+    @aplicacion.delete("/filtro", response_model=RespuestaFiltro)
+    def delete_filtro(_: Autorizado, request: Request) -> RespuestaFiltro:
+        """Restablece el filtro a la config base (borra todos los overrides)."""
+        import psycopg
+
+        from normalizacion.core.config_overrides import borrar_overrides
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            borrar_overrides(conn)
+            conn.commit()
+        return _respuesta_filtro(cfg, {})
 
     @aplicacion.on_event("startup")
     def _rescatar_corridas_huerfanas() -> None:

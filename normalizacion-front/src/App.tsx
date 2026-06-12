@@ -8,8 +8,22 @@ import Detalle from "./componentes/Detalle";
 import Cabecera from "./componentes/Cabecera";
 import Ingesta from "./componentes/Ingesta";
 import Panel from "./componentes/Panel";
+import Corridas from "./componentes/Corridas";
+import ExploradorCola from "./componentes/ExploradorCola";
+import Filtro from "./componentes/Filtro";
+
+type Pestana = "inicio" | "corridas" | "archivos" | "errores" | "filtro";
+
+const PESTANAS: { clave: Pestana; etiqueta: string }[] = [
+  { clave: "inicio", etiqueta: "Inicio" },
+  { clave: "corridas", etiqueta: "Corridas" },
+  { clave: "archivos", etiqueta: "Archivos" },
+  { clave: "errores", etiqueta: "Errores" },
+  { clave: "filtro", etiqueta: "Filtro" },
+];
 
 export default function App() {
+  const [pestana, setPestana] = useState<Pestana>("inicio");
   const [filtros, setFiltros] = useState<Filtros>({});
   const [docs, setDocs] = useState<DocumentoArchivo[]>([]);
   const [total, setTotal] = useState(0);
@@ -68,26 +82,51 @@ export default function App() {
   return (
     <div className="aplicacion">
       <Cabecera stats={stats} />
+      <nav className="pestanas" aria-label="Secciones">
+        {PESTANAS.map((p) => (
+          <button
+            key={p.clave}
+            className={pestana === p.clave ? "pestana activa" : "pestana"}
+            onClick={() => setPestana(p.clave)}
+          >
+            {p.etiqueta}
+          </button>
+        ))}
+      </nav>
       {error && (
         <div className="banner-error">
           {error} — ¿está arriba la API? (<code>norm api</code>)
         </div>
       )}
-      <Ingesta onCompletada={refrescarTodo} onProgreso={refrescarTodo} />
-      <Panel />
-      <Buscador filtros={filtros} onBuscar={aplicarFiltros} cargando={cargando} />
-      <main className="cuerpo">
-        <Facetas facetas={facetas} filtros={filtros} onFiltrar={filtrarPorFaceta} />
-        <Resultados
-          documentos={docs}
-          total={total}
-          hayMas={cursor !== null && docs.length < total}
-          cargando={cargando}
-          onSeleccionar={setSeleccionado}
-          onCargarMas={() => void ejecutarBusqueda(filtros, cursor)}
-        />
-        {seleccionado && <Detalle doc={seleccionado} onCerrar={() => setSeleccionado(null)} />}
-      </main>
+      {pestana === "inicio" && (
+        <>
+          <Ingesta
+            onCompletada={refrescarTodo}
+            onProgreso={refrescarTodo}
+            onIrACorridas={() => setPestana("corridas")}
+          />
+          <Panel />
+          <Buscador filtros={filtros} onBuscar={aplicarFiltros} cargando={cargando} />
+          <main className="cuerpo">
+            <Facetas facetas={facetas} filtros={filtros} onFiltrar={filtrarPorFaceta} />
+            <Resultados
+              documentos={docs}
+              total={total}
+              hayMas={cursor !== null && docs.length < total}
+              cargando={cargando}
+              onSeleccionar={setSeleccionado}
+              onCargarMas={() => void ejecutarBusqueda(filtros, cursor)}
+            />
+            {seleccionado && (
+              <Detalle doc={seleccionado} onCerrar={() => setSeleccionado(null)} />
+            )}
+          </main>
+        </>
+      )}
+      {pestana === "corridas" && <Corridas />}
+      {pestana === "archivos" && <ExploradorCola modo="todos" />}
+      {pestana === "errores" && <ExploradorCola modo="errores" />}
+      {pestana === "filtro" && <Filtro />}
     </div>
   );
 }

@@ -117,6 +117,24 @@ class PerillasFiltro(BaseModel):
         ".e01",
     )
 
+    # ORDEN de procesamiento por EXTENSIÓN (decisión del usuario 2026-06-11:
+    # .txt primero, luego .7z, .rar, .zip, después el resto). Solo ordena la cola,
+    # JAMÁS decide el tipo ni la ruta HOT/COLD. Valores > 100 para ganarle a
+    # prioridad=puntaje (0-100) y a prioridad_contenedores (90). Las filas que ya
+    # estaban encoladas conservan su prioridad previa (el catálogo es incremental).
+    prioridad_extensiones: dict[str, int] = Field(
+        default_factory=lambda: {".txt": 140, ".7z": 130, ".rar": 120, ".zip": 110}
+    )
+
+    def prioridad_para_extension(self, extension: str | None) -> int:
+        """Prioridad inicial al catalogar: perilla por extensión > hint de contenedor > 0."""
+        ext = (extension or "").lower()
+        if ext in self.prioridad_extensiones:
+            return self.prioridad_extensiones[ext]
+        if ext in self.extensiones_contenedor_hint:
+            return self.prioridad_inicial_contenedores
+        return 0
+
     # ⚙ K4 — guards anti zip-bomb de T3 (Tika: ratio; plaso: BFS con tope).
     # Decisión del usuario (2026-06-10): los 7z reales del servidor rondan 15 GB y
     # abren a 200 GB+ — deben explorarse POR COMPLETO aunque tarden. Estos topes son

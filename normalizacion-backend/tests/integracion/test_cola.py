@@ -97,6 +97,80 @@ class TestLeases:
         assert rescate[0].archivo_id == "id-00000"
 
 
+class TestPrioridadPorExtension:
+    def _sembrar_extensiones(self, conexion: Any) -> None:
+        cola.upsert_disco(conexion, "d1", "/mnt/d1")
+        nombres = ["resto.csv", "d.zip", "c.rar", "b.7z", "a.txt"]
+        prioridades = {".txt": 140, ".7z": 130, ".rar": 120, ".zip": 110}
+        filas = [
+            cola.FilaCatalogo(
+                archivo_id=f"id-{n}",
+                disco_id="d1",
+                ruta=n,
+                nombre=n,
+                extension=f".{n.rsplit('.', 1)[1]}",
+                tamano=100,
+                mtime=datetime(2023, 1, 1, tzinfo=UTC),
+                prioridad=prioridades.get(f".{n.rsplit('.', 1)[1]}", 0),
+            )
+            for n in nombres
+        ]
+        cola.insertar_pendientes(conexion, filas)
+        conexion.commit()
+
+    def test_claim_respeta_orden_txt_7z_rar_zip_resto(self, conexion: Any) -> None:
+        """Decisión 2026-06-11: .txt primero, luego .7z, .rar, .zip, después el resto."""
+        self._sembrar_extensiones(conexion)
+        filas = cola.claim(
+            conexion, worker_id="w1", estado=Estado.PENDIENTE, lote=10, lease_segundos=60
+        )
+        assert [f.nombre for f in filas] == ["a.txt", "b.7z", "c.rar", "d.zip", "resto.csv"]
+
+    def test_guardar_precalificacion_conserva_prioridad_explicita(self, conexion: Any) -> None:
+        """El orden por extensión (>100) sobrevive PENDIENTE→PRECALIFICADO."""
+        _sembrar(conexion, 1)
+        cola.claim(conexion, worker_id="w1", estado=Estado.PENDIENTE, lote=1, lease_segundos=60)
+        from normalizacion.core.modelo import RutaDecision
+
+        ok = cola.guardar_precalificacion(
+            conexion,
+            "id-00000",
+            puntaje=70,
+            ruta=RutaDecision.HOT,
+            tipo_real="text/plain",
+            senales={},
+            motivo="ok",
+            version_filtro="test",
+            prioridad=140,
+        )
+        assert ok
+        fila = conexion.execute(
+            "SELECT prioridad, puntaje FROM archivos WHERE archivo_id = 'id-00000'"
+        ).fetchone()
+        assert fila == (140, 70)
+
+    def test_guardar_precalificacion_sin_prioridad_usa_puntaje(self, conexion: Any) -> None:
+        """Compatibilidad: sin el kwarg, prioridad = puntaje (comportamiento previo)."""
+        _sembrar(conexion, 1)
+        cola.claim(conexion, worker_id="w1", estado=Estado.PENDIENTE, lote=1, lease_segundos=60)
+        from normalizacion.core.modelo import RutaDecision
+
+        cola.guardar_precalificacion(
+            conexion,
+            "id-00000",
+            puntaje=42,
+            ruta=RutaDecision.HOT,
+            tipo_real="text/plain",
+            senales={},
+            motivo="ok",
+            version_filtro="test",
+        )
+        fila = conexion.execute(
+            "SELECT prioridad FROM archivos WHERE archivo_id = 'id-00000'"
+        ).fetchone()
+        assert fila == (42,)
+
+
 class TestTransiciones:
     def test_transicion_valida_libera_el_lease(self, conexion: Any) -> None:
         _sembrar(conexion, 1)

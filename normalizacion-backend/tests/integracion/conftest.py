@@ -37,6 +37,6 @@ def conexion(dsn: str, esquema: None) -> Iterator[Any]:
     import psycopg
 
     with psycopg.connect(dsn) as conn:
-        conn.execute("TRUNCATE archivos, discos, control, corridas")
+        conn.execute("TRUNCATE archivos, discos, control, corridas, config_overrides")
         conn.commit()
         yield conn

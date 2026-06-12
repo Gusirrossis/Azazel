@@ -134,23 +134,32 @@ def claim(
     pendientes sin re-reclamar lo ya movido).
     """
     filtro_hash = " AND hash_contenido IS NULL" if solo_sin_hash else ""
+    # El RETURNING de un UPDATE no garantiza orden: el CTE re-ordena el lote para
+    # que el worker también procese DENTRO del lote por prioridad (txt, 7z, rar…).
     filas = conn.execute(
         f"""
-        UPDATE archivos
-           SET worker_id = %s,
-               lease_hasta = clock_timestamp() + make_interval(secs => %s),
-               actualizado_en = now()
-         WHERE archivo_id IN (
-               SELECT archivo_id FROM archivos
-                WHERE estado = %s
-                  AND (lease_hasta IS NULL OR lease_hasta < clock_timestamp()){filtro_hash}
-                ORDER BY prioridad DESC, archivo_id
-                  FOR UPDATE SKIP LOCKED
-                LIMIT %s
-         )
-        RETURNING archivo_id, disco_id, ruta, nombre, extension, tamano, mtime,
-                  estado, intentos, origen_contenedor,
-                  tipo_real, puntaje, senales, motivo, version_filtro, hash_contenido
+        WITH reclamadas AS (
+            UPDATE archivos
+               SET worker_id = %s,
+                   lease_hasta = clock_timestamp() + make_interval(secs => %s),
+                   actualizado_en = now()
+             WHERE archivo_id IN (
+                   SELECT archivo_id FROM archivos
+                    WHERE estado = %s
+                      AND (lease_hasta IS NULL OR lease_hasta < clock_timestamp()){filtro_hash}
+                    ORDER BY prioridad DESC, archivo_id
+                      FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+             )
+            RETURNING archivo_id, disco_id, ruta, nombre, extension, tamano, mtime,
+                      estado, intentos, origen_contenedor, tipo_real, puntaje,
+                      senales, motivo, version_filtro, hash_contenido, prioridad
+        )
+        SELECT archivo_id, disco_id, ruta, nombre, extension, tamano, mtime,
+               estado, intentos, origen_contenedor,
+               tipo_real, puntaje, senales, motivo, version_filtro, hash_contenido
+          FROM reclamadas
+         ORDER BY prioridad DESC, archivo_id
         """,
         (worker_id, lease_segundos, estado.value, lote),
     ).fetchall()
@@ -265,12 +274,16 @@ def guardar_precalificacion(
     senales: dict[str, Any],
     motivo: str,
     version_filtro: str,
+    prioridad: int | None = None,
 ) -> bool:
     """Persiste la decisión del filtro de forma atómica y auditable.
 
     Composición de transiciones válidas en un solo UPDATE:
     PENDIENTE→PRECALIFICADO (HOT) o PENDIENTE→PRECALIFICADO→COLD (COLD).
-    `prioridad = puntaje`: lo más útil se procesa primero. Libera el lease.
+    `prioridad`: si no se pasa, `prioridad = puntaje` (lo más útil primero); el
+    precalificador la pasa explícita para que el orden por extensión (K3
+    `prioridad_extensiones`, valores >100) sobreviva la transición. Libera el lease.
+    Nota: reprocesar-errores y rescore-frio conservan la prioridad previa de la fila.
     """
     estado_final = Estado.PRECALIFICADO if ruta is RutaDecision.HOT else Estado.COLD
     cur = conn.execute(
@@ -286,7 +299,7 @@ def guardar_precalificacion(
             Jsonb(senales),
             motivo,
             version_filtro,
-            puntaje,
+            prioridad if prioridad is not None else puntaje,
             archivo_id,
         ),
     )

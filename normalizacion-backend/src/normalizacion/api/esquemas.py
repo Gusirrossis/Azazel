@@ -144,6 +144,104 @@ class RespuestaCarpetas(BaseModel):
     carpetas: list[str]
 
 
+# ------------------------------------------------------------ filtro editable
+
+
+class FiltroVisible(BaseModel):
+    """El filtro EFECTIVO que usará la siguiente corrida (base + overrides)."""
+
+    modo_lista: str
+    tipos_interes: list[str]
+    tipos_interes_prefijos: list[str]
+    tipos_excluidos: list[str]
+    entropia_texto_max: float
+    entropia_comprimido_min: float
+    ratio_imprimibles_min: float
+    umbral_hot: int
+    umbral_cold: int
+    prioridad_contenedores: int
+    prioridad_extensiones: dict[str, int]
+    version_filtro: str
+
+
+class RespuestaFiltro(BaseModel):
+    efectivo: FiltroVisible
+    overrides: dict[str, Any]  # solo lo editado (vacío = config base intacta)
+    hay_overrides: bool
+
+
+class SolicitudFiltro(BaseModel):
+    """PUT /filtro — editar perillas desde la UI. None = no tocar ese campo.
+
+    Aplica a la SIGUIENTE corrida (la config de procesos vivos no cambia);
+    `rescore-frio` re-evalúa lo ya enviado a frío con el filtro nuevo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    modo_lista: str | None = Field(default=None, pattern="^(blanca|negra)$")
+    tipos_interes: list[str] | None = None
+    tipos_interes_prefijos: list[str] | None = None
+    tipos_excluidos: list[str] | None = None
+    entropia_texto_max: float | None = Field(default=None, ge=0, le=8)
+    entropia_comprimido_min: float | None = Field(default=None, ge=0, le=8)
+    ratio_imprimibles_min: float | None = Field(default=None, ge=0, le=1)
+    umbral_hot: int | None = Field(default=None, ge=1, le=100)
+    umbral_cold: int | None = Field(default=None, ge=0, le=99)
+    prioridad_contenedores: int | None = Field(default=None, ge=0, le=100)
+    prioridad_extensiones: dict[str, int] | None = None
+    # Si no se manda, el servidor deriva una versión auditada (+ov-<huella>)
+    version_filtro: str | None = Field(default=None, max_length=120)
+
+
+# --------------------------------------------------------- explorador de cola
+
+
+class ArchivoCola(BaseModel):
+    """Una fila del plano de control (Postgres) — incluye lo que el índice no ve:
+    COLD, ERROR, pendientes, con sus señales (entropía) y motivos."""
+
+    archivo_id: str
+    disco_id: str
+    ruta: str
+    nombre: str
+    extension: str | None
+    tamano: int
+    mtime: Any
+    estado: str
+    prioridad: int
+    intentos: int
+    error_motivo: str | None
+    puntaje: int | None
+    ruta_decision: str | None
+    tipo_real: str | None
+    senales: dict[str, Any] | None
+    motivo: str | None
+    version_filtro: str | None
+    hash_contenido: str | None
+    actualizado_en: Any
+
+
+class RespuestaColaArchivos(BaseModel):
+    total: int
+    archivos: list[ArchivoCola]
+    cursor: str | None  # archivo_id de la última fila; None = no hay más páginas
+
+
+class SolicitudReprocesar(BaseModel):
+    """POST /cola/reprocesar-errores — devolver dead-letter a su etapa de origen.
+    Las filas se procesan en la SIGUIENTE corrida (re-indexar la carpeta)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Patrón LIKE sobre error_motivo (p. ej. "agotado:%"). None = todos.
+    motivo_como: str | None = Field(default=None, max_length=300)
+
+
+class RespuestaReprocesar(BaseModel):
+    total: int
+    destinos: dict[str, int]  # a qué estado volvió cada cuántas filas
+
+
 class ArchivoPreservado(BaseModel):
     """Un contenedor preservado SIN explorar (cifrado/corrupto/formato pendiente)."""
 

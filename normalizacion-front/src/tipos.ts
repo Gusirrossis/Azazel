@@ -103,6 +103,66 @@ export interface RespuestaCarpetas {
   carpetas: string[];
 }
 
+// ----- explorador de cola (Postgres: TODO lo catalogado, no solo lo indexado) -----
+
+export interface ArchivoCola {
+  archivo_id: string;
+  disco_id: string;
+  ruta: string;
+  nombre: string;
+  extension: string | null;
+  tamano: number;
+  mtime: string;
+  estado: string;
+  prioridad: number;
+  intentos: number;
+  error_motivo: string | null;
+  puntaje: number | null;
+  ruta_decision: string | null;
+  tipo_real: string | null;
+  senales: Record<string, unknown> | null;
+  motivo: string | null;
+  version_filtro: string | null;
+  hash_contenido: string | null;
+  actualizado_en: string;
+}
+
+export interface RespuestaColaArchivos {
+  total: number;
+  archivos: ArchivoCola[];
+  cursor: string | null; // pásalo de vuelta para la siguiente página; null = no hay más
+}
+
+export interface RespuestaReprocesar {
+  total: number;
+  destinos: Record<string, number>; // a qué estado volvió cada cuántas filas
+}
+
+// ----- filtro editable (lista blanca, umbrales) -----
+
+export interface FiltroVisible {
+  modo_lista: string;
+  tipos_interes: string[];
+  tipos_interes_prefijos: string[];
+  tipos_excluidos: string[];
+  entropia_texto_max: number;
+  entropia_comprimido_min: number;
+  ratio_imprimibles_min: number;
+  umbral_hot: number;
+  umbral_cold: number;
+  prioridad_contenedores: number;
+  prioridad_extensiones: Record<string, number>;
+  version_filtro: string;
+}
+
+export interface RespuestaFiltro {
+  efectivo: FiltroVisible; // lo que usará la SIGUIENTE corrida
+  overrides: Record<string, unknown>; // solo lo editado
+  hay_overrides: boolean;
+}
+
+export type SolicitudFiltro = Partial<FiltroVisible>;
+
 export interface ArchivoPreservado {
   disco_id: string;
   ruta: string;

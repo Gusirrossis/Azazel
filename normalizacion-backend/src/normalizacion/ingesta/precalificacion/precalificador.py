@@ -65,7 +65,12 @@ def _filas_de_entradas(
                 extension=sufijo if sufijo else None,
                 tamano=entrada.tamano,
                 mtime=datetime.fromtimestamp(entrada.mtime_ns / 1_000_000_000, tz=UTC),
-                prioridad=perillas.prioridad_inicial_contenedores,
+                # Hereda la urgencia del contenedor, salvo que la extensión tenga un
+                # orden propio mayor (un .txt interno también va primero).
+                prioridad=max(
+                    perillas.prioridad_inicial_contenedores,
+                    perillas.prioridad_extensiones.get(sufijo, 0),
+                ),
                 origen_contenedor={
                     "cadena": [*cadena_base, entrada.ruta_interna],
                     "profundidad": profundidad + 1,
@@ -255,6 +260,14 @@ def precalificar_pendientes(
                     senales=resultado.senales,
                     motivo=resultado.motivo,
                     version_filtro=perillas.version_filtro,
+                    # El orden por extensión (>100) sobrevive a la transición; para
+                    # el resto, prioridad = puntaje (comportamiento de siempre).
+                    prioridad=max(
+                        resultado.puntaje,
+                        perillas.prioridad_extensiones.get(
+                            (fila.extension or "").lower(), 0
+                        ),
+                    ),
                 )
                 procesados += 1
                 if resultado.ruta is RutaDecision.HOT:
