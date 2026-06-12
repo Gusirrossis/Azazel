@@ -177,6 +177,41 @@ class TestApiColaArchivos:
         assert r["archivos"][0]["senales"]["entropia"] == 7.9
         assert r["archivos"][0]["ruta_decision"] == "COLD"
 
+    def test_resumen_por_causa_y_tipo(self, cliente_api: Any, conexion: Any) -> None:
+        """El resumen agrupa por el prefijo del motivo (error_motivo manda en ERROR)."""
+        _sembrar(conexion, ["a.txt", "b.txt", "c.zip"])
+        cola.marcar_error(conexion, "id-00000", Estado.PENDIENTE, "agotado:almacen caido")
+        cola.marcar_error(conexion, "id-00001", Estado.PENDIENTE, "agotado:indice caido")
+        conexion.commit()
+        r = cliente_api.get("/cola/archivos", params={"estado": "ERROR"}).json()
+        causas = {g["clave"]: g["archivos"] for g in r["resumen"]["por_causa"]}
+        assert causas == {"agotado": 2}
+        tipos = {g["clave"]: g["archivos"] for g in r["resumen"]["por_tipo"]}
+        assert tipos == {"sin_tipificar": 2}
+
+    def test_filtro_franja_gris_por_puntaje(self, cliente_api: Any, conexion: Any) -> None:
+        _sembrar(conexion, ["a.txt", "b.txt", "c.txt"])
+        for archivo_id, puntaje in (("id-00000", 20), ("id-00001", 50), ("id-00002", 80)):
+            cola.claim(
+                conexion, worker_id="w", estado=Estado.PENDIENTE, lote=1, lease_segundos=60
+            )
+            cola.guardar_precalificacion(
+                conexion,
+                archivo_id,
+                puntaje=puntaje,
+                ruta=RutaDecision.HOT,
+                tipo_real="text/plain",
+                senales={},
+                motivo="x",
+                version_filtro="t",
+            )
+        conexion.commit()
+        r = cliente_api.get(
+            "/cola/archivos", params={"puntaje_min": 35, "puntaje_max": 64}
+        ).json()
+        assert r["total"] == 1
+        assert r["archivos"][0]["puntaje"] == 50
+
     def test_reprocesar_errores(self, cliente_api: Any, conexion: Any) -> None:
         _sembrar(conexion, ["a.txt", "b.txt"])
         cola.marcar_error(conexion, "id-00000", Estado.PENDIENTE, "agotado:almacen")

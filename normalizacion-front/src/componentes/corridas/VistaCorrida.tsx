@@ -15,9 +15,10 @@ export const NOMBRES_FASE: Record<string, string> = {
 const ORDEN_FASES = Object.keys(NOMBRES_FASE);
 
 function resumenMetricas(m: Record<string, unknown>): string {
+  // "errores" se renderiza aparte, resaltado — lo importante no se entierra
   const interesantes = [
     "archivos_vistos", "archivos_nuevos", "procesados", "procesos", "hot", "cold",
-    "re_encolados", "blobs_nuevos", "deduplicados", "movidos", "verificados", "errores",
+    "re_encolados", "blobs_nuevos", "deduplicados", "movidos", "verificados",
     "transitorios", "hechos", "pendientes",
   ];
   return interesantes
@@ -27,15 +28,21 @@ function resumenMetricas(m: Record<string, unknown>): string {
 }
 
 function FilaFase({ f }: { f: FaseEjecutada }) {
+  const errores = typeof f.metricas.errores === "number" ? (f.metricas.errores as number) : 0;
   return (
     <div className="fase-fila hecha">
-      <span className="fase-check">✓</span>
+      <span className="fase-check">{errores > 0 ? "⚠" : "✓"}</span>
       <span className="fase-nombre">{NOMBRES_FASE[f.fase] ?? f.fase}</span>
       <span className="fase-dur">
         {formatearDuracion(f.duracion_s)}
         {f.archivos_por_segundo ? ` · ${f.archivos_por_segundo} archivos/s` : ""}
       </span>
       <span className="fase-metricas">{resumenMetricas(f.metricas)}</span>
+      {errores > 0 && (
+        <span className="chip bajo" title="ver el porqué de cada uno en la pestaña Errores">
+          {errores} a dead-letter
+        </span>
+      )}
     </div>
   );
 }

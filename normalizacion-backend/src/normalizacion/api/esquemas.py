@@ -221,10 +221,19 @@ class ArchivoCola(BaseModel):
     actualizado_en: Any
 
 
+class ResumenCola(BaseModel):
+    """Composición del subconjunto filtrado: POR QUÉ está ahí y de qué tipos es.
+    `por_causa` agrupa por el prefijo del motivo (error_motivo manda en ERROR)."""
+
+    por_causa: list[GrupoResumen]
+    por_tipo: list[GrupoResumen]
+
+
 class RespuestaColaArchivos(BaseModel):
     total: int
     archivos: list[ArchivoCola]
     cursor: str | None  # archivo_id de la última fila; None = no hay más páginas
+    resumen: ResumenCola
 
 
 class SolicitudReprocesar(BaseModel):

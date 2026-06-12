@@ -127,10 +127,16 @@ export interface ArchivoCola {
   actualizado_en: string;
 }
 
+export interface ResumenCola {
+  por_causa: GrupoResumen[]; // POR QUÉ está ahí (prefijo del motivo/error)
+  por_tipo: GrupoResumen[];
+}
+
 export interface RespuestaColaArchivos {
   total: number;
   archivos: ArchivoCola[];
   cursor: string | null; // pásalo de vuelta para la siguiente página; null = no hay más
+  resumen: ResumenCola;
 }
 
 export interface RespuestaReprocesar {

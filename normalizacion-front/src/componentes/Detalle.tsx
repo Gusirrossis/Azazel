@@ -1,6 +1,7 @@
 import { formatearBytes, urlContenido } from "../api";
 import type { DocumentoArchivo } from "../tipos";
 import Senales from "./Senales";
+import Veredicto from "./Veredicto";
 
 interface Props {
   doc: DocumentoArchivo;
@@ -34,6 +35,13 @@ export default function Detalle({ doc, onCerrar }: Props) {
       <p className="nota-descarga">
         El original baja del almacén permanente — el disco físico ya fue desechado.
       </p>
+
+      <Veredicto
+        rutaDecision={doc.ruta_decision}
+        puntaje={doc.puntaje}
+        motivo={doc.motivo}
+        tier={typeof doc.senales.tier === "string" ? doc.senales.tier : null}
+      />
 
       <Fila etiqueta="Tipo real" valor={doc.tipo_real} />
       <Fila etiqueta="Ruta original" valor={doc.ruta_original} />

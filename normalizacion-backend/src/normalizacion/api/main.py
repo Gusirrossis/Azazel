@@ -293,6 +293,8 @@ def crear_app(config: Config) -> FastAPI:
         extension: str | None = None,
         nombre: str | None = None,
         disco_id: str | None = None,
+        puntaje_min: int | None = None,
+        puntaje_max: int | None = None,
         cursor: str | None = None,
         limite: int = 50,
     ) -> RespuestaColaArchivos:
@@ -312,6 +314,8 @@ def crear_app(config: Config) -> FastAPI:
                     extension=extension,
                     nombre=nombre,
                     disco_id=disco_id,
+                    puntaje_min=puntaje_min,
+                    puntaje_max=puntaje_max,
                     cursor=cursor,
                     limite=limite,
                 )

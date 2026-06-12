@@ -1392,3 +1392,238 @@ button.chip-estado.activo .chip-clave {
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* ===== rediseño UX: tonos semánticos =====
+   ok (oro): funcionó · frio (azul): reversible · gris: incertidumbre
+   alerta (ámbar): recuperable · critico (rojo): atención humana */
+:root {
+  --tono-ok: #c9a45c;
+  --tono-frio: #6f8fa1;
+  --tono-gris: #8e939b;
+  --tono-alerta: #c98f3f;
+  --tono-critico: #b5685f;
+}
+
+/* ---- tarjetas de CAUSA (composición del subconjunto: el dato de calibración) ---- */
+.causas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 18px 4px;
+}
+.causa {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 150px;
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-left: 3px solid var(--tono-gris);
+  border-radius: 4px;
+  padding: 10px 14px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  font: inherit;
+}
+.causa:hover { background: var(--gold-faint); }
+.causa.activa { box-shadow: inset 0 0 0 1px var(--gold-soft); background: var(--gold-faint); }
+.causa.tono-ok { border-left-color: var(--tono-ok); }
+.causa.tono-frio { border-left-color: var(--tono-frio); }
+.causa.tono-gris { border-left-color: var(--tono-gris); }
+.causa.tono-alerta { border-left-color: var(--tono-alerta); }
+.causa.tono-critico { border-left-color: var(--tono-critico); }
+.causa-numero {
+  font-family: "Cascadia Code", monospace;
+  font-size: 20px;
+  color: var(--ink);
+  line-height: 1.1;
+}
+.causa.tono-critico .causa-numero { color: var(--tono-critico); }
+.causa.tono-alerta .causa-numero { color: var(--tono-alerta); }
+.causa-titulo {
+  font-family: "Cinzel", serif;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--silver);
+}
+.causa-bytes {
+  font-size: 11.5px;
+  color: var(--silver);
+  font-style: italic;
+}
+
+/* ---- chips de motivo humano en la tabla ---- */
+.chip-motivo {
+  display: inline-block;
+  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 0.5px solid var(--line);
+  border-left-width: 3px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.chip-motivo.tono-ok { border-left-color: var(--tono-ok); }
+.chip-motivo.tono-frio { border-left-color: var(--tono-frio); color: #a9c0ce; }
+.chip-motivo.tono-gris { border-left-color: var(--tono-gris); color: var(--silver); }
+.chip-motivo.tono-alerta { border-left-color: var(--tono-alerta); color: #d9b27a; }
+.chip-motivo.tono-critico { border-left-color: var(--tono-critico); color: #cf8d85; }
+
+.celda-ruta {
+  font-size: 11.5px;
+  color: var(--silver);
+  font-style: italic;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.celda-estado {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.celda-na { color: var(--silver); opacity: 0.5; }
+.puntaje-hot { color: var(--tono-ok); font-family: "Cascadia Code", monospace; font-weight: 600; }
+.puntaje-gris { color: var(--tono-gris); font-family: "Cascadia Code", monospace; }
+.puntaje-frio { color: var(--tono-frio); font-family: "Cascadia Code", monospace; }
+
+.chip-estado.franja { border-style: dashed; }
+.explorador-resumen {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.tipos-resumen {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tipo-mini {
+  font-size: 12.5px;
+  color: var(--silver);
+}
+.tipo-mini b { color: var(--ink); font-weight: 600; }
+
+/* ---- veredicto: la historia de la decisión ---- */
+.veredicto {
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-left: 3px solid var(--tono-gris);
+  border-radius: 4px;
+  padding: 14px 16px;
+  margin: 12px 0;
+}
+.veredicto.tono-ok { border-left-color: var(--tono-ok); }
+.veredicto.tono-frio { border-left-color: var(--tono-frio); }
+.veredicto.tono-alerta { border-left-color: var(--tono-alerta); }
+.veredicto.tono-critico { border-left-color: var(--tono-critico); }
+.veredicto-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.chip-veredicto {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: "Cinzel", serif;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 0.5px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 10px;
+  color: var(--ink);
+}
+.chip-veredicto i { color: var(--silver); font-style: italic; text-transform: none; letter-spacing: 0; }
+.chip-veredicto.tono-ok { color: var(--tono-ok); border-color: var(--gold-soft); }
+.chip-veredicto.tono-frio { color: #a9c0ce; }
+.chip-veredicto.tono-alerta { color: var(--tono-alerta); }
+.veredicto-frase {
+  margin: 0 0 6px;
+  font-size: 15.5px;
+  line-height: 1.5;
+}
+.titulo-ok { color: var(--tono-ok); }
+.titulo-frio { color: #a9c0ce; }
+.titulo-gris { color: var(--silver); }
+.titulo-alerta { color: var(--tono-alerta); }
+.titulo-critico { color: var(--tono-critico); }
+.veredicto-crudo {
+  margin: 0 0 6px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.veredicto-crudo code { color: var(--silver); }
+.veredicto-accion {
+  margin: 8px 0 0;
+  font-size: 14px;
+  background: rgba(201, 164, 92, 0.08);
+  border-radius: 3px;
+  padding: 8px 10px;
+}
+.accion-marca {
+  font-family: "Cinzel", serif;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-right: 6px;
+}
+
+/* ---- gauge de puntaje contra los umbrales ---- */
+.gauge-puntaje { margin-top: 12px; }
+.gauge-pista {
+  position: relative;
+  display: flex;
+  height: 10px;
+  border-radius: 4px;
+  overflow: visible;
+  border: 0.5px solid var(--line);
+}
+.gauge-zona { height: 100%; }
+.zona-frio { background: rgba(111, 143, 161, 0.3); }
+.zona-gris { background: rgba(142, 147, 155, 0.18); }
+.zona-hot { background: rgba(201, 164, 92, 0.3); }
+.gauge-aguja {
+  position: absolute;
+  top: -7px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.gauge-aguja b {
+  font-family: "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 0.5px solid var(--gold-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  line-height: 1.3;
+}
+.gauge-aguja::after {
+  content: "";
+  width: 1.5px;
+  height: 12px;
+  background: var(--gold);
+}
+.gauge-leyenda {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--silver);
+  font-style: italic;
+}

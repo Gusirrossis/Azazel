@@ -502,6 +502,8 @@ def listar_archivos_cola(
     extension: str | None = None,
     nombre: str | None = None,
     disco_id: str | None = None,
+    puntaje_min: int | None = None,
+    puntaje_max: int | None = None,
     cursor: str | None = None,
     limite: int = 50,
 ) -> dict[str, Any]:
@@ -510,6 +512,13 @@ def listar_archivos_cola(
     A diferencia de /buscar (índice: solo lo INDEXADO), aquí se ve TODO — COLD,
     ERROR, pendientes — con puntaje, motivo y señales (entropía incluida). Es la
     vista para auditar si el filtro está decidiendo bien.
+
+    `puntaje_min/max` permiten aislar la FRANJA GRIS (entre umbral_cold y
+    umbral_hot): la zona donde el filtro decide con menos certeza — el dato de
+    calibración por excelencia.
+
+    Devuelve además `resumen` (composición por causa y por tipo con los MISMOS
+    filtros): de un vistazo se ve por qué algo está donde está, no solo qué filas.
 
     Paginación keyset por `archivo_id` (índice ix_archivos_estado_id): el `cursor`
     es el archivo_id de la última fila vista; estable aunque la cola se mueva."""
@@ -541,10 +550,30 @@ def listar_archivos_cola(
     if nombre:
         condiciones.append("nombre ILIKE %s")
         parametros.append(f"%{nombre}%")
+    if puntaje_min is not None:
+        condiciones.append("puntaje >= %s")
+        parametros.append(puntaje_min)
+    if puntaje_max is not None:
+        condiciones.append("puntaje <= %s")
+        parametros.append(puntaje_max)
     where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
 
     with psycopg.connect(config.postgres_dsn) as conn:
         total = int(conn.execute(f"SELECT COUNT(*) FROM archivos{where}", parametros).fetchone()[0])  # type: ignore[index]
+        # Composición por CAUSA (prefijo antes de ':' — error_motivo manda en ERROR)
+        # y por TIPO REAL, con los mismos filtros. Es lo que permite calibrar.
+        por_causa = conn.execute(
+            "SELECT split_part(COALESCE(error_motivo, motivo, 'sin_decidir'), ':', 1),"
+            f" COUNT(*), COALESCE(SUM(tamano), 0) FROM archivos{where}"
+            " GROUP BY 1 ORDER BY 2 DESC LIMIT 12",
+            parametros,
+        ).fetchall()
+        por_tipo = conn.execute(
+            "SELECT COALESCE(tipo_real, 'sin_tipificar'), COUNT(*),"
+            f" COALESCE(SUM(tamano), 0) FROM archivos{where}"
+            " GROUP BY 1 ORDER BY 2 DESC LIMIT 12",
+            parametros,
+        ).fetchall()
         paginado = f"{where}{' AND' if where else ' WHERE'} archivo_id > %s" if cursor else where
         filas = conn.execute(
             f"SELECT {_COLUMNAS_COLA} FROM archivos{paginado}"
@@ -580,6 +609,14 @@ def listar_archivos_cola(
         "total": total,
         "archivos": archivos,
         "cursor": archivos[-1]["archivo_id"] if len(archivos) == limite else None,
+        "resumen": {
+            "por_causa": [
+                {"clave": f[0], "archivos": int(f[1]), "bytes": int(f[2])} for f in por_causa
+            ],
+            "por_tipo": [
+                {"clave": f[0], "archivos": int(f[1]), "bytes": int(f[2])} for f in por_tipo
+            ],
+        },
     }
 
 

@@ -102,6 +102,8 @@ export interface FiltrosCola {
   extension?: string;
   nombre?: string;
   disco_id?: string;
+  puntaje_min?: number; // franja gris: [umbral_cold, umbral_hot)
+  puntaje_max?: number;
   cursor?: string;
   limite?: number;
 }
