@@ -1,5 +1,7 @@
 // Barras horizontales del tablero: composición por causa/estado con etiqueta
-// humana, conteo y peso. El ancho es relativo al mayor del grupo.
+// humana, conteo y peso. El ancho usa escala RAÍZ CUADRADA para que un valor
+// dominante (HECHO=19k) no deje en una rayita invisible a los chicos (ERROR=4);
+// la barra es contexto visual, el número es el dato exacto.
 
 import { formatearBytes } from "../../api";
 import type { GrupoResumen } from "../../tipos";
@@ -18,7 +20,7 @@ export default function Barras({
   vacio?: string;
 }) {
   if (filas.length === 0) return <div className="sin-sub">{vacio}</div>;
-  const max = Math.max(...filas.map((f) => f.archivos), 1);
+  const maxRaiz = Math.max(...filas.map((f) => Math.sqrt(f.archivos)), 1);
   return (
     <div className="barras">
       {filas.map((f) => (
@@ -27,7 +29,10 @@ export default function Barras({
           <span className="barra-pista">
             <span
               className="barra-relleno"
-              style={{ width: `${(f.archivos / max) * 100}%`, background: f.color }}
+              style={{
+                width: `${Math.max((Math.sqrt(f.archivos) / maxRaiz) * 100, f.archivos > 0 ? 4 : 0)}%`,
+                background: f.color,
+              }}
             />
           </span>
           <span className="barra-valor">

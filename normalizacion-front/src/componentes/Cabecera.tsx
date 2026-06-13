@@ -19,12 +19,15 @@ export default function Cabecera({ stats }: { stats: Estadisticas | null }) {
       </div>
       <div className="cabecera-derecha">
         {stats && (
-          <div className="stats">
+          <div
+            className="stats"
+            title="Lo BUSCABLE en el índice (OpenSearch). El tablero de Inicio muestra lo CATALOGADO (toda la cola en Postgres), que incluye frío, errores y pendientes — por eso las cifras difieren."
+          >
             <span>
-              <b>{stats.total_documentos.toLocaleString()}</b> documentos
+              <b>{stats.total_documentos.toLocaleString()}</b> buscables
             </span>
             <span>
-              <b>{formatearBytes(stats.bytes_totales)}</b> indexados
+              <b>{formatearBytes(stats.bytes_totales)}</b> en el índice
             </span>
           </div>
         )}

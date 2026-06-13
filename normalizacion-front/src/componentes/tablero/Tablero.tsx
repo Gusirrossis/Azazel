@@ -1,14 +1,9 @@
 // El tablero de Inicio: entrar y darse cuenta de TODO en una pantalla.
-// Cada bloque responde una pregunta concreta:
-//   KPIs        → ¿cuánto hay, cuánto terminó, qué está mal?
-//   Embudo      → ¿dónde está parado el trabajo en el pipeline?
-//   Frío/HOT    → ¿qué proporción del peso se conserva vs se deja de lado?
-//   Causas frío → ¿POR QUÉ se está yendo a frío? (calibración de lista blanca)
-//   Errores     → ¿qué familias de fallo hay y de qué tamaño?
-//   Histograma  → ¿el filtro decide con certeza o adivina? (franja gris)
-//   Tipos       → ¿de qué está hecho el corpus?
-//   Discos      → ¿cómo va cada origen?
-//   Corridas    → ¿qué se ha ejecutado últimamente?
+// Organizado en bandas semánticas, cada una respondiendo una pregunta:
+//   KPIs        → ¿cuánto hay, cuánto terminó, qué está mal? (dos niveles)
+//   Flujo       → ¿dónde está parado el trabajo? + ¿qué se conserva vs frío?
+//   Calibración → ¿el filtro decide o adivina? + ¿por qué a frío? + errores
+//   Composición → ¿de qué está hecho? + ¿cómo va cada disco? + corridas
 
 import { useCallback, useEffect, useState } from "react";
 import { formatearBytes, formatearDuracion, obtenerTablero } from "../../api";
@@ -18,13 +13,14 @@ import Dona, { type SegmentoDona } from "../Dona";
 import Barras, { type FilaBarra } from "./Barras";
 import Histograma from "./Histograma";
 import Kpi from "./Kpi";
+import Medidor from "./Medidor";
 
 const COLOR_TONO: Record<Tono, string> = {
   ok: "#c9a45c",
   frio: "#6f8fa1",
   gris: "#8e939b",
   alerta: "#c98f3f",
-  critico: "#b5685f",
+  critico: "#cf6a5c",
 };
 const COLOR_ESTADO: Record<string, string> = {
   PENDIENTE: "#6b6770",
@@ -34,7 +30,7 @@ const COLOR_ESTADO: Record<string, string> = {
   VERIFICADO: "#7da18d",
   HECHO: "#8aa17d",
   COLD: "#6f8fa1",
-  ERROR: "#b5685f",
+  ERROR: "#cf6a5c",
 };
 const ORDEN_ESTADOS = [
   "PENDIENTE", "PRECALIFICADO", "EN_PROCESO", "INDEXADO", "VERIFICADO", "HECHO", "COLD", "ERROR",
@@ -46,10 +42,22 @@ const COLORES_TIPO = [
 
 export type DestinoNavegacion = "archivos" | "errores" | "corridas";
 
+// Título de tarjeta con la explicación movida a un tooltip (ⓘ) — los datos
+// respiran, el porqué sigue a un hover de distancia.
+function Titulo({ children, ayuda }: { children: string; ayuda: string }) {
+  return (
+    <h3 className="tarjeta-titulo">
+      {children}
+      <span className="ayuda" title={ayuda} role="img" aria-label="ayuda">
+        ⓘ
+      </span>
+    </h3>
+  );
+}
+
 export default function Tablero({ onIrA }: { onIrA: (destino: DestinoNavegacion) => void }) {
   const [datos, setDatos] = useState<RespuestaTablero | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activoDec, setActivoDec] = useState<string | null>(null);
   const [activoTipo, setActivoTipo] = useState<string | null>(null);
 
   const cargar = useCallback(() => {
@@ -74,18 +82,12 @@ export default function Tablero({ onIrA }: { onIrA: (destino: DestinoNavegacion)
   const pctHechos = t.archivos > 0 ? (t.hechos / t.archivos) * 100 : 0;
   const duplicadosEvitados = t.con_hash - t.hash_unicos;
 
-  // ---- frío vs caliente (peso, sobre lo decidido) ----
+  // ---- frío vs caliente (medidor, peso) ----
   const dec = new Map(datos.por_decision.map((g) => [g.clave, g]));
   const hot = dec.get("HOT") ?? { clave: "HOT", archivos: 0, bytes: 0 };
   const cold = dec.get("COLD") ?? { clave: "COLD", archivos: 0, bytes: 0 };
-  const pesoDecidido = hot.bytes + cold.bytes;
-  const pctFrio = pesoDecidido > 0 ? (cold.bytes / pesoDecidido) * 100 : 0;
-  const segDecision: SegmentoDona[] = [
-    { clave: "HOT", valor: hot.bytes, color: COLOR_TONO.ok },
-    { clave: "COLD", valor: cold.bytes, color: COLOR_TONO.frio },
-  ];
 
-  // ---- embudo por estado ----
+  // ---- embudo por estado (orden del pipeline, no por tamaño) ----
   const porEstado = new Map(datos.por_estado.map((g) => [g.clave, g]));
   const filasEstado: FilaBarra[] = ORDEN_ESTADOS.filter((e) => porEstado.has(e)).map((e) => ({
     ...porEstado.get(e)!,
@@ -114,13 +116,14 @@ export default function Tablero({ onIrA }: { onIrA: (destino: DestinoNavegacion)
 
   return (
     <section className="tablero">
-      {/* ---------- KPIs: el estado del sistema en una línea ---------- */}
-      <div className="kpis">
+      {/* ============ BANDA 1 · estado del sistema ============ */}
+      <div className="kpis kpis-primarios">
         <Kpi
           valor={t.archivos.toLocaleString()}
           etiqueta="catalogados"
-          sub={formatearBytes(t.bytes)}
+          sub={`${formatearBytes(t.bytes)} · toda la cola`}
           tono="ok"
+          title="Total catalogado en la cola (Postgres): incluye frío, errores y pendientes. El header muestra solo lo buscable en el índice."
         />
         <Kpi
           valor={t.hechos.toLocaleString()}
@@ -132,126 +135,109 @@ export default function Tablero({ onIrA }: { onIrA: (destino: DestinoNavegacion)
           valor={(t.pendientes + t.en_proceso).toLocaleString()}
           etiqueta="en la cola"
           sub={`${t.pendientes.toLocaleString()} por evaluar · ${t.en_proceso.toLocaleString()} en proceso`}
-          tono="gris"
-        />
-        <Kpi
-          valor={t.cold.toLocaleString()}
-          etiqueta="en frío (reversible)"
-          sub={`${pctFrio.toFixed(1)}% del peso decidido`}
-          tono="frio"
-          onClick={() => onIrA("archivos")}
+          tono={t.pendientes + t.en_proceso > 0 ? "alerta" : "gris"}
         />
         <Kpi
           valor={t.errores.toLocaleString()}
-          etiqueta="errores"
-          sub={t.errores > 0 ? "click para ver el porqué de cada uno" : "dead-letter limpio"}
+          etiqueta={t.errores > 0 ? "⚠ errores" : "errores"}
+          sub={t.errores > 0 ? undefined : "dead-letter limpio"}
           tono={t.errores > 0 ? "critico" : "ok"}
-          onClick={() => onIrA("errores")}
+          destino={t.errores > 0 ? "ver el porqué" : undefined}
+          onClick={t.errores > 0 ? () => onIrA("errores") : undefined}
         />
+      </div>
+      <div className="kpis kpis-secundarios">
         <Kpi
-          valor={t.franja_gris.toLocaleString()}
-          etiqueta="franja gris"
-          sub="donde el filtro duda — a calibrar"
-          tono={t.franja_gris > 0 ? "alerta" : "ok"}
+          tamano="chico"
+          valor={t.cold.toLocaleString()}
+          etiqueta="en frío (reversible)"
+          tono="frio"
+          destino="explorar"
           onClick={() => onIrA("archivos")}
         />
         <Kpi
+          tamano="chico"
+          valor={t.franja_gris.toLocaleString()}
+          etiqueta="franja gris"
+          sub="el filtro duda"
+          tono={t.franja_gris > 0 ? "alerta" : "ok"}
+          destino="calibrar"
+          onClick={() => onIrA("archivos")}
+        />
+        <Kpi
+          tamano="chico"
           valor={duplicadosEvitados.toLocaleString()}
           etiqueta="duplicados evitados"
-          sub={`${t.hash_unicos.toLocaleString()} blobs únicos en el almacén`}
+          sub={`${t.hash_unicos.toLocaleString()} blobs únicos`}
           tono="ok"
         />
       </div>
 
-      <div className="tablero-grid">
-        {/* ---------- el pipeline: dónde está parado el trabajo ---------- */}
+      {/* ============ BANDA 2 · flujo y decisión ============ */}
+      <div className="tablero-fila fila-2">
         <article className="panel-tarjeta">
-          <h3>Embudo del pipeline</h3>
+          <Titulo ayuda="El camino sano es PENDIENTE → … → HECHO. Lo que se estanca en un estado intermedio es trabajo detenido. Barras en escala raíz para que lo chico no desaparezca.">
+            Embudo del pipeline
+          </Titulo>
           <Barras filas={filasEstado} vacio="aún no hay nada catalogado" />
-          <p className="panel-nota">
-            El camino sano es PENDIENTE → … → HECHO. Lo que se estanca en un estado
-            intermedio es trabajo detenido; ERROR y COLD tienen su tarjeta propia.
-          </p>
         </article>
 
-        {/* ---------- frío vs caliente ---------- */}
         <article className="panel-tarjeta">
-          <h3>Frío vs caliente (peso)</h3>
-          <div className="panel-tarjeta-cuerpo">
-            <Dona segmentos={segDecision} activo={activoDec} onActivar={setActivoDec}>
-              <div className="dona-centro-frio">
-                <span className="dona-centro-num" style={{ color: COLOR_TONO.frio }}>
-                  {pctFrio.toFixed(1)}%
-                </span>
-                <span className="dona-centro-etq">en frío</span>
-              </div>
-            </Dona>
-            <ul className="leyenda">
-              <li onMouseEnter={() => setActivoDec("HOT")} onMouseLeave={() => setActivoDec(null)}>
-                <span className="punto" style={{ background: COLOR_TONO.ok }} />
-                <span className="leyenda-etq">Caliente (se conserva)</span>
-                <span className="leyenda-val">
-                  {hot.archivos.toLocaleString()} · {formatearBytes(hot.bytes)}
-                </span>
-              </li>
-              <li onMouseEnter={() => setActivoDec("COLD")} onMouseLeave={() => setActivoDec(null)}>
-                <span className="punto" style={{ background: COLOR_TONO.frio }} />
-                <span className="leyenda-etq">Frío (se deja de lado)</span>
-                <span className="leyenda-val">
-                  {cold.archivos.toLocaleString()} · {formatearBytes(cold.bytes)}
-                </span>
-              </li>
-            </ul>
-          </div>
-        </article>
-
-        {/* ---------- por qué se va a frío: calibración de la lista ---------- */}
-        <article className="panel-tarjeta">
-          <h3>Por qué se va a frío</h3>
-          <Barras
-            filas={filasCausa(datos.causas_cold, false)}
-            vacio="nada en frío todavía"
+          <Titulo ayuda="Proporción del PESO ya decidido que se conserva (HOT) vs lo que va a frío reversible (COLD). Los pendientes aún no cuentan aquí.">
+            Frío vs caliente
+          </Titulo>
+          <Medidor
+            destacado={{ clave: "COLD", prefijo: "", sufijo: "del peso decidido va a frío reversible" }}
+            segmentos={[
+              { clave: "HOT", etiqueta: "Caliente (se conserva)", valor: hot.bytes, archivos: hot.archivos, color: COLOR_TONO.ok },
+              { clave: "COLD", etiqueta: "Frío (se deja de lado)", valor: cold.bytes, archivos: cold.archivos, color: COLOR_TONO.frio },
+            ]}
           />
-          <p className="panel-nota">
-            Si aquí aparece algo valioso, la lista blanca necesita ese tipo —
-            pestaña Filtro + «Re-puntuar frío» lo rescata.
-          </p>
+        </article>
+      </div>
+
+      {/* ============ BANDA 3 · calibración (el corazón del tablero) ============ */}
+      <article className="panel-tarjeta">
+        <Titulo ayuda="Distribución de puntajes en cubetas de 10, contra los umbrales del filtro. Altura logarítmica para que la franja gris (lo que se quiere calibrar) no la aplaste el pico de HOT.">
+          ¿El filtro decide o adivina?
+        </Titulo>
+        <Histograma
+          buckets={datos.histograma_puntaje}
+          umbralCold={datos.umbral_cold}
+          umbralHot={datos.umbral_hot}
+        />
+        <p className="panel-nota">
+          <b>{t.franja_gris.toLocaleString()}</b> archivos caen en la franja gris
+          ({datos.umbral_cold}–{datos.umbral_hot - 1}): ahí el filtro no está seguro
+          (hoy van a HOT por recall). Es la zona que el T4 va a resolver — si crece, conviene calibrar.
+        </p>
+      </article>
+
+      <div className="tablero-fila fila-2">
+        <article className="panel-tarjeta">
+          <Titulo ayuda="Composición del frío por causa, en lenguaje humano. Si aquí aparece algo valioso, la lista blanca necesita ese tipo: pestaña Filtro + «Re-puntuar frío» lo rescata.">
+            Por qué se va a frío
+          </Titulo>
+          <Barras filas={filasCausa(datos.causas_cold, false)} vacio="nada en frío todavía" />
         </article>
 
-        {/* ---------- errores por familia ---------- */}
         <article className="panel-tarjeta">
-          <h3>Errores por familia</h3>
+          <Titulo ayuda="Errores agrupados por familia. Cada una tiene una acción distinta (pasa el cursor por la barra). El detalle por archivo vive en la pestaña Errores.">
+            Errores por familia
+          </Titulo>
           <Barras
             filas={filasCausa(datos.causas_error, true)}
             vacio="sin errores 🎉 — el dead-letter está limpio"
           />
-          <p className="panel-nota">
-            Cada familia tiene acción distinta (el tooltip la dice); el detalle por
-            archivo vive en la pestaña Errores.
-          </p>
         </article>
+      </div>
 
-        {/* ---------- histograma: certeza del filtro ---------- */}
-        <article className="panel-tarjeta panel-tarjeta-ancha">
-          <h3>
-            Distribución de puntajes — ¿el filtro decide o adivina?
-          </h3>
-          <Histograma
-            buckets={datos.histograma_puntaje}
-            umbralCold={datos.umbral_cold}
-            umbralHot={datos.umbral_hot}
-          />
-          <p className="panel-nota">
-            <b>{t.franja_gris.toLocaleString()}</b> archivos caen en la franja gris
-            ({datos.umbral_cold}–{datos.umbral_hot - 1}): ahí el filtro no está seguro
-            (hoy van a HOT por recall). Esa zona es la que el etiquetado del T4 va a
-            resolver — si crece, conviene calibrar.
-          </p>
-        </article>
-
-        {/* ---------- de qué está hecho el corpus ---------- */}
+      {/* ============ BANDA 4 · composición y operación ============ */}
+      <div className="tablero-fila fila-3">
         <article className="panel-tarjeta">
-          <h3>Reparto por tipo (peso)</h3>
+          <Titulo ayuda="Reparto del PESO por tipo real (top 10). Solo cuenta lo ya tipificado.">
+            Reparto por tipo
+          </Titulo>
           <div className="panel-tarjeta-cuerpo">
             <Dona segmentos={segTipo} activo={activoTipo} onActivar={setActivoTipo}>
               <div className="dona-centro-frio">
@@ -279,26 +265,28 @@ export default function Tablero({ onIrA }: { onIrA: (destino: DestinoNavegacion)
           </div>
         </article>
 
-        {/* ---------- discos ---------- */}
         <article className="panel-tarjeta">
-          <h3>Por disco de origen</h3>
+          <Titulo ayuda="Cada disco de origen con su avance: archivos catalogados, peso, completados (✓) y errores.">
+            Por disco de origen
+          </Titulo>
           {datos.discos.length === 0 && <div className="sin-sub">sin discos catalogados</div>}
           {datos.discos.map((d) => (
             <div key={d.disco_id} className="disco-fila" title={d.disco_id}>
               <span className="disco-nombre">{d.disco_id}</span>
               <span className="disco-datos">
-                {d.archivos.toLocaleString()} archivos · {formatearBytes(d.bytes)}
+                {d.archivos.toLocaleString()} · {formatearBytes(d.bytes)}
                 {" · "}
                 <b className="kpi-ok">{d.hechos.toLocaleString()} ✓</b>
-                {d.errores > 0 && <b className="kpi-critico"> · {d.errores} en error</b>}
+                {d.errores > 0 && <b className="kpi-critico"> · {d.errores} ⚠</b>}
               </span>
             </div>
           ))}
         </article>
 
-        {/* ---------- corridas recientes ---------- */}
         <article className="panel-tarjeta">
-          <h3>Corridas recientes</h3>
+          <Titulo ayuda="Las últimas corridas con su estado y duración. El historial completo está en la pestaña Corridas.">
+            Corridas recientes
+          </Titulo>
           {datos.corridas.length === 0 && (
             <div className="sin-sub">aún no hay corridas — lanza una con «Indexar carpeta…»</div>
           )}

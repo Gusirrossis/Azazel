@@ -1673,12 +1673,13 @@ button.chip-estado.activo .chip-clave {
   margin-top: 14px;
 }
 
-/* ---- KPIs ---- */
+/* ---- KPIs: dos niveles de jerarquía ---- */
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
 }
+.kpis-primarios { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.kpis-secundarios { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .kpi {
   display: flex;
   flex-direction: column;
@@ -1687,22 +1688,38 @@ button.chip-estado.activo .chip-clave {
   border: 0.5px solid var(--line);
   border-top: 2px solid var(--tono-gris);
   border-radius: 5px;
-  padding: 14px 16px 12px;
+  padding: 16px 18px 14px;
   text-align: left;
   color: var(--ink);
   font: inherit;
 }
+.kpi-chico { padding: 11px 14px 10px; opacity: 0.92; }
 .kpi.tono-ok { border-top-color: var(--tono-ok); }
 .kpi.tono-frio { border-top-color: var(--tono-frio); }
 .kpi.tono-alerta { border-top-color: var(--tono-alerta); }
-.kpi.tono-critico { border-top-color: var(--tono-critico); }
-.kpi-clicable { cursor: pointer; }
-.kpi-clicable:hover { background: var(--gold-faint); }
+/* crítico: no solo el filete — fondo tenue rojo para que GRITE */
+.kpi.tono-critico {
+  border-top-color: var(--tono-critico);
+  border-top-width: 3px;
+  background: linear-gradient(180deg, rgba(207, 106, 92, 0.1), var(--panel) 60%);
+}
+.kpi-clicable {
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.kpi-clicable:hover {
+  background: var(--gold-faint);
+  border-color: var(--gold-soft);
+}
+.kpi-clicable.tono-critico:hover { background: rgba(207, 106, 92, 0.16); }
+.kpi-clicable:active { transform: translateY(1px); }
 .kpi-valor {
   font-family: "Cascadia Code", monospace;
-  font-size: 34px;
-  line-height: 1.1;
+  font-size: 36px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
 }
+.kpi-chico .kpi-valor { font-size: 26px; }
 .kpi-ok { color: var(--tono-ok); }
 .kpi-frio { color: var(--tono-frio); }
 .kpi-gris { color: var(--ink); }
@@ -1715,20 +1732,89 @@ button.chip-estado.activo .chip-clave {
   text-transform: uppercase;
   color: var(--silver);
 }
+.kpi-chico .kpi-etiqueta { font-size: 10.5px; }
 .kpi-sub {
-  font-size: 14.5px;
+  font-size: 14px;
   color: var(--silver);
-  font-style: italic;
 }
+.kpi-enlace {
+  margin-top: 4px;
+  font-family: "Cinzel", serif;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.kpi-clicable:hover .kpi-enlace { color: var(--ink); }
 
-/* ---- rejilla de tarjetas ---- */
-.tablero-grid {
+/* ---- bandas/filas del tablero: cada una llena el ancho, alturas alineadas ---- */
+.tablero-fila {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
-.tablero-grid .panel-tarjeta-ancha { grid-column: 1 / -1; }
+.tablero-fila.fila-2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+.tablero-fila.fila-3 { grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+.tablero .panel-tarjeta { display: flex; flex-direction: column; }
+
+/* ---- título de tarjeta con ayuda contextual (ⓘ) ---- */
+.tarjeta-titulo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ayuda {
+  font-family: "Cormorant Garamond", serif;
+  font-size: 14px;
+  color: var(--silver);
+  cursor: help;
+  opacity: 0.6;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ayuda:hover { opacity: 1; color: var(--gold); }
+
+/* ---- medidor de proporción (reemplaza la dona cuando hay dominancia extrema) ---- */
+.medidor { margin-top: 6px; }
+.medidor-titular {
+  font-size: 16px;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.medidor-pct {
+  font-family: "Cascadia Code", monospace;
+  font-size: 30px;
+  font-weight: 600;
+}
+.medidor-barra {
+  display: flex;
+  height: 30px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 0.5px solid var(--line);
+  background: var(--panel-2);
+}
+.medidor-seg {
+  height: 100%;
+  transition: width 0.3s;
+}
+.medidor-leyenda {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 14px;
+}
+.medidor-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.medidor-item-etq { font-size: 14.5px; color: var(--ink); }
+.medidor-item-val {
+  font-family: "Cascadia Code", monospace;
+  font-size: 13px;
+  color: var(--silver);
+}
 
 /* ---- barras horizontales ---- */
 .barras {
@@ -1777,16 +1863,30 @@ button.chip-estado.activo .chip-clave {
   color: var(--silver);
 }
 
-/* ---- histograma de puntajes ---- */
-.histograma { margin-top: 8px; }
+/* ---- histograma de puntajes (escala log + zonas de fondo) ---- */
+.histograma { margin-top: 10px; }
 .histo-area {
+  position: relative;
+  height: 168px;
+  padding-top: 20px;
+  border-bottom: 0.5px solid var(--gold-soft);
+}
+/* bandas de color de fondo por zona — lectura inmediata de frío/gris/HOT */
+.histo-zona {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.histo-zona.zona-frio { background: rgba(111, 143, 161, 0.07); }
+.histo-zona.zona-gris { background: rgba(201, 164, 92, 0.06); }
+.histo-zona.zona-hot { background: rgba(138, 161, 125, 0.07); }
+.histo-cols {
   position: relative;
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  height: 150px;
-  padding-top: 18px;
-  border-bottom: 0.5px solid var(--gold-soft);
+  height: 100%;
+  z-index: 1;
 }
 .histo-col {
   flex: 1;
@@ -1799,35 +1899,51 @@ button.chip-estado.activo .chip-clave {
 }
 .histo-n {
   font-family: "Cascadia Code", monospace;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--silver);
+  font-variant-numeric: tabular-nums;
 }
 .histo-barra {
   width: 100%;
   border-radius: 2px 2px 0 0;
+  transition: height 0.3s;
 }
-.histo-barra.zona-frio { background: rgba(111, 143, 161, 0.55); }
-.histo-barra.zona-gris { background: rgba(142, 147, 155, 0.45); }
-.histo-barra.zona-hot { background: rgba(201, 164, 92, 0.6); }
+.histo-barra.zona-frio { background: rgba(111, 143, 161, 0.7); }
+.histo-barra.zona-gris { background: rgba(201, 164, 92, 0.55); }
+.histo-barra.zona-hot { background: rgba(138, 161, 125, 0.72); }
 .histo-umbral {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 1px;
+  width: 1.5px;
   background: var(--gold);
-  opacity: 0.7;
+  opacity: 0.85;
+  z-index: 2;
+}
+.histo-umbral i {
+  position: absolute;
+  top: -2px;
+  left: 3px;
+  font-family: "Cascadia Code", monospace;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--gold);
 }
 .histo-eje {
   display: flex;
   justify-content: space-between;
   font-size: 13.5px;
-  color: var(--silver);
-  font-style: italic;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .histo-eje-frio { color: var(--tono-frio); }
-.histo-eje-gris { color: var(--tono-gris); }
-.histo-eje-hot { color: var(--tono-ok); }
+.histo-eje-gris { color: var(--gold); font-weight: 600; }
+.histo-eje-hot { color: var(--verde); }
+.histo-escala {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--silver);
+  font-style: italic;
+}
 
 /* ---- filas de discos / corridas recientes ---- */
 .disco-fila {
@@ -1835,19 +1951,22 @@ button.chip-estado.activo .chip-clave {
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding: 7px 0;
+  padding: 8px 0;
   border-bottom: 0.5px solid var(--line);
 }
 .disco-fila:last-of-type { border-bottom: none; }
 .disco-nombre {
-  font-size: 17px;
+  font-size: 16.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .disco-datos {
-  font-size: 15px;
+  font-family: "Cascadia Code", monospace;
+  font-size: 13.5px;
   color: var(--silver);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
+.disco-datos i { font-family: "Cormorant Garamond", serif; font-size: 14px; }
