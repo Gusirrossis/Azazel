@@ -16,6 +16,7 @@ import {
 } from "../api";
 import type { ArchivoCola, FiltroVisible, ResumenCola } from "../tipos";
 import { describirCausa, describirError, describirMotivo, esCausaDeError, etiquetaTipo } from "../motivos";
+import { formatearEntropia } from "../entropia";
 import Senales from "./Senales";
 import Veredicto from "./Veredicto";
 
@@ -317,7 +318,7 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
             {!esErrores && <th>Estado</th>}
             <th>{esErrores ? "Qué pasó" : "Por qué está ahí"}</th>
             <th>Puntaje</th>
-            <th>Entropía</th>
+            <th>Entropía (0-1)</th>
             <th>Tipo real</th>
             {esErrores && <th>Intentos</th>}
             <th>Tamaño</th>
@@ -382,7 +383,7 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
                             : "entropia-media"
                       }
                     >
-                      {e.toFixed(2)}
+                      {formatearEntropia(e)}
                     </span>
                   ) : (
                     <span className="celda-na" title="decidido en T0/T1: no hizo falta medir entropía">

@@ -1,6 +1,11 @@
 // Señales del filtro (T0-T3) de forma legible: la entropía como barra con los
 // umbrales marcados, booleanos como chips, el resto como filas etiqueta/valor.
 // Compartido por el Detalle (índice) y el explorador de la cola.
+//
+// La entropía se MUESTRA en 0–1 (normalizada) aunque el backend la maneje en
+// bits 0–8 — la conversión es solo de presentación (ver entropia.ts).
+
+import { formatearEntropia, normalizarEntropia } from "../entropia";
 
 const ETIQUETA: Record<string, string> = {
   tier: "Tier que decidió",
@@ -62,26 +67,32 @@ export default function Senales({
           <div className="detalle-fila">
             <span className="detalle-etiqueta">Entropía (Shannon)</span>
             <span>
-              <b>{entropia.toFixed(2)}</b> / 8 —{" "}
+              <b>{formatearEntropia(entropia)}</b> / 1 —{" "}
               {zonaEntropia(entropia, entropiaTextoMax, entropiaComprimidoMin)}
             </span>
           </div>
           <div
             className="barra-entropia"
-            title={`umbrales del filtro: < ${entropiaTextoMax} texto · > ${entropiaComprimidoMin} comprimido/cifrado`}
+            title={`umbrales del filtro: < ${formatearEntropia(entropiaTextoMax)} texto · > ${formatearEntropia(entropiaComprimidoMin)} comprimido/cifrado`}
           >
-            <div className="barra-entropia-relleno" style={{ width: `${(entropia / 8) * 100}%` }} />
-            <span className="barra-marca" style={{ left: `${(entropiaTextoMax / 8) * 100}%` }} />
+            <div
+              className="barra-entropia-relleno"
+              style={{ width: `${normalizarEntropia(entropia) * 100}%` }}
+            />
             <span
               className="barra-marca"
-              style={{ left: `${(entropiaComprimidoMin / 8) * 100}%` }}
+              style={{ left: `${normalizarEntropia(entropiaTextoMax) * 100}%` }}
+            />
+            <span
+              className="barra-marca"
+              style={{ left: `${normalizarEntropia(entropiaComprimidoMin) * 100}%` }}
             />
           </div>
           <div className="barra-leyenda">
             <span>0 · texto</span>
-            <span>{entropiaTextoMax}</span>
-            <span>{entropiaComprimidoMin}</span>
-            <span>8 · cifrado</span>
+            <span>{formatearEntropia(entropiaTextoMax)}</span>
+            <span>{formatearEntropia(entropiaComprimidoMin)}</span>
+            <span>1 · cifrado</span>
           </div>
         </div>
       )}

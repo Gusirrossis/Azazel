@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { guardarFiltro, obtenerFiltro, rescoreFrio, restablecerFiltro } from "../api";
 import { etiquetaTipo } from "../motivos";
+import { desnormalizarEntropia, formatearEntropia, normalizarEntropia } from "../entropia";
 import type { FiltroVisible, RespuestaFiltro, SolicitudFiltro } from "../tipos";
 
 // Lista editable en FILAS (no chips): los tipos MIME largos
@@ -83,6 +84,37 @@ function CampoNumero({
         onChange={(e) => {
           const n = Number(e.target.value);
           if (!Number.isNaN(n)) onCambiar(n);
+        }}
+      />
+    </label>
+  );
+}
+
+// Campo de umbral de ENTROPÍA: el usuario lo ve y edita en 0–1, pero hacia el
+// estado/backend SIEMPRE viaja en bits 0–8. La conversión vive solo aquí —
+// `valorBits` entra crudo y `onCambiarBits` devuelve crudo, así el guardado del
+// filtro no cambia y la config nunca se corrompe (ver entropia.ts).
+function CampoEntropia({
+  etiqueta,
+  valorBits,
+  onCambiarBits,
+}: {
+  etiqueta: string;
+  valorBits: number;
+  onCambiarBits: (bits: number) => void;
+}) {
+  return (
+    <label className="campo-numero">
+      <span>{etiqueta}</span>
+      <input
+        type="number"
+        step={0.01}
+        min={0}
+        max={1}
+        value={Number(normalizarEntropia(valorBits).toFixed(2))}
+        onChange={(e) => {
+          const norm = Number(e.target.value);
+          if (!Number.isNaN(norm)) onCambiarBits(desnormalizarEntropia(norm));
         }}
       />
     </label>
@@ -251,23 +283,21 @@ export default function Filtro() {
 
         <article className="panel-tarjeta">
           <h3>Umbrales</h3>
-          <h4>Entropía (Shannon, 0–8) — la señal de T2</h4>
+          <h4>Entropía (Shannon, 0–1) — la señal de T2</h4>
           <p className="panel-nota">
-            &lt; {edicion.entropia_texto_max} = texto plano · &gt;{" "}
-            {edicion.entropia_comprimido_min} = comprimido/cifrado. Lo intermedio se
-            decide con las demás señales.
+            &lt; {formatearEntropia(edicion.entropia_texto_max)} = texto plano · &gt;{" "}
+            {formatearEntropia(edicion.entropia_comprimido_min)} = comprimido/cifrado. Lo
+            intermedio se decide con las demás señales. (Escala 0–1.)
           </p>
-          <CampoNumero
+          <CampoEntropia
             etiqueta="Texto si entropía <"
-            valor={edicion.entropia_texto_max}
-            paso={0.1}
-            onCambiar={(n) => editar({ entropia_texto_max: n })}
+            valorBits={edicion.entropia_texto_max}
+            onCambiarBits={(bits) => editar({ entropia_texto_max: bits })}
           />
-          <CampoNumero
+          <CampoEntropia
             etiqueta="Comprimido si entropía >"
-            valor={edicion.entropia_comprimido_min}
-            paso={0.1}
-            onCambiar={(n) => editar({ entropia_comprimido_min: n })}
+            valorBits={edicion.entropia_comprimido_min}
+            onCambiarBits={(bits) => editar({ entropia_comprimido_min: bits })}
           />
           <CampoNumero
             etiqueta="Mínimo de imprimibles (0–1)"
