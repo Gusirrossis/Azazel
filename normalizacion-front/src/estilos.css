@@ -1030,17 +1030,17 @@ button.enlace:hover {
 }
 .leyenda-etq {
   flex: 1;
-  font-size: 13px;
+  font-size: 15.5px;
   color: var(--ink);
 }
 .leyenda-val {
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--silver);
 }
 .panel-nota {
   margin: 12px 2px 0;
-  font-size: 12.5px;
+  font-size: 14.5px;
   color: var(--silver);
   font-style: italic;
 }
@@ -1072,18 +1072,18 @@ button.enlace:hover {
 }
 .chip-clave {
   font-family: "Cinzel", serif;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.1em;
   color: var(--silver);
 }
 .chip-num {
   font-family: "Cascadia Code", monospace;
-  font-size: 13px;
+  font-size: 14.5px;
   color: var(--ink);
 }
 .chip-bytes {
   font-family: "Cascadia Code", monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--silver);
 }
 .estado-PENDIENTE { background: #6b6770; }
@@ -1437,7 +1437,7 @@ button.chip-estado.activo .chip-clave {
 .causa.tono-critico { border-left-color: var(--tono-critico); }
 .causa-numero {
   font-family: "Cascadia Code", monospace;
-  font-size: 20px;
+  font-size: 27px;
   color: var(--ink);
   line-height: 1.1;
 }
@@ -1445,13 +1445,13 @@ button.chip-estado.activo .chip-clave {
 .causa.tono-alerta .causa-numero { color: var(--tono-alerta); }
 .causa-titulo {
   font-family: "Cinzel", serif;
-  font-size: 9.5px;
+  font-size: 11.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--silver);
 }
 .causa-bytes {
-  font-size: 11.5px;
+  font-size: 13.5px;
   color: var(--silver);
   font-style: italic;
 }
@@ -1459,7 +1459,7 @@ button.chip-estado.activo .chip-clave {
 /* ---- chips de motivo humano en la tabla ---- */
 .chip-motivo {
   display: inline-block;
-  font-size: 13px;
+  font-size: 14.5px;
   padding: 3px 10px;
   border-radius: 3px;
   border: 0.5px solid var(--line);
@@ -1474,7 +1474,7 @@ button.chip-estado.activo .chip-clave {
 .chip-motivo.tono-critico { border-left-color: var(--tono-critico); color: #cf8d85; }
 
 .celda-ruta {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--silver);
   font-style: italic;
   max-width: 42vw;
@@ -1507,7 +1507,7 @@ button.chip-estado.activo .chip-clave {
   flex-wrap: wrap;
 }
 .tipo-mini {
-  font-size: 12.5px;
+  font-size: 14.5px;
   color: var(--silver);
 }
 .tipo-mini b { color: var(--ink); font-weight: 600; }
@@ -1700,7 +1700,7 @@ button.chip-estado.activo .chip-clave {
 .kpi-clicable:hover { background: var(--gold-faint); }
 .kpi-valor {
   font-family: "Cascadia Code", monospace;
-  font-size: 26px;
+  font-size: 34px;
   line-height: 1.1;
 }
 .kpi-ok { color: var(--tono-ok); }
@@ -1710,13 +1710,13 @@ button.chip-estado.activo .chip-clave {
 .kpi-critico { color: var(--tono-critico); }
 .kpi-etiqueta {
   font-family: "Cinzel", serif;
-  font-size: 9.5px;
+  font-size: 11.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--silver);
 }
 .kpi-sub {
-  font-size: 12px;
+  font-size: 14.5px;
   color: var(--silver);
   font-style: italic;
 }
@@ -1738,12 +1738,12 @@ button.chip-estado.activo .chip-clave {
 }
 .barra-fila {
   display: grid;
-  grid-template-columns: minmax(120px, 38%) 1fr auto;
+  grid-template-columns: minmax(150px, 46%) 1fr auto;
   align-items: center;
   gap: 10px;
 }
 .barra-etiqueta {
-  font-size: 13.5px;
+  font-size: 15.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1769,11 +1769,11 @@ button.chip-estado.activo .chip-clave {
 }
 .barra-valor b {
   font-family: "Cascadia Code", monospace;
-  font-size: 13px;
+  font-size: 15.5px;
   font-weight: 600;
 }
 .barra-valor i {
-  font-size: 10.5px;
+  font-size: 13px;
   color: var(--silver);
 }
 
@@ -1799,7 +1799,7 @@ button.chip-estado.activo .chip-clave {
 }
 .histo-n {
   font-family: "Cascadia Code", monospace;
-  font-size: 10.5px;
+  font-size: 13.5px;
   color: var(--silver);
 }
 .histo-barra {
@@ -1820,7 +1820,7 @@ button.chip-estado.activo .chip-clave {
 .histo-eje {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: 13.5px;
   color: var(--silver);
   font-style: italic;
   margin-top: 6px;
@@ -1840,13 +1840,14 @@ button.chip-estado.activo .chip-clave {
 }
 .disco-fila:last-of-type { border-bottom: none; }
 .disco-nombre {
+  font-size: 17px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .disco-datos {
-  font-size: 12.5px;
+  font-size: 15px;
   color: var(--silver);
   white-space: nowrap;
 }
