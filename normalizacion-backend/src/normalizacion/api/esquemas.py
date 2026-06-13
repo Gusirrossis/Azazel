@@ -144,6 +144,61 @@ class RespuestaCarpetas(BaseModel):
     carpetas: list[str]
 
 
+# ------------------------------------------------------------------- tablero
+
+
+class TotalesTablero(BaseModel):
+    archivos: int
+    bytes: int
+    hechos: int
+    errores: int
+    cold: int
+    en_proceso: int  # EN_PROCESO + INDEXADO + VERIFICADO
+    pendientes: int  # PENDIENTE + PRECALIFICADO
+    franja_gris: int  # puntaje entre umbrales: donde el filtro duda
+    con_hash: int  # filas con blob en el almacén
+    hash_unicos: int  # blobs únicos (la diferencia = ahorro del dedup)
+
+
+class BucketPuntaje(BaseModel):
+    desde: int  # cubeta de 10: 0, 10, … 90
+    archivos: int
+
+
+class DiscoTablero(BaseModel):
+    disco_id: str
+    archivos: int
+    bytes: int
+    hechos: int
+    errores: int
+
+
+class CorridaMini(BaseModel):
+    id: int
+    ruta: str
+    estado: str
+    iniciada_en: Any
+    terminada_en: Any | None
+    duracion_s: float | None
+
+
+class RespuestaTablero(BaseModel):
+    """GET /panel — todos los agregados del tablero de Inicio en una llamada."""
+
+    totales: TotalesTablero
+    por_estado: list[GrupoResumen]
+    por_decision: list[GrupoResumen]
+    por_tipo: list[GrupoResumen]
+    causas_cold: list[GrupoResumen]
+    causas_error: list[GrupoResumen]
+    histograma_puntaje: list[BucketPuntaje]
+    umbral_cold: int  # umbrales EFECTIVOS (base + overrides de la UI)
+    umbral_hot: int
+    discos: list[DiscoTablero]
+    corridas: list[CorridaMini]
+    generado_en: str
+
+
 # ------------------------------------------------------------ filtro editable
 
 

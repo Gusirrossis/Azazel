@@ -1664,3 +1664,189 @@ button.chip-estado.activo .chip-clave {
   color: var(--silver);
   overflow-wrap: anywhere;
 }
+
+/* ===== tablero de Inicio ===== */
+.tablero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+/* ---- KPIs ---- */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--panel);
+  border: 0.5px solid var(--line);
+  border-top: 2px solid var(--tono-gris);
+  border-radius: 5px;
+  padding: 14px 16px 12px;
+  text-align: left;
+  color: var(--ink);
+  font: inherit;
+}
+.kpi.tono-ok { border-top-color: var(--tono-ok); }
+.kpi.tono-frio { border-top-color: var(--tono-frio); }
+.kpi.tono-alerta { border-top-color: var(--tono-alerta); }
+.kpi.tono-critico { border-top-color: var(--tono-critico); }
+.kpi-clicable { cursor: pointer; }
+.kpi-clicable:hover { background: var(--gold-faint); }
+.kpi-valor {
+  font-family: "Cascadia Code", monospace;
+  font-size: 26px;
+  line-height: 1.1;
+}
+.kpi-ok { color: var(--tono-ok); }
+.kpi-frio { color: var(--tono-frio); }
+.kpi-gris { color: var(--ink); }
+.kpi-alerta { color: var(--tono-alerta); }
+.kpi-critico { color: var(--tono-critico); }
+.kpi-etiqueta {
+  font-family: "Cinzel", serif;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--silver);
+}
+.kpi-sub {
+  font-size: 12px;
+  color: var(--silver);
+  font-style: italic;
+}
+
+/* ---- rejilla de tarjetas ---- */
+.tablero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.tablero-grid .panel-tarjeta-ancha { grid-column: 1 / -1; }
+
+/* ---- barras horizontales ---- */
+.barras {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.barra-fila {
+  display: grid;
+  grid-template-columns: minmax(120px, 38%) 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.barra-etiqueta {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.barra-pista {
+  height: 12px;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.barra-relleno {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  min-width: 2px;
+}
+.barra-valor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+  min-width: 70px;
+}
+.barra-valor b {
+  font-family: "Cascadia Code", monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+.barra-valor i {
+  font-size: 10.5px;
+  color: var(--silver);
+}
+
+/* ---- histograma de puntajes ---- */
+.histograma { margin-top: 8px; }
+.histo-area {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 150px;
+  padding-top: 18px;
+  border-bottom: 0.5px solid var(--gold-soft);
+}
+.histo-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  gap: 3px;
+}
+.histo-n {
+  font-family: "Cascadia Code", monospace;
+  font-size: 10.5px;
+  color: var(--silver);
+}
+.histo-barra {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+}
+.histo-barra.zona-frio { background: rgba(111, 143, 161, 0.55); }
+.histo-barra.zona-gris { background: rgba(142, 147, 155, 0.45); }
+.histo-barra.zona-hot { background: rgba(201, 164, 92, 0.6); }
+.histo-umbral {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--gold);
+  opacity: 0.7;
+}
+.histo-eje {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--silver);
+  font-style: italic;
+  margin-top: 6px;
+}
+.histo-eje-frio { color: var(--tono-frio); }
+.histo-eje-gris { color: var(--tono-gris); }
+.histo-eje-hot { color: var(--tono-ok); }
+
+/* ---- filas de discos / corridas recientes ---- */
+.disco-fila {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 0.5px solid var(--line);
+}
+.disco-fila:last-of-type { border-bottom: none; }
+.disco-nombre {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.disco-datos {
+  font-size: 12.5px;
+  color: var(--silver);
+  white-space: nowrap;
+}

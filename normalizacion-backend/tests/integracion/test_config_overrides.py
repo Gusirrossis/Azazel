@@ -129,6 +129,51 @@ class TestApiFiltro:
         assert r.json()["efectivo"]["umbral_hot"] == 65
 
 
+class TestApiTablero:
+    def test_panel_vacio_es_coherente(self, cliente_api: Any) -> None:
+        r = cliente_api.get("/panel")
+        assert r.status_code == 200
+        cuerpo = r.json()
+        assert cuerpo["totales"]["archivos"] == 0
+        assert cuerpo["umbral_hot"] == 65 and cuerpo["umbral_cold"] == 35
+        assert cuerpo["histograma_puntaje"] == []
+
+    def test_panel_agrega_estados_causas_e_histograma(
+        self, cliente_api: Any, conexion: Any
+    ) -> None:
+        _sembrar(conexion, ["a.txt", "b.zip", "c.csv", "d.bin"])
+        # un COLD con motivo, un ERROR, dos puntuados en zonas distintas
+        cola.claim(conexion, worker_id="w", estado=Estado.PENDIENTE, lote=2, lease_segundos=60)
+        cola.guardar_precalificacion(
+            conexion, "id-00000", puntaje=80, ruta=RutaDecision.HOT,
+            tipo_real="text/plain", senales={}, motivo="texto_legible", version_filtro="t",
+        )
+        cola.guardar_precalificacion(
+            conexion, "id-00001", puntaje=5, ruta=RutaDecision.COLD,
+            tipo_real="application/zip", senales={}, motivo="fuera_de_lista_blanca",
+            version_filtro="t",
+        )
+        cola.marcar_error(conexion, "id-00002", Estado.PENDIENTE, "agotado:almacen")
+        conexion.commit()
+
+        cuerpo = cliente_api.get("/panel").json()
+        assert cuerpo["totales"]["archivos"] == 4
+        assert cuerpo["totales"]["errores"] == 1
+        assert cuerpo["totales"]["cold"] == 1
+        assert {g["clave"]: g["archivos"] for g in cuerpo["causas_cold"]} == {
+            "fuera_de_lista_blanca": 1
+        }
+        assert {g["clave"]: g["archivos"] for g in cuerpo["causas_error"]} == {"agotado": 1}
+        # histograma: 80 cae en la cubeta 80; 5 en la 0
+        cubetas = {b["desde"]: b["archivos"] for b in cuerpo["histograma_puntaje"]}
+        assert cubetas == {0: 1, 80: 1}
+
+    def test_panel_usa_umbrales_con_overrides(self, cliente_api: Any) -> None:
+        cliente_api.put("/filtro", json={"umbral_hot": 80})
+        assert cliente_api.get("/panel").json()["umbral_hot"] == 80
+        cliente_api.delete("/filtro")
+
+
 class TestApiColaArchivos:
     def test_filtro_por_estado_y_total(self, cliente_api: Any, conexion: Any) -> None:
         _sembrar(conexion, ["a.txt", "b.csv", "c.pdf"])

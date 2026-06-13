@@ -284,7 +284,7 @@ export default function Ingesta({
   onProgreso,
   onIrACorridas,
 }: {
-  onCompletada: () => void;
+  onCompletada?: () => void;
   onProgreso?: () => void;
   onIrACorridas?: () => void;
 }) {
@@ -299,7 +299,7 @@ export default function Ingesta({
     estadoPipeline()
       .then((e) => {
         setEstado(e);
-        if (habiaEnCurso.current && !e.en_curso) onCompletada(); // terminó → refrescar búsqueda
+        if (habiaEnCurso.current && !e.en_curso) onCompletada?.(); // terminó → avisar
         if (e.en_curso && onProgreso) {
           // Mientras se indexa, la búsqueda se refresca sola (~cada 5s):
           // los documentos van apareciendo conforme el worker los indexa

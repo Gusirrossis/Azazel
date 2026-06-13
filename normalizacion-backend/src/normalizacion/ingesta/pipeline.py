@@ -620,6 +620,137 @@ def listar_archivos_cola(
     }
 
 
+def tablero(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, Any]:
+    """Para GET /panel: TODOS los agregados del tablero de Inicio en una llamada.
+
+    El tablero debe responder de un vistazo: ¿cuánto hay y en qué estado?, ¿qué
+    proporción se va a frío y POR QUÉ?, ¿qué falló y de qué familia?, ¿dónde
+    duda el filtro (histograma de puntajes vs umbrales)?, ¿cuánto ahorra el
+    dedup?, ¿qué discos hay y cómo van? Una sola conexión, varios GROUP BY.
+
+    Los umbrales llegan ya EFECTIVOS (config base + overrides de la UI) para que
+    la franja gris del tablero coincida con lo que el filtro hará en la próxima
+    corrida."""
+
+    def grupos(filas: list[Any]) -> list[dict[str, Any]]:
+        return [{"clave": f[0], "archivos": int(f[1]), "bytes": int(f[2])} for f in filas]
+
+    with psycopg.connect(config.postgres_dsn) as conn:
+        estados_decision = conn.execute(
+            """
+            SELECT CASE WHEN GROUPING(estado) = 0 THEN 'estado' ELSE 'decision' END AS dim,
+                   COALESCE(estado, ruta_decision, 'SIN_DECIDIR') AS clave,
+                   COUNT(*), COALESCE(SUM(tamano), 0)
+              FROM archivos GROUP BY GROUPING SETS ((estado), (ruta_decision))
+            """
+        ).fetchall()
+        por_estado = grupos([f[1:] for f in estados_decision if f[0] == "estado"])
+        por_decision = grupos([f[1:] for f in estados_decision if f[0] == "decision"])
+
+        por_tipo = grupos(
+            conn.execute(
+                "SELECT tipo_real, COUNT(*), COALESCE(SUM(tamano), 0) FROM archivos"
+                " WHERE tipo_real IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT 10"
+            ).fetchall()
+        )
+        causas_cold = grupos(
+            conn.execute(
+                "SELECT split_part(COALESCE(motivo, 'sin_motivo'), ':', 1), COUNT(*),"
+                " COALESCE(SUM(tamano), 0) FROM archivos WHERE estado = 'COLD'"
+                " GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
+            ).fetchall()
+        )
+        causas_error = grupos(
+            conn.execute(
+                "SELECT split_part(COALESCE(error_motivo, 'sin_motivo'), ':', 1), COUNT(*),"
+                " COALESCE(SUM(tamano), 0) FROM archivos WHERE estado = 'ERROR'"
+                " GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
+            ).fetchall()
+        )
+
+        # Histograma de puntajes en cubetas de 10 (LEAST: el 100 cae en 90-100).
+        # Contra los umbrales pinta DÓNDE está decidiendo el filtro — calibración.
+        histograma = [
+            {"desde": int(f[0]), "archivos": int(f[1])}
+            for f in conn.execute(
+                "SELECT (LEAST(puntaje, 99) / 10) * 10 AS cubeta, COUNT(*)"
+                " FROM archivos WHERE puntaje IS NOT NULL GROUP BY 1 ORDER BY 1"
+            ).fetchall()
+        ]
+        franja_gris = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM archivos WHERE puntaje BETWEEN %s AND %s",
+                (umbral_cold, umbral_hot - 1),
+            ).fetchone()[0]  # type: ignore[index]
+        )
+
+        # Dedup real: filas con blob vs blobs únicos (lo que el almacén ahorró)
+        con_hash, hash_unicos = conn.execute(
+            "SELECT COUNT(hash_contenido), COUNT(DISTINCT hash_contenido) FROM archivos"
+        ).fetchone()  # type: ignore[misc]
+
+        discos = [
+            {
+                "disco_id": f[0],
+                "archivos": int(f[1]),
+                "bytes": int(f[2]),
+                "hechos": int(f[3]),
+                "errores": int(f[4]),
+            }
+            for f in conn.execute(
+                "SELECT disco_id, COUNT(*), COALESCE(SUM(tamano), 0),"
+                " COUNT(*) FILTER (WHERE estado = 'HECHO'),"
+                " COUNT(*) FILTER (WHERE estado = 'ERROR')"
+                " FROM archivos GROUP BY 1 ORDER BY 2 DESC LIMIT 12"
+            ).fetchall()
+        ]
+        corridas = [
+            {
+                "id": int(f[0]),
+                "ruta": f[1],
+                "estado": f[2],
+                "iniciada_en": f[3],
+                "terminada_en": f[4],
+                "duracion_s": (f[4] - f[3]).total_seconds() if f[4] else None,
+            }
+            for f in conn.execute(
+                "SELECT id, ruta, estado, iniciada_en, terminada_en FROM corridas"
+                " ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+        ]
+
+    por = {g["clave"]: g for g in por_estado}
+
+    def n(clave: str) -> int:
+        return int(por.get(clave, {"archivos": 0})["archivos"])
+
+    return {
+        "totales": {
+            "archivos": sum(g["archivos"] for g in por_estado),
+            "bytes": sum(g["bytes"] for g in por_estado),
+            "hechos": n("HECHO"),
+            "errores": n("ERROR"),
+            "cold": n("COLD"),
+            "en_proceso": n("EN_PROCESO") + n("INDEXADO") + n("VERIFICADO"),
+            "pendientes": n("PENDIENTE") + n("PRECALIFICADO"),
+            "franja_gris": franja_gris,
+            "con_hash": int(con_hash),
+            "hash_unicos": int(hash_unicos),
+        },
+        "por_estado": por_estado,
+        "por_decision": por_decision,
+        "por_tipo": por_tipo,
+        "causas_cold": causas_cold,
+        "causas_error": causas_error,
+        "histograma_puntaje": histograma,
+        "umbral_cold": umbral_cold,
+        "umbral_hot": umbral_hot,
+        "discos": discos,
+        "corridas": corridas,
+        "generado_en": datetime.now(UTC).isoformat(),
+    }
+
+
 def validar_dentro_de_raiz(ruta: Path, raiz: str | None) -> Path:
     """Si hay carpeta raíz configurada (Docker: /datos), nada sale de ella."""
     resuelta = ruta.expanduser().resolve()

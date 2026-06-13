@@ -9,6 +9,7 @@ import type {
   RespuestaFiltro,
   RespuestaPreservados,
   RespuestaReprocesar,
+  RespuestaTablero,
   ResumenPanel,
   SolicitudBusqueda,
   SolicitudFiltro,
@@ -52,6 +53,10 @@ export function estadisticas(): Promise<Estadisticas> {
 
 export function resumen(): Promise<ResumenPanel> {
   return pedir<ResumenPanel>("/resumen");
+}
+
+export function obtenerTablero(): Promise<RespuestaTablero> {
+  return pedir<RespuestaTablero>("/panel");
 }
 
 export type AmbitoCarpetas = "datos" | "destino";

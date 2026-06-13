@@ -24,6 +24,7 @@ from normalizacion.api.esquemas import (
     RespuestaColaArchivos,
     RespuestaFiltro,
     RespuestaReprocesar,
+    RespuestaTablero,
     ResumenPanel,
     RespuestaBusqueda,
     RespuestaCarpetas,
@@ -278,6 +279,24 @@ def crear_app(config: Config) -> FastAPI:
 
         return RespuestaPreservados.model_validate(
             preservados_sin_explorar(request.app.state.config)
+        )
+
+    @aplicacion.get("/panel", response_model=RespuestaTablero)
+    def get_panel(_: Autorizado, request: Request) -> RespuestaTablero:
+        """El tablero de Inicio completo: estados, frío/caliente, causas, errores
+        por familia, histograma de puntajes vs umbrales EFECTIVOS, dedup, discos
+        y corridas recientes — una sola llamada, una sola conexión."""
+        import psycopg
+
+        from normalizacion.core.config_overrides import filtro_efectivo, leer_overrides
+        from normalizacion.ingesta.pipeline import tablero
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            overrides = leer_overrides(conn)
+        filtro = filtro_efectivo(cfg, overrides)
+        return RespuestaTablero.model_validate(
+            tablero(cfg, umbral_cold=filtro.umbral_cold, umbral_hot=filtro.umbral_hot)
         )
 
     # ------------------------------------------------------ explorador de cola

@@ -103,6 +103,58 @@ export interface RespuestaCarpetas {
   carpetas: string[];
 }
 
+// ----- tablero de Inicio (GET /panel: todos los agregados en una llamada) -----
+
+export interface TotalesTablero {
+  archivos: number;
+  bytes: number;
+  hechos: number;
+  errores: number;
+  cold: number;
+  en_proceso: number;
+  pendientes: number;
+  franja_gris: number;
+  con_hash: number;
+  hash_unicos: number;
+}
+
+export interface BucketPuntaje {
+  desde: number; // cubeta de 10: 0, 10, … 90
+  archivos: number;
+}
+
+export interface DiscoTablero {
+  disco_id: string;
+  archivos: number;
+  bytes: number;
+  hechos: number;
+  errores: number;
+}
+
+export interface CorridaMini {
+  id: number;
+  ruta: string;
+  estado: string;
+  iniciada_en: string;
+  terminada_en: string | null;
+  duracion_s: number | null;
+}
+
+export interface RespuestaTablero {
+  totales: TotalesTablero;
+  por_estado: GrupoResumen[];
+  por_decision: GrupoResumen[];
+  por_tipo: GrupoResumen[];
+  causas_cold: GrupoResumen[];
+  causas_error: GrupoResumen[];
+  histograma_puntaje: BucketPuntaje[];
+  umbral_cold: number; // umbrales EFECTIVOS (base + overrides)
+  umbral_hot: number;
+  discos: DiscoTablero[];
+  corridas: CorridaMini[];
+  generado_en: string;
+}
+
 // ----- explorador de cola (Postgres: TODO lo catalogado, no solo lo indexado) -----
 
 export interface ArchivoCola {
