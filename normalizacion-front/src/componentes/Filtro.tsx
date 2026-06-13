@@ -3,7 +3,13 @@
 // corrida (sin reiniciar). El frío ya decidido se re-evalúa con "Re-puntuar frío".
 
 import { useCallback, useEffect, useState } from "react";
-import { guardarFiltro, obtenerFiltro, rescoreFrio, restablecerFiltro } from "../api";
+import {
+  guardarFiltro,
+  obtenerFiltro,
+  reexplorarPreservados,
+  rescoreFrio,
+  restablecerFiltro,
+} from "../api";
 import { etiquetaTipo } from "../motivos";
 import { desnormalizarEntropia, formatearEntropia, normalizarEntropia } from "../entropia";
 import type { FiltroVisible, RespuestaFiltro, SolicitudFiltro } from "../tipos";
@@ -201,6 +207,24 @@ export default function Filtro() {
       .catch((e) => setError(String(e)));
   };
 
+  const reexplorar = () => {
+    if (
+      !window.confirm(
+        "¿Re-explorar los contenedores PRESERVADOS sin abrir (RAR sin herramienta, formatos pendientes)? Se devuelven a PENDIENTE para abrirlos con las herramientas ya instaladas. Se exploran en la siguiente corrida.",
+      )
+    )
+      return;
+    reexplorarPreservados()
+      .then((r) =>
+        setAviso(
+          r.re_encolados === 0
+            ? "no había preservados sin explorar"
+            : `${r.re_encolados.toLocaleString()} contenedores devueltos al embudo — re-indexa la carpeta para abrirlos con las herramientas nuevas`,
+        ),
+      )
+      .catch((e) => setError(String(e)));
+  };
+
   const agregarExtension = () => {
     const ext = extNueva.trim().toLowerCase();
     if (!ext) return;
@@ -380,6 +404,13 @@ export default function Filtro() {
         </button>
         <button className="secundario" onClick={rescore}>
           ↻ Re-puntuar frío con este filtro
+        </button>
+        <button
+          className="secundario"
+          onClick={reexplorar}
+          title="Para los RAR/contenedores que quedaron preservados sin abrir por falta de herramienta; tras instalarla, esto los devuelve al embudo (rescore-frío no sirve: están en HOT)."
+        >
+          ↻ Re-explorar preservados
         </button>
       </div>
     </section>

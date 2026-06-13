@@ -3,7 +3,7 @@
 // (oculto) al cambiar de pestaña para no perder la búsqueda en curso.
 
 import { useCallback, useEffect, useState } from "react";
-import { buscar } from "../api";
+import { buscar, estadoPipeline } from "../api";
 import type { DocumentoArchivo, RespuestaBusqueda, SolicitudBusqueda } from "../tipos";
 import Buscador, { type Filtros } from "./Buscador";
 import Facetas from "./Facetas";
@@ -19,6 +19,7 @@ export default function Busqueda() {
   const [seleccionado, setSeleccionado] = useState<DocumentoArchivo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
+  const [destinos, setDestinos] = useState<Record<string, string> | null>(null);
 
   const ejecutarBusqueda = useCallback(
     async (f: Filtros, cursorPagina: unknown[] | null = null) => {
@@ -47,6 +48,10 @@ export default function Busqueda() {
 
   useEffect(() => {
     void ejecutarBusqueda({});
+    // dónde guarda el almacén (para mostrar la ubicación del original en el detalle)
+    estadoPipeline()
+      .then((e) => setDestinos(e.destinos))
+      .catch(() => setDestinos(null));
   }, [ejecutarBusqueda]);
 
   const aplicarFiltros = (f: Filtros) => {
@@ -77,7 +82,13 @@ export default function Busqueda() {
           onSeleccionar={setSeleccionado}
           onCargarMas={() => void ejecutarBusqueda(filtros, cursor)}
         />
-        {seleccionado && <Detalle doc={seleccionado} onCerrar={() => setSeleccionado(null)} />}
+        {seleccionado && (
+          <Detalle
+            doc={seleccionado}
+            destinos={destinos}
+            onCerrar={() => setSeleccionado(null)}
+          />
+        )}
       </main>
     </section>
   );

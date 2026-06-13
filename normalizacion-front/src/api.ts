@@ -132,6 +132,13 @@ export function rescoreFrio(): Promise<{ re_encolados: number }> {
   return pedir<{ re_encolados: number }>("/cola/rescore-frio", { method: "POST" });
 }
 
+// Re-explorar contenedores preservados sin abrir (RAR sin herramienta, etc.):
+// los devuelve a PENDIENTE para re-precalificarlos con las herramientas ya
+// instaladas. A diferencia de rescore-frío, estos viven en HOT.
+export function reexplorarPreservados(): Promise<{ re_encolados: number }> {
+  return pedir<{ re_encolados: number }>("/cola/reexplorar-preservados", { method: "POST" });
+}
+
 // ----- filtro editable -----
 
 export function obtenerFiltro(): Promise<RespuestaFiltro> {

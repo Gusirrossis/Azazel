@@ -374,6 +374,22 @@ def crear_app(config: Config) -> FastAPI:
             conn.commit()
         return {"re_encolados": re_encolados}
 
+    @aplicacion.post("/cola/reexplorar-preservados")
+    def post_reexplorar_preservados(_: Autorizado, request: Request) -> dict[str, int]:
+        """Contenedores preservados sin explorar (RAR sin herramienta, formatos
+        pendientes…) → PENDIENTE, para re-precalificarlos con las herramientas
+        ya instaladas. rescore-frío NO sirve para esto: los preservados viven en
+        HOT, no en COLD. Se exploran en la siguiente corrida."""
+        import psycopg
+
+        from normalizacion.core import cola
+
+        cfg: Config = request.app.state.config
+        with psycopg.connect(cfg.postgres_dsn) as conn:
+            re_encolados = cola.reexplorar_preservados(conn)
+            conn.commit()
+        return {"re_encolados": re_encolados}
+
     # --------------------------------------------------------- filtro editable
 
     def _filtro_visible(filtro: PerillasFiltro) -> FiltroVisible:

@@ -2,9 +2,11 @@ import { formatearBytes, urlContenido } from "../api";
 import type { DocumentoArchivo } from "../tipos";
 import Senales from "./Senales";
 import Veredicto from "./Veredicto";
+import UbicacionOriginal from "./UbicacionOriginal";
 
 interface Props {
   doc: DocumentoArchivo;
+  destinos?: Record<string, string> | null;
   onCerrar: () => void;
 }
 
@@ -18,7 +20,7 @@ function Fila({ etiqueta, valor }: { etiqueta: string; valor: React.ReactNode })
   );
 }
 
-export default function Detalle({ doc, onCerrar }: Props) {
+export default function Detalle({ doc, destinos, onCerrar }: Props) {
   const calidad = doc.perfil_calidad;
   return (
     <aside className="detalle">
@@ -54,6 +56,12 @@ export default function Detalle({ doc, onCerrar }: Props) {
       {doc.limites_alcanzados.length > 0 && (
         <Fila etiqueta="Avisos" valor={doc.limites_alcanzados.join(", ")} />
       )}
+
+      <UbicacionOriginal
+        hash={doc.hash_contenido}
+        rutaDecision={doc.ruta_decision}
+        destinos={destinos ?? null}
+      />
 
       {Object.keys(doc.senales).length > 0 && (
         <>

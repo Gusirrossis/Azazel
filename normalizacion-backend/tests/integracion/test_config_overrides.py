@@ -287,3 +287,36 @@ class TestApiColaArchivos:
         assert r.json() == {"re_encolados": 1}
         pendiente = cliente_api.get("/cola/archivos", params={"estado": "PENDIENTE"}).json()
         assert pendiente["total"] == 1
+
+    def test_reexplorar_preservados_toma_hot_no_cold(
+        self, cliente_api: Any, conexion: Any
+    ) -> None:
+        """Los RAR preservados viven en HOT (PRECALIFICADO), no en COLD: rescore-frío
+        no los toca, reexplorar-preservados sí."""
+        _sembrar(conexion, ["a.rar", "b.txt"])
+        cola.claim(conexion, worker_id="w", estado=Estado.PENDIENTE, lote=2, lease_segundos=60)
+        # a.rar: preservado íntegro en HOT (formato_no_soportado), como sin unar
+        cola.guardar_precalificacion(
+            conexion, "id-00000", puntaje=90, ruta=RutaDecision.HOT,
+            tipo_real="application/vnd.rar", senales={}, motivo="formato_no_soportado",
+            version_filtro="t",
+        )
+        # b.txt: HOT normal, no debe tocarse
+        cola.guardar_precalificacion(
+            conexion, "id-00001", puntaje=70, ruta=RutaDecision.HOT,
+            tipo_real="text/plain", senales={}, motivo="texto_legible", version_filtro="t",
+        )
+        conexion.commit()
+
+        # rescore-frío NO agarra el RAR preservado (está en HOT, no COLD)
+        assert cliente_api.post("/cola/rescore-frio").json() == {"re_encolados": 0}
+
+        # reexplorar-preservados SÍ lo devuelve a PENDIENTE
+        r = cliente_api.post("/cola/reexplorar-preservados")
+        assert r.status_code == 200
+        assert r.json() == {"re_encolados": 1}
+        pend = cliente_api.get("/cola/archivos", params={"estado": "PENDIENTE"}).json()
+        assert [a["nombre"] for a in pend["archivos"]] == ["a.rar"]
+        # el b.txt sigue intacto en PRECALIFICADO
+        prec = cliente_api.get("/cola/archivos", params={"estado": "PRECALIFICADO"}).json()
+        assert [a["nombre"] for a in prec["archivos"]] == ["b.txt"]

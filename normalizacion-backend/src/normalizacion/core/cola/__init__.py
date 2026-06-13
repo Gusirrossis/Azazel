@@ -425,6 +425,43 @@ def rescore_frio(conn: psycopg.Connection[Any], disco_id: str | None = None) -> 
     return cur.rowcount
 
 
+# Contenedores PRESERVADOS íntegros sin explorar: viven en HOT (no en COLD), así
+# que rescore_frio NO los toca. Cuando se instala la herramienta que faltaba
+# (p. ej. `unar` para RAR) o se suben los guards K4, este es el mecanismo para
+# remandarlos al embudo.
+MOTIVOS_REEXPLORABLES = (
+    "formato_no_soportado",  # RAR sin unar, imagen de disco, tar exótico…
+    "contenedor_sin_explorar",
+    "contenedor_corrupto",  # corrupto o con contraseña (re-intentar no daña)
+    "profundidad_maxima",  # se explora si subió el guard de anidación
+)
+
+
+def reexplorar_preservados(
+    conn: psycopg.Connection[Any], disco_id: str | None = None
+) -> int:
+    """Devuelve a PENDIENTE los contenedores preservados sin explorar para
+    re-precalificarlos con las herramientas/guards vigentes.
+
+    A diferencia de rescore_frio (COLD→PENDIENTE), estos están en HOT
+    (PRECALIFICADO/INDEXADO/HECHO) con su motivo de preservación — por eso
+    necesitan su propio camino. Limpia la precalificación previa; el blob ya
+    guardado se conserva (el dedup del worker evita recopiarlo) y al re-explorar
+    sus piezas internas se encolan como filas nuevas."""
+    filtro = " AND disco_id = %s" if disco_id else ""
+    motivos = list(MOTIVOS_REEXPLORABLES)
+    parametros: tuple[Any, ...] = (motivos, disco_id) if disco_id else (motivos,)
+    cur = conn.execute(
+        "UPDATE archivos SET estado = 'PENDIENTE', puntaje = NULL,"
+        " ruta_decision = NULL, motivo = NULL, version_filtro = NULL,"
+        " senales = '{}'::jsonb, intentos = 0, worker_id = NULL,"
+        " lease_hasta = NULL, actualizado_en = now()"
+        f" WHERE motivo = ANY(%s){filtro}",
+        parametros,
+    )
+    return cur.rowcount
+
+
 def conteos_por_estado(conn: psycopg.Connection[Any]) -> list[tuple[str, str, int]]:
     """(disco_id, estado, cuenta) — para `norm estado` y métricas."""
     filas = conn.execute(

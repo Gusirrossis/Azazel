@@ -122,20 +122,27 @@ const CLAVE_WORKERS = "norm_workers_elegidos";
 function ModalIndexar({
   destinoEligible,
   workersAuto,
+  origenInicial,
+  destinoInicial,
   onLanzar,
   onCerrar,
 }: {
   destinoEligible: boolean;
   workersAuto: number;
+  // De la última corrida (Postgres): precargan el modal para no re-elegir todo.
+  origenInicial?: string | null;
+  destinoInicial?: string | null;
   onLanzar: (origen: string, destino: string | null, workers: number | null) => void;
   onCerrar: () => void;
 }) {
-  const [origen, setOrigen] = useState<string | null>(null);
+  // Origen: el de la última corrida; Destino: el de la última corrida o, si no,
+  // el último elegido en este navegador (localStorage).
+  const [origen, setOrigen] = useState<string | null>(origenInicial ?? null);
   const [destino, setDestino] = useState<string | null>(
-    () => localStorage.getItem(CLAVE_DESTINO) || null,
+    () => destinoInicial ?? localStorage.getItem(CLAVE_DESTINO) ?? null,
   );
   const [usarDestino, setUsarDestino] = useState<boolean>(() =>
-    Boolean(localStorage.getItem(CLAVE_DESTINO)),
+    Boolean(destinoInicial ?? localStorage.getItem(CLAVE_DESTINO)),
   );
   const [workers, setWorkers] = useState<number | null>(() => {
     const guardado = Number(localStorage.getItem(CLAVE_WORKERS));
@@ -376,6 +383,8 @@ export default function Ingesta({
         <ModalIndexar
           destinoEligible={estado?.destino_eligible ?? false}
           workersAuto={estado?.workers_auto ?? 1}
+          origenInicial={ultima?.ruta}
+          destinoInicial={ultima?.destino}
           onLanzar={lanzar}
           onCerrar={() => setSelectorAbierto(false)}
         />

@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   archivosCola,
+  estadoPipeline,
   formatearBytes,
   obtenerFiltro,
   reprocesarErrores,
@@ -19,6 +20,7 @@ import { describirCausa, describirError, describirMotivo, esCausaDeError, etique
 import { formatearEntropia } from "../entropia";
 import Senales from "./Senales";
 import Veredicto from "./Veredicto";
+import UbicacionOriginal from "./UbicacionOriginal";
 
 const ESTADOS = [
   "PENDIENTE",
@@ -39,10 +41,12 @@ function entropiaDe(a: ArchivoCola): number | null {
 function DetalleFila({
   archivo,
   filtro,
+  destinos,
   onCerrar,
 }: {
   archivo: ArchivoCola;
   filtro: FiltroVisible | null;
+  destinos: Record<string, string> | null;
   onCerrar: () => void;
 }) {
   const tier = typeof archivo.senales?.tier === "string" ? archivo.senales.tier : null;
@@ -99,6 +103,12 @@ function DetalleFila({
             <span className="detalle-valor">{String(valor)}</span>
           </div>
         ))}
+
+      <UbicacionOriginal
+        hash={archivo.hash_contenido}
+        rutaDecision={archivo.ruta_decision}
+        destinos={destinos}
+      />
     </aside>
   );
 }
@@ -120,8 +130,10 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
   const [aviso, setAviso] = useState<string | null>(null);
   const [seleccionado, setSeleccionado] = useState<ArchivoCola | null>(null);
   const [filtro, setFiltro] = useState<FiltroVisible | null>(null);
+  const [destinos, setDestinos] = useState<Record<string, string> | null>(null);
 
   // Umbrales del filtro vigente (colorear entropía, zonas del gauge, franja gris)
+  // y destinos del almacén (ubicación del original en el detalle).
   useEffect(() => {
     obtenerFiltro()
       .then((r) => setFiltro(r.efectivo))
@@ -133,6 +145,9 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
         setConteosEstado(conteos);
       })
       .catch(() => setConteosEstado({}));
+    estadoPipeline()
+      .then((e) => setDestinos(e.destinos))
+      .catch(() => setDestinos(null));
   }, []);
 
   const construirFiltros = useCallback((): FiltrosCola => {
@@ -419,6 +434,7 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
         <DetalleFila
           archivo={seleccionado}
           filtro={filtro}
+          destinos={destinos}
           onCerrar={() => setSeleccionado(null)}
         />
       )}
