@@ -1,0 +1,7 @@
+# Fin de línea por tipo de archivo — para que los scripts funcionen en cada SO.
+# Los scripts de macOS DEBEN ir con LF (un CRLF de Windows rompe la ejecución
+# de bash en la Mac). Los .bat de Windows van con CRLF.
+
+*.command text eol=lf
+*.sh      text eol=lf
+*.bat     text eol=crlf
