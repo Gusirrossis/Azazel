@@ -174,6 +174,31 @@ class TestApiTablero:
         cliente_api.delete("/filtro")
 
 
+class TestApiDestinosDisco:
+    def test_disco_con_destino_da_carpeta_local(self, cliente_api: Any, conexion: Any) -> None:
+        """Si la corrida eligió carpeta destino, la raíz es esa carpeta del sistema,
+        no el almacén global (.env) — así la UI muestra dónde quedó de verdad."""
+        conexion.execute(
+            "INSERT INTO corridas (disco_id, ruta, estado, destino, fases)"
+            " VALUES ('discoA', '/datos/x', 'COMPLETADA', '/Volumes/Externo/proyecto', '[]'::jsonb)"
+        )
+        conexion.commit()
+        r = cliente_api.get("/sistema/destinos-disco").json()
+        hot = r["por_disco"]["discoA"]["hot"].replace("\\", "/")
+        frio = r["por_disco"]["discoA"]["frio"].replace("\\", "/")
+        assert hot.endswith("proyecto/almacen")
+        assert frio.endswith("proyecto/frio")
+
+    def test_disco_sin_destino_usa_global(self, cliente_api: Any, conexion: Any) -> None:
+        conexion.execute(
+            "INSERT INTO corridas (disco_id, ruta, estado, destino, fases)"
+            " VALUES ('discoB', '/datos/y', 'COMPLETADA', NULL, '[]'::jsonb)"
+        )
+        conexion.commit()
+        r = cliente_api.get("/sistema/destinos-disco").json()
+        assert r["por_disco"]["discoB"] == r["global"]
+
+
 class TestApiColaArchivos:
     def test_filtro_por_estado_y_total(self, cliente_api: Any, conexion: Any) -> None:
         _sembrar(conexion, ["a.txt", "b.csv", "c.pdf"])

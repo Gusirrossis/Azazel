@@ -3,8 +3,8 @@
 // (oculto) al cambiar de pestaña para no perder la búsqueda en curso.
 
 import { useCallback, useEffect, useState } from "react";
-import { buscar, estadoPipeline } from "../api";
-import type { DocumentoArchivo, RespuestaBusqueda, SolicitudBusqueda } from "../tipos";
+import { buscar, destinosPorDisco } from "../api";
+import type { DestinosDisco, DocumentoArchivo, RespuestaBusqueda, SolicitudBusqueda } from "../tipos";
 import Buscador, { type Filtros } from "./Buscador";
 import Facetas from "./Facetas";
 import Resultados from "./Resultados";
@@ -19,7 +19,7 @@ export default function Busqueda() {
   const [seleccionado, setSeleccionado] = useState<DocumentoArchivo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
-  const [destinos, setDestinos] = useState<Record<string, string> | null>(null);
+  const [destinos, setDestinos] = useState<DestinosDisco | null>(null);
 
   const ejecutarBusqueda = useCallback(
     async (f: Filtros, cursorPagina: unknown[] | null = null) => {
@@ -48,9 +48,9 @@ export default function Busqueda() {
 
   useEffect(() => {
     void ejecutarBusqueda({});
-    // dónde guarda el almacén (para mostrar la ubicación del original en el detalle)
-    estadoPipeline()
-      .then((e) => setDestinos(e.destinos))
+    // dónde guarda el almacén POR DISCO (ubicación real del original en el detalle)
+    destinosPorDisco()
+      .then(setDestinos)
       .catch(() => setDestinos(null));
   }, [ejecutarBusqueda]);
 

@@ -1,12 +1,12 @@
 import { formatearBytes, urlContenido } from "../api";
-import type { DocumentoArchivo } from "../tipos";
+import type { DestinosDisco, DocumentoArchivo } from "../tipos";
 import Senales from "./Senales";
 import Veredicto from "./Veredicto";
 import UbicacionOriginal from "./UbicacionOriginal";
 
 interface Props {
   doc: DocumentoArchivo;
-  destinos?: Record<string, string> | null;
+  destinos?: DestinosDisco | null;
   onCerrar: () => void;
 }
 
@@ -60,6 +60,7 @@ export default function Detalle({ doc, destinos, onCerrar }: Props) {
       <UbicacionOriginal
         hash={doc.hash_contenido}
         rutaDecision={doc.ruta_decision}
+        discoId={doc.disco_id}
         destinos={destinos ?? null}
       />
 

@@ -13,6 +13,7 @@ import type {
   ResumenPanel,
   SolicitudBusqueda,
   SolicitudFiltro,
+  DestinosDisco,
 } from "./tipos";
 
 const BASE = "/api";
@@ -95,6 +96,12 @@ export function estadoPipeline(historial?: number): Promise<EstadoPipeline> {
 
 export function preservados(): Promise<RespuestaPreservados> {
   return pedir<RespuestaPreservados>("/pipeline/preservados");
+}
+
+// Raíz real del almacén por disco — para mostrar dónde quedó cada original
+// aunque cada corrida haya elegido una carpeta destino distinta.
+export function destinosPorDisco(): Promise<DestinosDisco> {
+  return pedir<DestinosDisco>("/sistema/destinos-disco");
 }
 
 // ----- explorador de cola -----

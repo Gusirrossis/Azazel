@@ -44,6 +44,31 @@ def destinos(config: Config) -> dict[str, str]:
     }
 
 
+def destinos_por_disco(config: Config) -> dict[str, Any]:
+    """Raíz REAL del almacén (carpeta del sistema) por disco, para que la UI muestre
+    dónde quedó cada archivo aunque cada corrida haya elegido una carpeta destino
+    distinta. Resuelve el destino de la última corrida de cada disco:
+      · con destino elegido → {destino}/almacen y {destino}/frio (carpeta local real)
+      · sin destino         → el almacén configurado en el .env (global)
+
+    `global` sirve de respaldo para discos sin corrida registrada."""
+    base = destinos(config)
+    glob = {"hot": base["originales_hot"], "frio": base["frio_reversible"]}
+    with psycopg.connect(config.postgres_dsn) as conn:
+        filas = conn.execute(
+            "SELECT DISTINCT ON (disco_id) disco_id, destino FROM corridas"
+            " ORDER BY disco_id, id DESC"
+        ).fetchall()
+    por_disco: dict[str, dict[str, str]] = {}
+    for disco_id, destino in filas:
+        if destino:
+            b = Path(destino).expanduser().resolve()
+            por_disco[disco_id] = {"hot": str(b / "almacen"), "frio": str(b / "frio")}
+        else:
+            por_disco[disco_id] = dict(glob)
+    return {"global": glob, "por_disco": por_disco}
+
+
 def config_con_destino(config: Config, destino: str | None) -> Config:
     """Config EFECTIVA de una corrida: con `destino` (carpeta elegida en el front),
     el almacén HOT y el frío viven bajo esa carpeta (backend local); sin él, se usa

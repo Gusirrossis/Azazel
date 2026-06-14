@@ -180,6 +180,14 @@ def crear_app(config: Config) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @aplicacion.get("/sistema/destinos-disco")
+    def get_destinos_disco(_: Autorizado, request: Request) -> dict[str, Any]:
+        """Raíz real del almacén (carpeta del sistema) por disco — para mostrar la
+        ubicación física del original aunque cada corrida haya elegido su carpeta."""
+        from normalizacion.ingesta.pipeline import destinos_por_disco
+
+        return destinos_por_disco(request.app.state.config)
+
     @aplicacion.post("/sistema/carpetas", response_model=RespuestaCarpetas)
     def post_carpetas(
         solicitud: SolicitudCarpetaNueva, _: Autorizado, request: Request

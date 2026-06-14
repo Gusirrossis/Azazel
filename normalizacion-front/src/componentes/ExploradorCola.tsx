@@ -8,14 +8,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   archivosCola,
-  estadoPipeline,
+  destinosPorDisco,
   formatearBytes,
   obtenerFiltro,
   reprocesarErrores,
   resumen,
   type FiltrosCola,
 } from "../api";
-import type { ArchivoCola, FiltroVisible, ResumenCola } from "../tipos";
+import type { ArchivoCola, DestinosDisco, FiltroVisible, ResumenCola } from "../tipos";
 import { describirCausa, describirError, describirMotivo, esCausaDeError, etiquetaTipo } from "../motivos";
 import { formatearEntropia } from "../entropia";
 import Senales from "./Senales";
@@ -46,7 +46,7 @@ function DetalleFila({
 }: {
   archivo: ArchivoCola;
   filtro: FiltroVisible | null;
-  destinos: Record<string, string> | null;
+  destinos: DestinosDisco | null;
   onCerrar: () => void;
 }) {
   const tier = typeof archivo.senales?.tier === "string" ? archivo.senales.tier : null;
@@ -107,6 +107,7 @@ function DetalleFila({
       <UbicacionOriginal
         hash={archivo.hash_contenido}
         rutaDecision={archivo.ruta_decision}
+        discoId={archivo.disco_id}
         destinos={destinos}
       />
     </aside>
@@ -130,7 +131,7 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
   const [aviso, setAviso] = useState<string | null>(null);
   const [seleccionado, setSeleccionado] = useState<ArchivoCola | null>(null);
   const [filtro, setFiltro] = useState<FiltroVisible | null>(null);
-  const [destinos, setDestinos] = useState<Record<string, string> | null>(null);
+  const [destinos, setDestinos] = useState<DestinosDisco | null>(null);
 
   // Umbrales del filtro vigente (colorear entropía, zonas del gauge, franja gris)
   // y destinos del almacén (ubicación del original en el detalle).
@@ -145,8 +146,8 @@ export default function ExploradorCola({ modo }: { modo: "todos" | "errores" }) 
         setConteosEstado(conteos);
       })
       .catch(() => setConteosEstado({}));
-    estadoPipeline()
-      .then((e) => setDestinos(e.destinos))
+    destinosPorDisco()
+      .then(setDestinos)
       .catch(() => setDestinos(null));
   }, []);
 

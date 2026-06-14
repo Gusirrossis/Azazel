@@ -103,6 +103,18 @@ export interface RespuestaCarpetas {
   carpetas: string[];
 }
 
+// ----- ubicación física del original: raíz del almacén por disco -----
+
+export interface RaicesAlmacen {
+  hot: string; // raíz del almacén permanente (carpeta del sistema o minio://)
+  frio: string; // raíz del frío reversible
+}
+
+export interface DestinosDisco {
+  global: RaicesAlmacen; // respaldo (almacén del .env) para discos sin corrida
+  por_disco: Record<string, RaicesAlmacen>; // raíz REAL por disco (su corrida)
+}
+
 // ----- tablero de Inicio (GET /panel: todos los agregados en una llamada) -----
 
 export interface TotalesTablero {
