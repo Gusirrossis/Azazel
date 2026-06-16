@@ -109,16 +109,78 @@ def aplicar_proyeccion(canonico: dict[str, Any], definicion: dict[str, Any]) -> 
 
 # ----------------------------------------------------------- recetas semilla
 
-# fz1: la persona canónica tal cual (lo que ya produce la resolución).
+# canónica: la persona tal cual la produce la resolución (referencia interna).
+RECETA_CANONICA = {
+    "clave": "canonica",
+    "clase": "proyeccion",
+    "tipo": "persona",
+    "nombre": "Canónica (interna)",
+    "descripcion": "La persona tal cual la produce la resolución, con todos sus campos internos.",
+    "definicion": {"passthrough": True},
+    "version": "v1",
+    "editable": False,  # base de referencia; se clona para crear variantes
+}
+
+# fz1: produce el esquema Fz1 por persona (nombre/direccion anidados). Los campos
+# que aún no se resuelven (es_objetivo, redes, vincular_con, notas) llegan en E5.
 RECETA_FZ1 = {
     "clave": "fz1",
     "clase": "proyeccion",
     "tipo": "persona",
-    "nombre": "Fz1 (canónica)",
-    "descripcion": "La ficha de persona tal cual la produce la resolución (esquema Fz1).",
-    "definicion": {"passthrough": True},
+    "nombre": "Fz1 (tactical)",
+    "descripcion": "Ficha de persona en el esquema Fz1 (nombre y dirección anidados, figura).",
+    "definicion": {
+        "salida": [
+            {"path": "nombre.nombre1", "de": "nombre.nombre1"},
+            {"path": "nombre.nombre2", "de": "nombre.nombre2"},
+            {"path": "nombre.apellido1", "de": "nombre.apellido1"},
+            {"path": "nombre.apellido2", "de": "nombre.apellido2"},
+            {"path": "alias", "de": "alias"},
+            {"path": "edad", "de": "edad"},
+            {"path": "curp", "de": "curp"},
+            {"path": "rfc", "de": "rfc"},
+            {"path": "sexo", "de": "sexo"},
+            {"path": "direccion.calle", "de": "direccion.calle"},
+            {"path": "direccion.numero_exterior", "de": "direccion.numero_exterior"},
+            {"path": "direccion.numero_interior", "de": "direccion.numero_interior"},
+            {"path": "direccion.colonia", "de": "direccion.colonia"},
+            {"path": "direccion.municipio", "de": "direccion.municipio"},
+            {"path": "direccion.codigo_postal", "de": "direccion.codigo_postal"},
+            {"path": "direccion.estado", "de": "direccion.estado"},
+            {"path": "direccion.pais", "de": "direccion.pais"},
+            {"path": "email", "de": "email"},
+            {"path": "telefono", "de": "telefono"},
+            {"path": "relacion", "de": "relacion"},
+            {"path": "figura", "constante": "cube"},
+        ]
+    },
     "version": "v1",
-    "editable": False,  # es la base; se clona para crear variantes
+    "editable": True,
+}
+
+# default: salida plana y neutra (para sistemas que prefieren campos al ras).
+RECETA_DEFAULT = {
+    "clave": "default",
+    "clase": "proyeccion",
+    "tipo": "persona",
+    "nombre": "Default (plano)",
+    "descripcion": "Salida plana y neutra: los campos clave al ras, sin anidar.",
+    "definicion": {
+        "salida": [
+            {"path": "nombre_completo", "de": "nombre_completo"},
+            {"path": "curp", "de": "curp"},
+            {"path": "rfc", "de": "rfc"},
+            {"path": "sexo", "de": "sexo"},
+            {"path": "fecha_nacimiento", "de": "normalizados.normalized_dob"},
+            {"path": "edad", "de": "edad"},
+            {"path": "estado_nacimiento", "de": "normalizados.normalized_estado"},
+            {"path": "municipio", "de": "direccion.municipio"},
+            {"path": "email", "de": "email"},
+            {"path": "telefono", "de": "telefono"},
+        ]
+    },
+    "version": "v1",
+    "editable": True,
 }
 
 # Ejemplo de OTRO sistema consumidor: esquema plano, en inglés, sexo male/female.
@@ -146,4 +208,4 @@ RECETA_SISTEMA_PLANO = {
     "editable": True,
 }
 
-SEMILLAS = (RECETA_FZ1, RECETA_SISTEMA_PLANO)
+SEMILLAS = (RECETA_CANONICA, RECETA_FZ1, RECETA_DEFAULT, RECETA_SISTEMA_PLANO)
