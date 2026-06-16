@@ -60,6 +60,18 @@ def obtener_entidad(config: Config, entidad_id: str) -> dict[str, Any] | None:
     return _a_dict(f) if f else None
 
 
+def fijar_activo(config: Config, entidad_id: str, activo: bool) -> bool:
+    """Contingencia LFPDPPP: desactiva (soft-delete) o reactiva una entidad. NUNCA
+    borra la fila — la deja invisible para consultas y auditable."""
+    with psycopg.connect(config.postgres_dsn) as conn:
+        cur = conn.execute(
+            "UPDATE entidades SET activo = %s, actualizado_en = now() WHERE entidad_id = %s",
+            (activo, entidad_id),
+        )
+        conn.commit()
+    return cur.rowcount == 1
+
+
 def estadisticas(config: Config) -> dict[str, Any]:
     with psycopg.connect(config.postgres_dsn) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM entidades WHERE activo = true").fetchone()[0])  # type: ignore[index]

@@ -30,6 +30,7 @@ from normalizacion.api.esquemas import (
     RespuestaTablero,
     SolicitudProponerMapeo,
     SolicitudProyectar,
+    SolicitudReceta,
     ResumenPanel,
     RespuestaBusqueda,
     RespuestaCarpetas,
@@ -427,6 +428,42 @@ def crear_app(config: Config) -> FastAPI:
 
         return EstadisticasEntidades.model_validate(estadisticas(request.app.state.config))
 
+    # --- recetas de proyección (DINÁMICAS): antes de /entidades/{id} para no chocar ---
+
+    @aplicacion.get("/entidades/recetas")
+    def get_recetas(
+        _: Autorizado, request: Request, clase: str | None = None
+    ) -> list[dict[str, Any]]:
+        from normalizacion.entidades.recetas_db import listar_recetas
+
+        return listar_recetas(request.app.state.config, clase)
+
+    @aplicacion.put("/entidades/recetas/{clave}")
+    def put_receta(
+        clave: str, solicitud: SolicitudReceta, _: Autorizado, request: Request
+    ) -> dict[str, Any]:
+        """Crea o edita una receta de proyección (esquema de salida de un sistema)."""
+        from normalizacion.entidades.recetas_db import guardar_receta
+
+        if solicitud.clave != clave:
+            raise HTTPException(status_code=400, detail="la clave del cuerpo y la ruta difieren")
+        try:
+            return guardar_receta(request.app.state.config, solicitud.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @aplicacion.delete("/entidades/recetas/{clave}")
+    def delete_receta(clave: str, _: Autorizado, request: Request) -> dict[str, bool]:
+        from normalizacion.entidades.recetas_db import borrar_receta
+
+        try:
+            ok = borrar_receta(request.app.state.config, clave)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not ok:
+            raise HTTPException(status_code=404, detail="receta no encontrada")
+        return {"borrada": True}
+
     @aplicacion.get("/entidades/{entidad_id}", response_model=Entidad)
     def get_entidad(entidad_id: str, _: Autorizado, request: Request) -> Entidad:
         from normalizacion.entidades.consultas import obtener_entidad
@@ -435,6 +472,38 @@ def crear_app(config: Config) -> FastAPI:
         if doc is None:
             raise HTTPException(status_code=404, detail="entidad no encontrada")
         return Entidad.model_validate(doc)
+
+    @aplicacion.get("/entidades/{entidad_id}/proyectar")
+    def get_entidad_proyectada(
+        entidad_id: str, receta: str, _: Autorizado, request: Request
+    ) -> dict[str, Any]:
+        """La MISMA persona canónica, proyectada al esquema de la receta indicada —
+        la prueba visible del dinamismo: distintos sistemas, distintas estructuras."""
+        from normalizacion.entidades.consultas import obtener_entidad
+        from normalizacion.entidades.proyeccion import aplicar_proyeccion
+        from normalizacion.entidades.recetas_db import leer_receta
+
+        ent = obtener_entidad(request.app.state.config, entidad_id)
+        if ent is None:
+            raise HTTPException(status_code=404, detail="entidad no encontrada")
+        rec = leer_receta(request.app.state.config, receta)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="receta no encontrada")
+        return {
+            "receta": receta,
+            "salida": aplicar_proyeccion(ent["campos"], rec["definicion"]),
+        }
+
+    @aplicacion.post("/entidades/{entidad_id}/activo")
+    def post_activo(
+        entidad_id: str, _: Autorizado, request: Request, activo: bool = True
+    ) -> dict[str, bool]:
+        """Contingencia LFPDPPP: desactiva (soft-delete) o reactiva una entidad."""
+        from normalizacion.entidades.consultas import fijar_activo
+
+        if not fijar_activo(request.app.state.config, entidad_id, activo):
+            raise HTTPException(status_code=404, detail="entidad no encontrada")
+        return {"activo": activo}
 
     @aplicacion.post("/entidades/mapeo/proponer")
     def post_proponer_mapeo(
@@ -565,6 +634,18 @@ def crear_app(config: Config) -> FastAPI:
 
         with contextlib.suppress(Exception):  # Postgres puede tardar en estar listo
             marcar_corridas_huerfanas(config)
+
+    @aplicacion.on_event("startup")
+    def _sembrar_recetas() -> None:
+        import contextlib
+
+        import psycopg
+
+        from normalizacion.entidades.recetas_db import seed_recetas
+
+        with contextlib.suppress(Exception):  # la tabla puede no existir aún (migración)
+            with psycopg.connect(config.postgres_dsn) as conn:
+                seed_recetas(conn)
 
     return aplicacion
 

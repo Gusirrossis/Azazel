@@ -194,6 +194,20 @@ class SolicitudProyectar(BaseModel):
     filas: list[dict[str, Any]]
 
 
+class SolicitudReceta(BaseModel):
+    """Crear/editar una receta de PROYECCIÓN (esquema de salida por sistema)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clave: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
+    nombre: str = Field(min_length=1, max_length=120)
+    descripcion: str = ""
+    definicion: dict[str, Any]  # {passthrough:true} | {salida:[{path,de|constante,mapa?}]}
+    version: str = "v1"
+    tipo: str = "persona"
+    clase: str = "proyeccion"
+
+
 # ------------------------------------------------------------------- tablero
 
 

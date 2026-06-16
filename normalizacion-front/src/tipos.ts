@@ -144,6 +144,20 @@ export interface EstadisticasEntidades {
   por_ancla: Record<string, number>;
 }
 
+export interface Receta {
+  clave: string;
+  clase: string;
+  tipo: string;
+  nombre: string;
+  descripcion: string;
+  definicion: Record<string, any>; // {passthrough:true} | {salida:[{path,de|constante,mapa?}]}
+  version: string;
+  activa: boolean;
+  editable: boolean;
+  creado_en: string;
+  actualizado_en: string;
+}
+
 // ----- tablero de Inicio (GET /panel: todos los agregados en una llamada) -----
 
 export interface TotalesTablero {

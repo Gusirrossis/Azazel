@@ -137,3 +137,76 @@ class TestIdentidad:
 
         with pytest.raises(ValueError):
             calcular_entidad_id("persona", AnclaTipo.CURP, "  ")
+
+
+class TestProyeccionDinamica:
+    """La MISMA persona canónica produce DISTINTAS estructuras según la receta."""
+
+    CANON = {
+        "nombre_completo": "Valeria Mendoza Rios", "curp": "CV", "rfc": "RV",
+        "sexo": "M", "edad": "30", "email": "v@example.com", "telefono": "5522334455",
+        "normalizados": {"normalized_dob": "1996-03-14", "normalized_estado": "CDMX"},
+    }
+
+    def test_fz1_passthrough(self) -> None:
+        from normalizacion.entidades.proyeccion import RECETA_FZ1, aplicar_proyeccion
+
+        assert aplicar_proyeccion(self.CANON, RECETA_FZ1["definicion"]) == self.CANON
+
+    def test_otro_sistema_otra_estructura_y_valores(self) -> None:
+        from normalizacion.entidades.proyeccion import (
+            RECETA_SISTEMA_PLANO, aplicar_proyeccion,
+        )
+
+        out = aplicar_proyeccion(self.CANON, RECETA_SISTEMA_PLANO["definicion"])
+        assert out["full_name"] == "Valeria Mendoza Rios"
+        assert out["national_id"] == "CV"
+        assert out["gender"] == "female"  # mapa H/M → male/female
+        assert out["birth_date"] == "1996-03-14"  # de normalizados.normalized_dob
+        assert out["contact"]["email"] == "v@example.com"  # anidación distinta
+        assert out["birth_state"] == "CDMX"
+        assert out["source"] == "azazel"  # constante
+        assert "curp" not in out and "normalizados" not in out  # otra forma
+
+    def test_paths_anidados(self) -> None:
+        from normalizacion.entidades.proyeccion import get_path, set_path
+
+        d: dict = {}
+        set_path(d, "a.b.c", 7)
+        assert get_path(d, "a.b.c") == 7 and get_path(d, "a.x") is None
+
+
+class TestRecetasCRUD:
+    def test_seed_lista_fz1_y_ejemplo(self, config: Config) -> None:
+        from normalizacion.entidades.recetas_db import listar_recetas
+
+        claves = {r["clave"] for r in listar_recetas(config)}
+        assert {"fz1", "sistema_plano"} <= claves
+
+    def test_crear_editar_borrar(self, config: Config) -> None:
+        from normalizacion.entidades.recetas_db import (
+            borrar_receta, guardar_receta, leer_receta,
+        )
+
+        nueva = {"clave": "mi_sistema", "nombre": "Mío", "descripcion": "",
+                 "definicion": {"salida": [{"path": "id", "de": "curp"}]},
+                 "version": "v1", "tipo": "persona", "clase": "proyeccion"}
+        guardar_receta(config, nueva)
+        assert leer_receta(config, "mi_sistema")["nombre"] == "Mío"
+        assert borrar_receta(config, "mi_sistema") is True
+        assert leer_receta(config, "mi_sistema") is None
+
+    def test_definicion_invalida_rechazada(self, config: Config) -> None:
+        from normalizacion.entidades.recetas_db import guardar_receta
+
+        with pytest.raises(ValueError):
+            guardar_receta(config, {"clave": "mala", "nombre": "x",
+                                    "definicion": {"foo": 1}})
+
+    def test_base_fz1_no_editable(self, config: Config) -> None:
+        from normalizacion.entidades.recetas_db import guardar_receta, listar_recetas
+
+        listar_recetas(config)  # siembra fz1
+        with pytest.raises(ValueError):
+            guardar_receta(config, {"clave": "fz1", "nombre": "hack",
+                                    "definicion": {"passthrough": True}})

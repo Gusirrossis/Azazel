@@ -17,6 +17,7 @@ import type {
   Entidad,
   RespuestaEntidades,
   EstadisticasEntidades,
+  Receta,
 } from "./tipos";
 
 const BASE = "/api";
@@ -84,6 +85,39 @@ export function entidadDetalle(id: string): Promise<Entidad> {
 
 export function entidadesStats(): Promise<EstadisticasEntidades> {
   return pedir<EstadisticasEntidades>("/entidades/estadisticas");
+}
+
+// Misma persona, distintas estructuras: proyección dinámica por receta.
+export function entidadProyectar(
+  id: string,
+  receta: string,
+): Promise<{ receta: string; salida: Record<string, any> }> {
+  return pedir(`/entidades/${encodeURIComponent(id)}/proyectar?receta=${encodeURIComponent(receta)}`);
+}
+
+export function entidadActivo(id: string, activo: boolean): Promise<{ activo: boolean }> {
+  return pedir(`/entidades/${encodeURIComponent(id)}/activo?activo=${activo}`, { method: "POST" });
+}
+
+// ----- recetas de proyección (editables) -----
+
+export function recetas(clase?: string): Promise<Receta[]> {
+  return pedir<Receta[]>(`/entidades/recetas${clase ? `?clase=${clase}` : ""}`);
+}
+
+export function guardarReceta(r: Partial<Receta>): Promise<Receta> {
+  return pedir<Receta>(`/entidades/recetas/${encodeURIComponent(r.clave!)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      clave: r.clave, nombre: r.nombre, descripcion: r.descripcion ?? "",
+      definicion: r.definicion, version: r.version ?? "v1",
+      tipo: r.tipo ?? "persona", clase: r.clase ?? "proyeccion",
+    }),
+  });
+}
+
+export function borrarReceta(clave: string): Promise<{ borrada: boolean }> {
+  return pedir(`/entidades/recetas/${encodeURIComponent(clave)}`, { method: "DELETE" });
 }
 
 export type AmbitoCarpetas = "datos" | "destino";

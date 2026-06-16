@@ -1991,3 +1991,60 @@ button.chip-estado.activo .chip-clave {
   padding: 6px 9px;
   overflow-wrap: anywhere;
 }
+
+/* ===== entidades: gestión de recetas (proyección dinámica) ===== */
+.recetas-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 16px;
+  padding: 14px 18px 18px;
+  align-items: start;
+}
+.recetas-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.receta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--line);
+  border-left: 3px solid var(--gold-soft);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.receta-item:hover { background: var(--gold-faint); }
+.receta-item.activa { box-shadow: inset 0 0 0 1px var(--gold-soft); background: var(--gold-faint); }
+.receta-nombre { font-size: 16px; color: var(--ink); font-weight: 600; }
+.receta-clave { font-family: "Cascadia Code", monospace; font-size: 12.5px; color: var(--silver); }
+.receta-desc { font-size: 13px; color: var(--silver); font-style: italic; }
+.receta-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.json-receta {
+  width: 100%;
+  min-height: 280px;
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  padding: 12px;
+  resize: vertical;
+}
+.json-receta:disabled { opacity: 0.6; }
+.select-receta {
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 8px 12px;
+  font-size: 14.5px;
+  min-width: 260px;
+}
