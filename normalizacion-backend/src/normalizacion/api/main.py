@@ -559,6 +559,21 @@ def crear_app(config: Config) -> FastAPI:
         r = proyectar(request.app.state.config, receta, solicitud.asignacion, solicitud.filas)
         return r.como_dict()
 
+    @aplicacion.post("/entidades/backfill")
+    def post_backfill(
+        _: Autorizado, request: Request, lote: int = 500, max_docs: int = 2000,
+        reiniciar: bool = False,
+    ) -> dict[str, Any]:
+        """E4 (1er paso): resuelve entidades de los registros YA INDEXADOS que traen
+        CURP/RFC. Acotado por max_docs para no bloquear la API; reanudable (el cursor
+        de avance vive en `control`, así que re-llamar continúa donde quedó)."""
+        from normalizacion.entidades.backfill import backfill_desde_indice
+
+        r = backfill_desde_indice(
+            request.app.state.config, lote=lote, max_docs=max_docs, reiniciar=reiniciar,
+        )
+        return r.como_dict()
+
     # --------------------------------------------------------- filtro editable
 
     def _filtro_visible(filtro: PerillasFiltro) -> FiltroVisible:

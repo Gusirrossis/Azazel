@@ -105,6 +105,18 @@ export function exportarEntidades(receta: string, limite = 10000): Promise<unkno
   return pedir(`/entidades/exportar?receta=${encodeURIComponent(receta)}&limite=${limite}`);
 }
 
+export interface ResumenBackfill {
+  docs: number; con_persona: number; sin_persona: number; anclas: number;
+  entidades_nuevas: number; entidades_fusionadas: number; errores: number;
+  cursor: string | null;
+}
+
+// E4 (1er paso): resuelve entidades de los registros YA INDEXADOS (con CURP/RFC).
+// Acotado por lote; reanudable (re-llamar continúa donde quedó).
+export function backfillEntidades(maxDocs = 2000): Promise<ResumenBackfill> {
+  return pedir<ResumenBackfill>(`/entidades/backfill?max_docs=${maxDocs}`, { method: "POST" });
+}
+
 // ----- recetas de proyección (editables) -----
 
 export function recetas(clase?: string): Promise<Receta[]> {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import typer
 
 from normalizacion import __version__
@@ -217,6 +219,29 @@ def aplicar_indice_cmd(
 
     aplicar_indice(cargar_config(), Path(deploy))
     typer.echo("Template + ISM + indice aplicados.")
+
+
+@app.command("backfill-entidades")
+def backfill_entidades_cmd(
+    lote: int = typer.Option(500, help="Documentos por lote (1-2000)"),
+    max_docs: int | None = typer.Option(None, help="Tope de docs en esta corrida (sin tope = drena todo)"),
+    reiniciar: bool = typer.Option(False, "--reiniciar", help="Ignora el cursor guardado y empieza de cero"),
+) -> None:
+    """Resuelve entidades de los registros YA INDEXADOS (los que traen CURP/RFC).
+
+    Recorre el indice de OpenSearch e idempotentemente crea/fusiona personas por su
+    ancla. Reanudable: guarda el avance en `control` y re-ejecutar no duplica. Pensado
+    para correr en la Mac sobre el lago ya indexado."""
+    from normalizacion.entidades.backfill import backfill_desde_indice
+
+    def _tic(r: Any) -> None:
+        typer.echo(f"  …{r.docs} docs · {r.con_persona} con persona · "
+                   f"{r.entidades_nuevas} nuevas · {r.entidades_fusionadas} fusionadas")
+
+    r = backfill_desde_indice(
+        cargar_config(), lote=lote, max_docs=max_docs, reiniciar=reiniciar, on_progress=_tic,
+    )
+    typer.secho(f"\nBackfill: {r.como_dict()}", fg="green")
 
 
 @app.command()

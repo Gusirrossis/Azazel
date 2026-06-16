@@ -9,8 +9,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  borrarReceta, entidadActivo, entidadProyectar, entidades as pedirEntidades,
-  entidadesStats, exportarEntidades, guardarReceta, recetas as pedirRecetas,
+  backfillEntidades, borrarReceta, entidadActivo, entidadProyectar,
+  entidades as pedirEntidades, entidadesStats, exportarEntidades, guardarReceta,
+  recetas as pedirRecetas,
 } from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
 
@@ -224,10 +225,26 @@ export default function Entidades() {
   const [cargando, setCargando] = useState(false);
   const [recetaExp, setRecetaExp] = useState("fz1_bundle");
   const [exportando, setExportando] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
   // Recetas de COLECCIÓN (arman el archivo completo) vs POR-PERSONA (1 ficha).
   const colecciones = recetasDisp.filter((r) => r.definicion && "coleccion" in r.definicion);
   const recetasPersona = recetasDisp.filter((r) => !(r.definicion && "coleccion" in r.definicion));
+
+  const procesarIndexados = async () => {
+    setBackfilling(true); setBackfillMsg(null);
+    try {
+      const r = await backfillEntidades(2000);
+      setBackfillMsg(
+        `Lote: ${r.docs} docs revisados · ${r.con_persona} con persona · ` +
+        `${r.entidades_nuevas} nuevas, ${r.entidades_fusionadas} fusionadas. ` +
+        (r.docs >= 2000 ? "Hay más: vuelve a pulsar para seguir." : "Índice al día."),
+      );
+      cargar(); entidadesStats().then(setStats).catch(() => {});
+    } catch (e) { setBackfillMsg(`error: ${e}`); }
+    finally { setBackfilling(false); }
+  };
 
   const descargar = async () => {
     setExportando(true);
@@ -277,6 +294,15 @@ export default function Entidades() {
             </div>
           </div>
           {error && <div className="banner-error">{error}</div>}
+          <div className="explorador-filtros" style={{ paddingTop: 0 }}>
+            <div className="explorador-campos">
+              <span className="panel-nota" style={{ margin: 0, alignSelf: "center" }}>Registros ya indexados:</span>
+              <button className="secundario" disabled={backfilling} onClick={procesarIndexados}>
+                {backfilling ? "procesando…" : "⟳ Procesar ya indexados (CURP/RFC)"}
+              </button>
+            </div>
+          </div>
+          {backfillMsg && <div className="banner-aviso">{backfillMsg}</div>}
           {colecciones.length > 0 && (
             <div className="explorador-filtros" style={{ paddingTop: 0 }}>
               <div className="explorador-campos">

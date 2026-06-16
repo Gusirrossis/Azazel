@@ -237,6 +237,56 @@ class TestProyeccionDinamica:
         validar_definicion({"passthrough": True})  # válida, no lanza
 
 
+class TestBackfillExtraccion:
+    """Detección de persona por CURP/RFC en un documento indexado (lógica pura)."""
+
+    RFC_OK = "MERV960314AB1"  # física 13, fecha válida (homoclave no se verifica aún)
+
+    def test_curp_valida_en_texto(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        doc = {"archivo_id": "a1", "ruta_original": "/x.pdf", "disco_id": "d1",
+               "texto_indexable": f"Titular CURP {CURP_VALERIA} domicilio conocido"}
+        filas, proc = personas_de_doc(doc)
+        assert filas == [{"curp": CURP_VALERIA}]
+        assert proc["archivo_id"] == "a1" and proc["fuente"] == "backfill_indice"
+
+    def test_curp_invalida_se_ignora(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        mala = CURP_VALERIA[:-1] + ("9" if CURP_VALERIA[-1] != "9" else "8")  # rompe el dígito
+        filas, _ = personas_de_doc({"texto_indexable": f"ruido {mala} ruido"})
+        assert filas == []
+
+    def test_una_curp_un_rfc_misma_persona(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        doc = {"texto_indexable": f"{CURP_VALERIA} y su RFC {self.RFC_OK}."}
+        filas, _ = personas_de_doc(doc)
+        assert filas == [{"curp": CURP_VALERIA, "rfc": self.RFC_OK}]
+
+    def test_varias_curps_no_mezclan_rfc(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        otra = _curp("FUCD940519HDFNNG0")
+        doc = {"texto_indexable": f"{CURP_VALERIA} ... {otra} ... RFC {self.RFC_OK}"}
+        filas, _ = personas_de_doc(doc)
+        assert {f["curp"] for f in filas} == {CURP_VALERIA, otra}
+        assert all("rfc" not in f for f in filas)  # ambiguo: no se asigna el RFC
+
+    def test_solo_rfc_sin_curp(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        filas, _ = personas_de_doc({"texto_indexable": f"Contribuyente {self.RFC_OK}"})
+        assert filas == [{"rfc": self.RFC_OK}]
+
+    def test_sin_ancla_no_es_persona(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        filas, _ = personas_de_doc({"texto_indexable": "factura de luz, sin identificadores"})
+        assert filas == []
+
+
 class TestRecetasCRUD:
     def test_seed_lista_recetas(self, config: Config) -> None:
         from normalizacion.entidades.recetas_db import listar_recetas
