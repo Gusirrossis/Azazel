@@ -464,6 +464,21 @@ def crear_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail="receta no encontrada")
         return {"borrada": True}
 
+    @aplicacion.get("/entidades/exportar")
+    def get_entidades_exportar(
+        receta: str, _: Autorizado, request: Request, limite: int = 10000
+    ) -> Any:
+        """Exporta TODAS las personas activas a un SOLO archivo con la receta indicada.
+        Con una receta de colección (p.ej. fz1_bundle) produce el archivo Fz1 completo
+        (sobre _metadata + personas[] + _mapeo). Devuelve el archivo tal cual."""
+        from normalizacion.entidades.consultas import exportar
+        from normalizacion.entidades.recetas_db import leer_receta
+
+        rec = leer_receta(request.app.state.config, receta)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="receta no encontrada")
+        return exportar(request.app.state.config, rec["definicion"], limite=limite)
+
     @aplicacion.get("/entidades/{entidad_id}", response_model=Entidad)
     def get_entidad(entidad_id: str, _: Autorizado, request: Request) -> Entidad:
         from normalizacion.entidades.consultas import obtener_entidad
@@ -480,7 +495,7 @@ def crear_app(config: Config) -> FastAPI:
         """La MISMA persona canónica, proyectada al esquema de la receta indicada —
         la prueba visible del dinamismo: distintos sistemas, distintas estructuras."""
         from normalizacion.entidades.consultas import obtener_entidad
-        from normalizacion.entidades.proyeccion import aplicar_proyeccion
+        from normalizacion.entidades.proyeccion import aplicar_proyeccion, es_coleccion
         from normalizacion.entidades.recetas_db import leer_receta
 
         ent = obtener_entidad(request.app.state.config, entidad_id)
@@ -489,6 +504,12 @@ def crear_app(config: Config) -> FastAPI:
         rec = leer_receta(request.app.state.config, receta)
         if rec is None:
             raise HTTPException(status_code=404, detail="receta no encontrada")
+        if es_coleccion(rec["definicion"]):
+            raise HTTPException(
+                status_code=400,
+                detail="esa receta arma el ARCHIVO completo (colección); para una persona "
+                       "usa una receta por-ítem, o exporta con GET /entidades/exportar",
+            )
         return {
             "receta": receta,
             "salida": aplicar_proyeccion(ent["campos"], rec["definicion"]),

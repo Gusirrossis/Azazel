@@ -99,6 +99,12 @@ export function entidadActivo(id: string, activo: boolean): Promise<{ activo: bo
   return pedir(`/entidades/${encodeURIComponent(id)}/activo?activo=${activo}`, { method: "POST" });
 }
 
+// Exporta TODAS las personas a un solo archivo con la receta dada (p.ej. fz1_bundle
+// produce el archivo Fz1 completo: _metadata + personas[] + _mapeo).
+export function exportarEntidades(receta: string, limite = 10000): Promise<unknown> {
+  return pedir(`/entidades/exportar?receta=${encodeURIComponent(receta)}&limite=${limite}`);
+}
+
 // ----- recetas de proyección (editables) -----
 
 export function recetas(clase?: string): Promise<Receta[]> {

@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   borrarReceta, entidadActivo, entidadProyectar, entidades as pedirEntidades,
-  entidadesStats, guardarReceta, recetas as pedirRecetas,
+  entidadesStats, exportarEntidades, guardarReceta, recetas as pedirRecetas,
 } from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
 
@@ -31,11 +31,19 @@ function DetalleEntidad({
   const c = e.campos ?? {};
   const nom = c.nombre ?? {};
   const norm = c.normalizados ?? {};
-  const [recetaSel, setRecetaSel] = useState("fz1");
+  const [recetaSel, setRecetaSel] = useState(recetasDisp[0]?.clave ?? "");
   const [proyectado, setProyectado] = useState<Record<string, unknown> | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
 
+  // Mantén una receta válida seleccionada aunque la lista llegue tarde o cambie.
   useEffect(() => {
+    if (recetasDisp.length && !recetasDisp.some((r) => r.clave === recetaSel)) {
+      setRecetaSel(recetasDisp[0].clave);
+    }
+  }, [recetasDisp, recetaSel]);
+
+  useEffect(() => {
+    if (!recetaSel) { setProyectado(null); return; }
     entidadProyectar(e.entidad_id, recetaSel)
       .then((r) => setProyectado(r.salida))
       .catch(() => setProyectado(null));
@@ -176,7 +184,7 @@ function GestionRecetas() {
               <input value={nuevaClave} placeholder="clave (a-z0-9_-)" onChange={(e) => setNuevaClave(e.target.value)} />
               <input value={nuevoNombre} placeholder="nombre" onChange={(e) => setNuevoNombre(e.target.value)} />
             </div>
-            <p className="panel-nota">definición: {"{ passthrough: true }"} para la canónica, o {"{ salida: [{ path, de | constante, mapa? }] }"} para transformar.</p>
+            <p className="panel-nota">definición: {"{ passthrough: true }"} = canónica; {"{ salida: [{ path, de | constante, mapa? }] }"} = transformar 1 persona; {"{ sobre, coleccion, item }"} = archivo completo (exportable).</p>
             <textarea className="json-receta" value={editJson} onChange={(e) => setEditJson(e.target.value)} spellCheck={false} />
             <div className="filtro-acciones">
               <button className="primario" disabled={!nuevaClave.trim() || !nuevoNombre.trim()} onClick={() => guardar(nuevaClave.trim(), nuevoNombre.trim())}>Crear</button>
@@ -214,6 +222,25 @@ export default function Entidades() {
   const [recetasDisp, setRecetasDisp] = useState<Receta[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
+  const [recetaExp, setRecetaExp] = useState("fz1_bundle");
+  const [exportando, setExportando] = useState(false);
+
+  // Recetas de COLECCIÓN (arman el archivo completo) vs POR-PERSONA (1 ficha).
+  const colecciones = recetasDisp.filter((r) => r.definicion && "coleccion" in r.definicion);
+  const recetasPersona = recetasDisp.filter((r) => !(r.definicion && "coleccion" in r.definicion));
+
+  const descargar = async () => {
+    setExportando(true);
+    try {
+      const archivo = await exportarEntidades(recetaExp);
+      const blob = new Blob([JSON.stringify(archivo, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${recetaExp}.json`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(String(e)); }
+    finally { setExportando(false); }
+  };
 
   const cargar = useCallback((pagina: string | null = null) => {
     setCargando(true);
@@ -250,6 +277,17 @@ export default function Entidades() {
             </div>
           </div>
           {error && <div className="banner-error">{error}</div>}
+          {colecciones.length > 0 && (
+            <div className="explorador-filtros" style={{ paddingTop: 0 }}>
+              <div className="explorador-campos">
+                <span className="panel-nota" style={{ margin: 0, alignSelf: "center" }}>Exportar archivo completo:</span>
+                <select className="select-receta" value={recetaExp} onChange={(e) => setRecetaExp(e.target.value)}>
+                  {colecciones.map((r) => <option key={r.clave} value={r.clave}>{r.nombre} ({r.clave})</option>)}
+                </select>
+                <button className="secundario" disabled={exportando} onClick={descargar}>{exportando ? "exportando…" : "⬇ Descargar JSON"}</button>
+              </div>
+            </div>
+          )}
           <div className="resultados-resumen"><b>{total.toLocaleString()}</b> personas resueltas — cada una deduplicada por su ancla fuerte</div>
           <table>
             <thead><tr><th>Nombre</th><th>CURP</th><th>Sexo</th><th>Edad</th><th>Estado</th><th>Ancla</th><th>Fuentes</th></tr></thead>
@@ -273,7 +311,7 @@ export default function Entidades() {
             </tbody>
           </table>
           {cursor && <button className="cargar-mas" disabled={cargando} onClick={() => cargar(cursor)}>{cargando ? "cargando…" : `cargar más (${lista.length} de ${total.toLocaleString()})`}</button>}
-          {sel && <DetalleEntidad e={sel} recetasDisp={recetasDisp} onCerrar={() => setSel(null)} onCambio={() => cargar()} />}
+          {sel && <DetalleEntidad e={sel} recetasDisp={recetasPersona} onCerrar={() => setSel(null)} onCambio={() => cargar()} />}
         </>
       )}
     </section>

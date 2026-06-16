@@ -54,12 +54,8 @@ def set_path(d: dict[str, Any], ruta: str, valor: Any) -> None:
     cur[partes[-1]] = valor
 
 
-def validar_definicion(definicion: dict[str, Any]) -> None:
-    """Valida la forma de una receta de proyección (lanza ValueError si está mal).
-
-    Rechaza: spec sin 'path'; sin exactamente uno de 'de'/'constante'; 'mapa' sin
-    'de' (sería ignorado); rutas mal formadas (vacías, con '.' al inicio/fin o
-    dobles); y colisiones de prefijo (una ruta es prefijo de otra)."""
+def _validar_item(definicion: dict[str, Any]) -> None:
+    """Valida una receta POR-ÍTEM (una persona → un objeto): passthrough o salida."""
     if definicion.get("passthrough"):
         return
     salida = definicion.get("salida")
@@ -87,6 +83,48 @@ def validar_definicion(definicion: dict[str, Any]) -> None:
                 raise ValueError(f"colisión de rutas: '{a}' es prefijo de '{b}'")
 
 
+def es_coleccion(definicion: dict[str, Any]) -> bool:
+    """True si la receta arma el ARCHIVO completo (sobre + arreglo), no una persona."""
+    return isinstance(definicion, dict) and "coleccion" in definicion
+
+
+def validar_definicion(definicion: dict[str, Any]) -> None:
+    """Valida una receta de proyección (lanza ValueError si está mal).
+
+    Dos clases de receta:
+      · POR-ÍTEM: {passthrough} o {salida:[...]} — una persona → un objeto.
+      · COLECCIÓN: {sobre?, coleccion, item} — arma el ARCHIVO completo: el `sobre`
+        (metadatos constantes) más `coleccion` (la clave, p.ej. 'personas') con el
+        arreglo de personas proyectadas con la receta por-ítem `item`."""
+    if not isinstance(definicion, dict):
+        raise ValueError("la receta debe ser un objeto JSON, no una lista ni un valor suelto")
+    # Datos pegados por error (el ARCHIVO de salida en vez de la receta).
+    if any(k in definicion for k in ("personas", "_metadata", "_mapeo_normalizacion_sistema")):
+        raise ValueError(
+            "esto parece DATOS (tiene 'personas'/'_metadata'), no una receta. Una receta "
+            "describe la TRANSFORMACIÓN: {salida:[...]} por persona, o {sobre, coleccion, item} "
+            "para el archivo completo. El archivo de datos se EXPORTA, no se pega aquí."
+        )
+    if es_coleccion(definicion) or "sobre" in definicion or "item" in definicion:
+        col = definicion.get("coleccion")
+        if not isinstance(col, str) or not _RE_RUTA.match(col):
+            raise ValueError("receta de colección: 'coleccion' debe ser una clave válida (p.ej. 'personas')")
+        sobre = definicion.get("sobre", {})
+        if not isinstance(sobre, dict):
+            raise ValueError("receta de colección: 'sobre' debe ser un objeto")
+        if col in sobre:
+            raise ValueError(
+                f"receta de colección: la clave 'coleccion' ('{col}') ya existe en 'sobre'; "
+                "la sobrescribiría — usa otro nombre de colección"
+            )
+        item = definicion.get("item")
+        if not isinstance(item, dict):
+            raise ValueError("receta de colección: falta 'item' (la receta por persona)")
+        _validar_item(item)
+        return
+    _validar_item(definicion)
+
+
 def aplicar_proyeccion(canonico: dict[str, Any], definicion: dict[str, Any]) -> dict[str, Any]:
     """Proyecta la persona canónica al esquema de la receta."""
     if definicion.get("passthrough"):
@@ -107,89 +145,42 @@ def aplicar_proyeccion(canonico: dict[str, Any], definicion: dict[str, Any]) -> 
     return salida
 
 
+def exportar_coleccion(
+    canonicos: list[dict[str, Any]], definicion: dict[str, Any]
+) -> Any:
+    """Arma el ARCHIVO de salida a partir de N personas canónicas.
+
+    Receta de colección ({sobre, coleccion, item}): devuelve el `sobre` con la clave
+    `coleccion` = arreglo de personas proyectadas con `item`. Receta por-ítem usada en
+    lote: devuelve el arreglo plano de personas proyectadas."""
+    if es_coleccion(definicion):
+        item_def = definicion.get("item", {"passthrough": True})
+        arr = [aplicar_proyeccion(c, item_def) for c in canonicos]
+        salida: dict[str, Any] = dict(definicion.get("sobre", {}))
+        salida[definicion["coleccion"]] = arr
+        return salida
+    return [aplicar_proyeccion(c, definicion) for c in canonicos]
+
+
 # ----------------------------------------------------------- recetas semilla
-
-# canónica: la persona tal cual la produce la resolución (referencia interna).
-RECETA_CANONICA = {
-    "clave": "canonica",
-    "clase": "proyeccion",
-    "tipo": "persona",
-    "nombre": "Canónica (interna)",
-    "descripcion": "La persona tal cual la produce la resolución, con todos sus campos internos.",
-    "definicion": {"passthrough": True},
-    "version": "v1",
-    "editable": False,  # base de referencia; se clona para crear variantes
-}
-
-# fz1: produce el esquema Fz1 por persona (nombre/direccion anidados). Los campos
-# que aún no se resuelven (es_objetivo, redes, vincular_con, notas) llegan en E5.
-RECETA_FZ1 = {
-    "clave": "fz1",
-    "clase": "proyeccion",
-    "tipo": "persona",
-    "nombre": "Fz1 (tactical)",
-    "descripcion": "Ficha de persona en el esquema Fz1 (nombre y dirección anidados, figura).",
-    "definicion": {
-        "salida": [
-            {"path": "nombre.nombre1", "de": "nombre.nombre1"},
-            {"path": "nombre.nombre2", "de": "nombre.nombre2"},
-            {"path": "nombre.apellido1", "de": "nombre.apellido1"},
-            {"path": "nombre.apellido2", "de": "nombre.apellido2"},
-            {"path": "alias", "de": "alias"},
-            {"path": "edad", "de": "edad"},
-            {"path": "curp", "de": "curp"},
-            {"path": "rfc", "de": "rfc"},
-            {"path": "sexo", "de": "sexo"},
-            {"path": "direccion.calle", "de": "direccion.calle"},
-            {"path": "direccion.numero_exterior", "de": "direccion.numero_exterior"},
-            {"path": "direccion.numero_interior", "de": "direccion.numero_interior"},
-            {"path": "direccion.colonia", "de": "direccion.colonia"},
-            {"path": "direccion.municipio", "de": "direccion.municipio"},
-            {"path": "direccion.codigo_postal", "de": "direccion.codigo_postal"},
-            {"path": "direccion.estado", "de": "direccion.estado"},
-            {"path": "direccion.pais", "de": "direccion.pais"},
-            {"path": "email", "de": "email"},
-            {"path": "telefono", "de": "telefono"},
-            {"path": "relacion", "de": "relacion"},
-            {"path": "figura", "constante": "cube"},
-        ]
-    },
-    "version": "v1",
-    "editable": True,
-}
-
-# default: salida plana y neutra (para sistemas que prefieren campos al ras).
-RECETA_DEFAULT = {
-    "clave": "default",
-    "clase": "proyeccion",
-    "tipo": "persona",
-    "nombre": "Default (plano)",
-    "descripcion": "Salida plana y neutra: los campos clave al ras, sin anidar.",
-    "definicion": {
-        "salida": [
-            {"path": "nombre_completo", "de": "nombre_completo"},
-            {"path": "curp", "de": "curp"},
-            {"path": "rfc", "de": "rfc"},
-            {"path": "sexo", "de": "sexo"},
-            {"path": "fecha_nacimiento", "de": "normalizados.normalized_dob"},
-            {"path": "edad", "de": "edad"},
-            {"path": "estado_nacimiento", "de": "normalizados.normalized_estado"},
-            {"path": "municipio", "de": "direccion.municipio"},
-            {"path": "email", "de": "email"},
-            {"path": "telefono", "de": "telefono"},
-        ]
-    },
-    "version": "v1",
-    "editable": True,
-}
+#
+# El sistema arranca con SOLO DOS recetas, para que se entienda el mecanismo:
+#   · fz1_bundle  → arma el ARCHIVO Fz1 completo (receta de COLECCIÓN). Es la que
+#                   genera el JSON que pide Fz1. Se usa al EXPORTAR.
+#   · sistema_plano → un EJEMPLO de receta por-persona (otra estructura/idioma) que
+#                   muestra las 4 operaciones: renombrar (de), mapear (mapa),
+#                   constante y anidar (path con puntos).
+# Para crear más, se clonan desde la UI (pestaña Entidades → Recetas). La estructura
+# de salida es DATO editable, no código.
 
 # Ejemplo de OTRO sistema consumidor: esquema plano, en inglés, sexo male/female.
 RECETA_SISTEMA_PLANO = {
     "clave": "sistema_plano",
     "clase": "proyeccion",
     "tipo": "persona",
-    "nombre": "Sistema plano (ejemplo)",
-    "descripcion": "Misma persona, otra estructura: plano, en inglés, gender male/female.",
+    "nombre": "Ejemplo — otra estructura (1 persona)",
+    "descripcion": "EJEMPLO: la misma persona en otra forma (plano, inglés, gender male/female). "
+                   "Muestra renombrar, mapear valores, constante y anidar.",
     "definicion": {
         "salida": [
             {"path": "full_name", "de": "nombre_completo"},
@@ -208,4 +199,68 @@ RECETA_SISTEMA_PLANO = {
     "editable": True,
 }
 
-SEMILLAS = (RECETA_CANONICA, RECETA_FZ1, RECETA_DEFAULT, RECETA_SISTEMA_PLANO)
+# fz1_bundle: el ARCHIVO Fz1 completo (sobre _metadata + personas[] + _mapeo). Es
+# una receta de COLECCIÓN: se usa para EXPORTAR todas las personas a un solo archivo
+# con el formato que pide Fz1, no para proyectar una persona.
+RECETA_FZ1_BUNDLE = {
+    "clave": "fz1_bundle",
+    "clase": "proyeccion",
+    "tipo": "persona",
+    "nombre": "Fz1 archivo completo (exportar)",
+    "descripcion": "El archivo Fz1 entero: _metadata + personas[] + _mapeo. Para EXPORTAR la colección.",
+    "definicion": {
+        "sobre": {
+            "_metadata": {
+                "origen": "Fz1 Tactical Intelligence Platform",
+                "tipo_documento": "Organización de Datos exportada por Azazel (Inyección e Indexación)",
+                "descripcion": "Personas resueltas y normalizadas, listas para inyectar en la base"
+                               " central de Fz1 (central.db / investigations.db).",
+                "version_schema": "11.0",
+            },
+            "_mapeo_normalizacion_sistema": {
+                "campos_normalizados": {
+                    "normalized_name": "Unión del nombre1 + nombre2 + apellido1 + apellido2",
+                    "normalized_dob": "Fecha de nacimiento (o inferida de CURP [dígitos 4 a 9])",
+                    "normalized_curp": "Clave única identificadora (CURP / RFC / Teléfono)",
+                    "normalized_sex": "Género o sexo normalizado (H/M)",
+                    "normalized_estado": "Entidad federativa de procedencia o residencia",
+                    "normalized_mpio": "Municipio, alcaldía o delegación normalizada",
+                },
+            },
+        },
+        "coleccion": "personas",
+        # SOLO los campos que E1-E3 resuelve de verdad (sin placeholders engañosos).
+        # `figura` es un default visual de Fz1. es_objetivo, redes{}, notas y
+        # vincular_con{} se agregan aquí (una línea c/u) cuando E5 los resuelva.
+        "item": {
+            "salida": [
+                {"path": "figura", "constante": "cube"},
+                {"path": "nombre.nombre1", "de": "nombre.nombre1"},
+                {"path": "nombre.nombre2", "de": "nombre.nombre2"},
+                {"path": "nombre.apellido1", "de": "nombre.apellido1"},
+                {"path": "nombre.apellido2", "de": "nombre.apellido2"},
+                {"path": "alias", "de": "alias"},
+                {"path": "edad", "de": "edad"},
+                {"path": "curp", "de": "curp"},
+                {"path": "rfc", "de": "rfc"},
+                {"path": "sexo", "de": "sexo"},
+                {"path": "direccion.calle", "de": "direccion.calle"},
+                {"path": "direccion.numero_exterior", "de": "direccion.numero_exterior"},
+                {"path": "direccion.numero_interior", "de": "direccion.numero_interior"},
+                {"path": "direccion.colonia", "de": "direccion.colonia"},
+                {"path": "direccion.municipio", "de": "direccion.municipio"},
+                {"path": "direccion.codigo_postal", "de": "direccion.codigo_postal"},
+                {"path": "direccion.estado", "de": "direccion.estado"},
+                {"path": "direccion.pais", "de": "direccion.pais"},
+                {"path": "email", "de": "email"},
+                {"path": "telefono", "de": "telefono"},
+                {"path": "relacion", "de": "relacion"},
+            ]
+        },
+    },
+    "version": "v1",
+    "editable": True,
+}
+
+# Arranca con SOLO el archivo Fz1 + un ejemplo. Las demás se crean clonando.
+SEMILLAS = (RECETA_FZ1_BUNDLE, RECETA_SISTEMA_PLANO)

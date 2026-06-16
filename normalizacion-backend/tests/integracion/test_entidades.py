@@ -152,30 +152,6 @@ class TestProyeccionDinamica:
         "normalizados": {"normalized_dob": "1996-03-14", "normalized_estado": "CDMX"},
     }
 
-    def test_canonica_passthrough(self) -> None:
-        from normalizacion.entidades.proyeccion import RECETA_CANONICA, aplicar_proyeccion
-
-        assert aplicar_proyeccion(self.CANON, RECETA_CANONICA["definicion"]) == self.CANON
-
-    def test_fz1_estructura_anidada(self) -> None:
-        from normalizacion.entidades.proyeccion import RECETA_FZ1, aplicar_proyeccion
-
-        out = aplicar_proyeccion(self.CANON, RECETA_FZ1["definicion"])
-        assert out["nombre"]["nombre1"] == "Valeria"  # anidado
-        assert out["direccion"]["municipio"] == "Cuauhtemoc"
-        assert out["sexo"] == "M"  # esquema Fz1 conserva H/M
-        assert out["figura"] == "cube"  # constante
-        assert "nombre_completo" not in out and "normalizados" not in out  # internos fuera
-
-    def test_default_plano(self) -> None:
-        from normalizacion.entidades.proyeccion import RECETA_DEFAULT, aplicar_proyeccion
-
-        out = aplicar_proyeccion(self.CANON, RECETA_DEFAULT["definicion"])
-        assert out["nombre_completo"] == "Valeria Mendoza Rios"  # al ras
-        assert out["fecha_nacimiento"] == "1996-03-14"  # de normalizados.normalized_dob
-        assert out["estado_nacimiento"] == "CDMX"
-        assert "nombre" not in out  # sin anidar
-
     def test_otro_sistema_otra_estructura_y_valores(self) -> None:
         from normalizacion.entidades.proyeccion import (
             RECETA_SISTEMA_PLANO, aplicar_proyeccion,
@@ -206,6 +182,44 @@ class TestProyeccionDinamica:
         with pytest.raises(ValueError):
             set_path(d, "contact.email", "y")  # colisión
 
+    def test_exporta_coleccion_archivo_completo(self) -> None:
+        from normalizacion.entidades.proyeccion import (
+            RECETA_FZ1_BUNDLE, exportar_coleccion,
+        )
+
+        otra = dict(self.CANON, nombre_completo="Roberto Mendoza", curp="CR",
+                    nombre={"nombre1": "Roberto", "apellido1": "Mendoza"})
+        archivo = exportar_coleccion([self.CANON, otra], RECETA_FZ1_BUNDLE["definicion"])
+        assert "_metadata" in archivo and "_mapeo_normalizacion_sistema" in archivo  # sobre
+        assert len(archivo["personas"]) == 2  # arreglo
+        p0 = archivo["personas"][0]
+        assert p0["nombre"]["nombre1"] == "Valeria"  # persona anidada
+        assert p0["figura"] == "cube"  # constante
+        assert "es_objetivo" not in p0  # placeholder engañoso eliminado (llega en E5)
+
+    def test_receta_por_item_en_lote_da_arreglo_plano(self) -> None:
+        from normalizacion.entidades.proyeccion import RECETA_SISTEMA_PLANO, exportar_coleccion
+
+        arr = exportar_coleccion([self.CANON], RECETA_SISTEMA_PLANO["definicion"])
+        assert isinstance(arr, list) and arr[0]["full_name"] == "Valeria Mendoza Rios"
+
+    def test_rechaza_datos_pegados_como_receta(self) -> None:
+        from normalizacion.entidades.proyeccion import validar_definicion
+
+        # el ARCHIVO de salida (con 'personas'/'_metadata') NO es una receta
+        with pytest.raises(ValueError, match="DATOS"):
+            validar_definicion({"_metadata": {}, "personas": [{"curp": "X"}]})
+
+    def test_valida_receta_coleccion(self) -> None:
+        from normalizacion.entidades.proyeccion import RECETA_FZ1_BUNDLE, validar_definicion
+
+        validar_definicion(RECETA_FZ1_BUNDLE["definicion"])  # válida, no lanza
+        with pytest.raises(ValueError):  # coleccion sin item
+            validar_definicion({"coleccion": "personas", "sobre": {}})
+        with pytest.raises(ValueError, match="ya existe en 'sobre'"):  # colisión clave/sobre
+            validar_definicion({"sobre": {"personas": {"x": 1}}, "coleccion": "personas",
+                                "item": {"passthrough": True}})
+
     def test_validacion_rechaza_definiciones_rotas(self) -> None:
         from normalizacion.entidades.proyeccion import validar_definicion
 
@@ -228,7 +242,7 @@ class TestRecetasCRUD:
         from normalizacion.entidades.recetas_db import listar_recetas
 
         claves = {r["clave"] for r in listar_recetas(config)}
-        assert {"canonica", "fz1", "default", "sistema_plano"} <= claves
+        assert claves == {"fz1_bundle", "sistema_plano"}  # arranca SOLO con estas dos
 
     def test_crear_editar_borrar(self, config: Config) -> None:
         from normalizacion.entidades.recetas_db import (
@@ -250,18 +264,20 @@ class TestRecetasCRUD:
             guardar_receta(config, {"clave": "mala", "nombre": "x",
                                     "definicion": {"foo": 1}})
 
-    def test_base_canonica_no_editable(self, config: Config) -> None:
-        from normalizacion.entidades.recetas_db import guardar_receta, listar_recetas
+    def test_receta_no_editable_no_se_sobrescribe(self, config: Config) -> None:
+        from normalizacion.entidades.recetas_db import guardar_receta
 
-        listar_recetas(config)  # siembra la base canonica
+        # una receta marcada no editable queda protegida contra sobrescritura
+        guardar_receta(config, {"clave": "bloqueada", "nombre": "Base",
+                                "definicion": {"passthrough": True}, "editable": False})
         with pytest.raises(ValueError):
-            guardar_receta(config, {"clave": "canonica", "nombre": "hack",
+            guardar_receta(config, {"clave": "bloqueada", "nombre": "hack",
                                     "definicion": {"passthrough": True}})
 
-    def test_fz1_si_es_editable(self, config: Config) -> None:
+    def test_semillas_editables(self, config: Config) -> None:
         from normalizacion.entidades.recetas_db import guardar_receta, leer_receta, listar_recetas
 
-        listar_recetas(config)  # siembra fz1 (editable)
-        guardar_receta(config, {"clave": "fz1", "nombre": "Fz1 mod",
+        listar_recetas(config)  # siembra fz1_bundle + sistema_plano (ambas editables)
+        guardar_receta(config, {"clave": "sistema_plano", "nombre": "Ej. mod",
                                 "definicion": {"salida": [{"path": "curp", "de": "curp"}]}})
-        assert leer_receta(config, "fz1")["nombre"] == "Fz1 mod"
+        assert leer_receta(config, "sistema_plano")["nombre"] == "Ej. mod"

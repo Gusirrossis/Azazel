@@ -72,6 +72,22 @@ def fijar_activo(config: Config, entidad_id: str, activo: bool) -> bool:
     return cur.rowcount == 1
 
 
+def exportar(config: Config, definicion: dict[str, Any], *, limite: int = 10000) -> Any:
+    """Carga las personas ACTIVAS y arma el ARCHIVO de salida con la receta dada.
+
+    Con una receta de colección (p.ej. fz1_bundle) devuelve el archivo completo
+    (sobre + arreglo de personas); con una receta por-ítem, el arreglo plano."""
+    from .proyeccion import exportar_coleccion
+
+    limite = max(1, min(limite, 100_000))
+    with psycopg.connect(config.postgres_dsn) as conn:
+        filas = conn.execute(
+            "SELECT campos FROM entidades WHERE activo = true ORDER BY entidad_id LIMIT %s",
+            (limite,),
+        ).fetchall()
+    return exportar_coleccion([f[0] for f in filas], definicion)
+
+
 def estadisticas(config: Config) -> dict[str, Any]:
     with psycopg.connect(config.postgres_dsn) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM entidades WHERE activo = true").fetchone()[0])  # type: ignore[index]
