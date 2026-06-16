@@ -14,6 +14,9 @@ import type {
   SolicitudBusqueda,
   SolicitudFiltro,
   DestinosDisco,
+  Entidad,
+  RespuestaEntidades,
+  EstadisticasEntidades,
 } from "./tipos";
 
 const BASE = "/api";
@@ -58,6 +61,29 @@ export function resumen(): Promise<ResumenPanel> {
 
 export function obtenerTablero(): Promise<RespuestaTablero> {
   return pedir<RespuestaTablero>("/panel");
+}
+
+// ----- entidades (Fase 2) -----
+
+export interface FiltrosEntidades {
+  nombre?: string;
+  curp?: string;
+  cursor?: string;
+  limite?: number;
+}
+
+export function entidades(f: FiltrosEntidades = {}): Promise<RespuestaEntidades> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) if (v) p.set(k, String(v));
+  return pedir<RespuestaEntidades>(`/entidades?${p.toString()}`);
+}
+
+export function entidadDetalle(id: string): Promise<Entidad> {
+  return pedir<Entidad>(`/entidades/${encodeURIComponent(id)}`);
+}
+
+export function entidadesStats(): Promise<EstadisticasEntidades> {
+  return pedir<EstadisticasEntidades>("/entidades/estadisticas");
 }
 
 export type AmbitoCarpetas = "datos" | "destino";

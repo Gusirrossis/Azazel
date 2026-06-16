@@ -144,6 +144,56 @@ class RespuestaCarpetas(BaseModel):
     carpetas: list[str]
 
 
+# --------------------------------------------------------- entidades (Fase 2)
+
+
+class Entidad(BaseModel):
+    """Persona canónica resuelta (esquema Fz1 en `campos`)."""
+
+    entidad_id: str
+    tipo: str
+    ancla_tipo: str
+    ancla_valor: str
+    campos: dict[str, Any]
+    confianza: float
+    version_receta: str
+    version_resolucion: str
+    activo: bool
+    procedencias: list[dict[str, Any]]
+    creado_en: Any
+    actualizado_en: Any
+
+
+class RespuestaEntidades(BaseModel):
+    total: int
+    entidades: list[Entidad]
+    cursor: str | None
+
+
+class EstadisticasEntidades(BaseModel):
+    total: int
+    con_curp: int
+    por_ancla: dict[str, int]
+
+
+class SolicitudProponerMapeo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: str = "persona"
+    columnas: list[str]
+    muestras: dict[str, list[str]] | None = None
+
+
+class SolicitudProyectar(BaseModel):
+    """Proyecta filas ya mapeadas a entidades (resolución por ancla)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: str = "persona"
+    asignacion: dict[str, str]  # {columna: campo}
+    filas: list[dict[str, Any]]
+
+
 # ------------------------------------------------------------------- tablero
 
 

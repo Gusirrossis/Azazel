@@ -50,6 +50,38 @@ def estado() -> None:
 
 
 @app.command()
+def proyectar(
+    csv: str = typer.Argument(help="CSV con filas de personas a proyectar a entidades"),
+    tipo: str = typer.Option("persona", help="Tipo de entidad (receta)"),
+    umbral: float = typer.Option(0.6, help="Confianza mínima para auto-mapear una columna"),
+) -> None:
+    """E2+E3: lee un CSV, PROPONE el mapeo columna→campo, lo aplica y proyecta a
+    entidades canónicas resueltas por ancla (CURP/RFC/email). Idempotente."""
+    import polars as pl
+
+    from normalizacion.entidades import mapeo as M
+    from normalizacion.entidades.pipeline import proyectar as _proyectar
+    from normalizacion.entidades.receta import obtener_receta
+
+    config = cargar_config()
+    receta = obtener_receta(tipo)
+    df = pl.read_csv(csv, infer_schema_length=0)  # todo como texto
+    columnas = df.columns
+    muestras = {c: df[c].head(20).to_list() for c in columnas}
+    propuestas = M.proponer_mapeo(receta, columnas, muestras)
+    asignacion = M.asignacion_desde_propuesta(propuestas, umbral)
+
+    typer.echo("Mapeo propuesto (columna → campo):")
+    for col, p in propuestas.items():
+        marca = "✓" if asignacion.get(col) else "·"
+        typer.echo(f"  {marca} {col:<24} → {p['campo'] or '—':<16} ({p['confianza']:.0%})")
+
+    filas = df.to_dicts()
+    r = _proyectar(config, receta, asignacion, filas, procedencia={"ruta": csv})
+    typer.secho(f"\nProyección: {r.como_dict()}", fg="green")
+
+
+@app.command()
 def catalogo(
     ruta: str = typer.Argument(help="Raíz del disco montado (solo lectura)"),
     disco_id: str | None = typer.Option(

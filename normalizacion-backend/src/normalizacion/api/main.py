@@ -21,10 +21,15 @@ from normalizacion.api.esquemas import (
     EstadoPipeline,
     FiltroVisible,
     RespuestaAutocompletar,
+    EstadisticasEntidades,
+    Entidad,
     RespuestaColaArchivos,
+    RespuestaEntidades,
     RespuestaFiltro,
     RespuestaReprocesar,
     RespuestaTablero,
+    SolicitudProponerMapeo,
+    SolicitudProyectar,
     ResumenPanel,
     RespuestaBusqueda,
     RespuestaCarpetas,
@@ -397,6 +402,72 @@ def crear_app(config: Config) -> FastAPI:
             re_encolados = cola.reexplorar_preservados(conn)
             conn.commit()
         return {"re_encolados": re_encolados}
+
+    # ------------------------------------------------------ entidades (Fase 2)
+
+    @aplicacion.get("/entidades", response_model=RespuestaEntidades)
+    def get_entidades(
+        _: Autorizado, request: Request, tipo: str | None = None,
+        curp: str | None = None, nombre: str | None = None,
+        cursor: str | None = None, limite: int = 50,
+    ) -> RespuestaEntidades:
+        """Lista las entidades canónicas resueltas (esquema Fz1 en `campos`)."""
+        from normalizacion.entidades.consultas import listar_entidades
+
+        return RespuestaEntidades.model_validate(
+            listar_entidades(
+                request.app.state.config, tipo=tipo, curp=curp, nombre=nombre,
+                cursor=cursor, limite=limite,
+            )
+        )
+
+    @aplicacion.get("/entidades/estadisticas", response_model=EstadisticasEntidades)
+    def get_entidades_stats(_: Autorizado, request: Request) -> EstadisticasEntidades:
+        from normalizacion.entidades.consultas import estadisticas
+
+        return EstadisticasEntidades.model_validate(estadisticas(request.app.state.config))
+
+    @aplicacion.get("/entidades/{entidad_id}", response_model=Entidad)
+    def get_entidad(entidad_id: str, _: Autorizado, request: Request) -> Entidad:
+        from normalizacion.entidades.consultas import obtener_entidad
+
+        doc = obtener_entidad(request.app.state.config, entidad_id)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="entidad no encontrada")
+        return Entidad.model_validate(doc)
+
+    @aplicacion.post("/entidades/mapeo/proponer")
+    def post_proponer_mapeo(
+        solicitud: SolicitudProponerMapeo, _: Autorizado, request: Request
+    ) -> dict[str, Any]:
+        """E2: propone columna→campo (sinónimos + contenido) para que el operador
+        confirme. No persiste — eso es el paso de aprobación."""
+        from normalizacion.entidades import mapeo
+        from normalizacion.entidades.receta import obtener_receta
+
+        try:
+            receta = obtener_receta(solicitud.tipo)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        prop = mapeo.proponer_mapeo(receta, solicitud.columnas, solicitud.muestras)
+        return {"huella": mapeo.huella_columnas(solicitud.columnas), "propuestas": prop}
+
+    @aplicacion.post("/entidades/proyectar")
+    def post_proyectar(
+        solicitud: SolicitudProyectar, _: Autorizado, request: Request
+    ) -> dict[str, int]:
+        """E3: proyecta filas ya mapeadas a entidades (resolución por ancla,
+        idempotente). Útil para CLI/integraciones; la proyección desde los blobs
+        indexados es el camino a escala (E4)."""
+        from normalizacion.entidades.pipeline import proyectar
+        from normalizacion.entidades.receta import obtener_receta
+
+        try:
+            receta = obtener_receta(solicitud.tipo)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        r = proyectar(request.app.state.config, receta, solicitud.asignacion, solicitud.filas)
+        return r.como_dict()
 
     # --------------------------------------------------------- filtro editable
 

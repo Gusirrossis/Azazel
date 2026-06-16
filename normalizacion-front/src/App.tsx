@@ -8,12 +8,14 @@ import Busqueda from "./componentes/Busqueda";
 import Corridas from "./componentes/Corridas";
 import ExploradorCola from "./componentes/ExploradorCola";
 import Filtro from "./componentes/Filtro";
+import Entidades from "./componentes/Entidades";
 
-type Pestana = "inicio" | "busqueda" | "corridas" | "archivos" | "errores" | "filtro";
+type Pestana = "inicio" | "busqueda" | "entidades" | "corridas" | "archivos" | "errores" | "filtro";
 
 const PESTANAS: { clave: Pestana; etiqueta: string }[] = [
   { clave: "inicio", etiqueta: "Inicio" },
   { clave: "busqueda", etiqueta: "Búsqueda" },
+  { clave: "entidades", etiqueta: "Entidades" },
   { clave: "corridas", etiqueta: "Corridas" },
   { clave: "archivos", etiqueta: "Archivos" },
   { clave: "errores", etiqueta: "Errores" },
@@ -56,6 +58,7 @@ export default function App() {
         <Busqueda />
       </div>
 
+      {pestana === "entidades" && <Entidades />}
       {pestana === "corridas" && <Corridas />}
       {pestana === "archivos" && <ExploradorCola modo="todos" />}
       {pestana === "errores" && <ExploradorCola modo="errores" />}

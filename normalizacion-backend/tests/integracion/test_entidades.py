@@ -1,0 +1,139 @@
+"""Integración de la Fase 2 (E1-E3): resolución por ancla, idempotencia, mapeo.
+
+Verifica el invariante de oro: la misma CURP en distintas fuentes resuelve a UNA
+sola entidad (sin duplicar), rellenando los campos faltantes de cada fuente.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from normalizacion.core.config import Config
+from normalizacion.entidades import mapeo
+from normalizacion.entidades import normalizadores as N
+from normalizacion.entidades.consultas import estadisticas, listar_entidades
+from normalizacion.entidades.pipeline import construir_entidad, proyectar
+from normalizacion.entidades.receta import PERSONA_FZ1
+
+pytestmark = pytest.mark.integracion
+
+
+def _curp(prefijo17: str) -> str:
+    return prefijo17 + N.digito_verificador_curp(prefijo17)
+
+
+CURP_VALERIA = _curp("MERV960314MDFNSL0")  # 1996-03-14, M, CDMX
+
+
+@pytest.fixture()
+def config(dsn: str, conexion: Any) -> Config:
+    return Config(_env_file=None, postgres_dsn=dsn)
+
+
+ASIGN = {
+    "curp": "curp", "primer_nombre": "nombre1", "apellido_paterno": "apellido1",
+    "apellido_materno": "apellido2", "correo": "email", "telefono": "telefono",
+    "municipio": "municipio",
+}
+
+
+class TestResolucionPorAncla:
+    def test_misma_curp_dos_fuentes_una_entidad(self, config: Config) -> None:
+        fuente_a = [{"curp": CURP_VALERIA, "primer_nombre": "Valeria",
+                     "apellido_paterno": "Mendoza", "apellido_materno": "Rios"}]
+        fuente_b = [{"curp": CURP_VALERIA, "correo": "valeria@example.com",
+                     "telefono": "+52 55 2233 4455", "municipio": "Cuauhtemoc"}]
+
+        r1 = proyectar(config, PERSONA_FZ1, ASIGN, fuente_a)
+        assert (r1.entidades_nuevas, r1.entidades_fusionadas) == (1, 0)
+        r2 = proyectar(config, PERSONA_FZ1, ASIGN, fuente_b)
+        assert (r2.entidades_nuevas, r2.entidades_fusionadas) == (0, 1)  # FUSIÓN, no duplica
+
+        ents = listar_entidades(config)["entidades"]
+        assert len(ents) == 1
+        c = ents[0]["campos"]
+        # datos de AMBAS fuentes en la misma entidad
+        assert c["nombre"]["nombre1"] == "Valeria"
+        assert c["email"] == "valeria@example.com"
+        assert c["telefono"] == "5522334455"
+        # derivados de la CURP
+        assert c["sexo"] == "M"
+        assert c["normalizados"]["normalized_dob"] == "1996-03-14"
+        assert c["normalizados"]["normalized_estado"] == "CDMX"
+        assert len(ents[0]["procedencias"]) == 0  # sin procedencia pasada en este test
+
+    def test_curps_distintas_dos_entidades(self, config: Config) -> None:
+        otra = _curp("FUCD940519HDFNNG0")
+        filas = [{"curp": CURP_VALERIA, "primer_nombre": "Valeria"},
+                 {"curp": otra, "primer_nombre": "Diego"}]
+        proyectar(config, PERSONA_FZ1, ASIGN, filas)
+        assert estadisticas(config)["total"] == 2
+
+    def test_sin_ancla_no_crea_entidad(self, config: Config) -> None:
+        filas = [{"primer_nombre": "Juan", "apellido_paterno": "Perez"}]  # sin CURP/RFC/email/tel
+        r = proyectar(config, PERSONA_FZ1, ASIGN, filas)
+        assert (r.sin_ancla, r.entidades_nuevas) == (1, 0)
+        assert estadisticas(config)["total"] == 0
+
+    def test_idempotente_reejecutar(self, config: Config) -> None:
+        filas = [{"curp": CURP_VALERIA, "primer_nombre": "Valeria"}]
+        proyectar(config, PERSONA_FZ1, ASIGN, filas)
+        proyectar(config, PERSONA_FZ1, ASIGN, filas)  # otra vez
+        assert estadisticas(config)["total"] == 1  # no duplica
+
+    def test_ancla_debil_email_si_no_hay_curp(self, config: Config) -> None:
+        filas = [{"correo": "solo@example.com", "primer_nombre": "Ana"}]
+        r = proyectar(config, PERSONA_FZ1, ASIGN, filas)
+        assert r.entidades_nuevas == 1
+        assert listar_entidades(config)["entidades"][0]["ancla_tipo"] == "email"
+
+
+class TestMapeoPropuesto:
+    def test_propone_por_nombre_y_contenido(self) -> None:
+        columnas = ["CURP", "Nombre", "Apellido Paterno", "columna_rara"]
+        muestras = {"CURP": [CURP_VALERIA, _curp("FUCD940519HDFNNG0")]}
+        prop = mapeo.proponer_mapeo(PERSONA_FZ1, columnas, muestras)
+        assert prop["CURP"]["campo"] == "curp"
+        assert prop["CURP"]["confianza"] == 0.95  # por contenido validado
+        assert prop["Nombre"]["campo"] == "nombre1"
+        assert prop["Apellido Paterno"]["campo"] == "apellido1"
+        assert prop["columna_rara"]["campo"] is None
+
+    def test_huella_estable_por_forma(self) -> None:
+        assert mapeo.huella_columnas(["CURP", "Nombre"]) == mapeo.huella_columnas(["nombre", "curp"])
+
+
+class TestConstruirEntidad:
+    def test_deriva_todo_de_curp(self) -> None:
+        ent = construir_entidad(PERSONA_FZ1, {"curp": "curp"}, {"curp": CURP_VALERIA})
+        assert ent is not None
+        assert ent["ancla_tipo"].value == "curp"
+        assert ent["campos"]["sexo"] == "M"
+        assert ent["campos"]["normalizados"]["normalized_estado"] == "CDMX"
+
+    def test_estado_nacimiento_no_es_estado_residencia(self) -> None:
+        # CURP nace en CDMX (DF) pero RESIDE en Jalisco: no se mezclan.
+        ent = construir_entidad(
+            PERSONA_FZ1, {"curp": "curp", "estado": "estado"},
+            {"curp": CURP_VALERIA, "estado": "Jalisco"},
+        )
+        assert ent["campos"]["normalizados"]["normalized_estado"] == "CDMX"  # nacimiento (CURP)
+        assert ent["campos"]["direccion"]["estado"] == "Jalisco"  # residencia (input)
+
+    def test_sin_curp_no_hay_estado_de_nacimiento(self) -> None:
+        ent = construir_entidad(
+            PERSONA_FZ1, {"correo": "email", "estado": "estado"},
+            {"correo": "a@b.com", "estado": "Jalisco"},
+        )
+        assert ent["campos"]["normalizados"]["normalized_estado"] is None
+        assert ent["campos"]["direccion"]["estado"] == "Jalisco"
+
+
+class TestIdentidad:
+    def test_entidad_id_vacio_falla(self) -> None:
+        from normalizacion.entidades.modelo import AnclaTipo, calcular_entidad_id
+
+        with pytest.raises(ValueError):
+            calcular_entidad_id("persona", AnclaTipo.CURP, "  ")

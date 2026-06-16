@@ -115,6 +115,35 @@ export interface DestinosDisco {
   por_disco: Record<string, RaicesAlmacen>; // raíz REAL por disco (su corrida)
 }
 
+// ----- entidades (Fase 2: personas canónicas resueltas, esquema Fz1) -----
+
+export interface Entidad {
+  entidad_id: string;
+  tipo: string;
+  ancla_tipo: string;
+  ancla_valor: string;
+  campos: Record<string, any>; // forma Fz1 (nombre{}, direccion{}, normalizados{}, …)
+  confianza: number;
+  version_receta: string;
+  version_resolucion: string;
+  activo: boolean;
+  procedencias: Record<string, unknown>[];
+  creado_en: string;
+  actualizado_en: string;
+}
+
+export interface RespuestaEntidades {
+  total: number;
+  entidades: Entidad[];
+  cursor: string | null;
+}
+
+export interface EstadisticasEntidades {
+  total: number;
+  con_curp: number;
+  por_ancla: Record<string, number>;
+}
+
 // ----- tablero de Inicio (GET /panel: todos los agregados en una llamada) -----
 
 export interface TotalesTablero {
