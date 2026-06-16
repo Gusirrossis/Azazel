@@ -10,6 +10,7 @@ El scoring difuso (Splink), el clustering y el grafo de relaciones son E4-E5.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -123,6 +124,14 @@ def construir_entidad(receta: Receta, asignacion: dict[str, str], fila: dict[str
     return None
 
 
+def _clave_procedencia(p: Any) -> str:
+    """Clave estable para deduplicar procedencias: por archivo_id si lo trae, si no
+    por el contenido serializado."""
+    if isinstance(p, dict) and p.get("archivo_id"):
+        return f"id:{p['archivo_id']}"
+    return "j:" + json.dumps(p, sort_keys=True, ensure_ascii=False)
+
+
 def _fusionar_campos(viejo: dict[str, Any], nuevo: dict[str, Any]) -> dict[str, Any]:
     """Rellena lo faltante sin pisar lo que ya había (preferimos el primer dato no
     vacío). Recursivo para los sub-objetos (nombre, direccion, normalizados)."""
@@ -165,7 +174,15 @@ def _upsert(
     ).fetchone()
     assert fila is not None  # la fila existe: o la insertó otro, o ya estaba
     fusion = _fusionar_campos(dict(fila[0]), campos)
-    procs = list(fila[1]) + procs_nuevas
+    # Procedencia idempotente: no re-acumular la MISMA fuente (clave por archivo_id si
+    # lo trae —backfill—, si no por el contenido). Re-correr no infla las fuentes.
+    procs = list(fila[1])
+    vistas = {_clave_procedencia(p) for p in procs}
+    for p in procs_nuevas:
+        k = _clave_procedencia(p)
+        if k not in vistas:
+            procs.append(p)
+            vistas.add(k)
     conn.execute(
         "UPDATE entidades SET campos = %s, procedencias = %s,"
         " version_resolucion = %s, actualizado_en = now() WHERE entidad_id = %s",

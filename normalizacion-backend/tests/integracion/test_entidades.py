@@ -83,6 +83,14 @@ class TestResolucionPorAncla:
         proyectar(config, PERSONA_FZ1, ASIGN, filas)  # otra vez
         assert estadisticas(config)["total"] == 1  # no duplica
 
+    def test_procedencia_no_se_duplica(self, config: Config) -> None:
+        filas = [{"curp": CURP_VALERIA, "primer_nombre": "Valeria"}]
+        proc = {"archivo_id": "docA", "ruta": "/a.pdf"}
+        proyectar(config, PERSONA_FZ1, ASIGN, filas, procedencia=proc)
+        proyectar(config, PERSONA_FZ1, ASIGN, filas, procedencia=proc)  # misma fuente
+        ents = listar_entidades(config)["entidades"]
+        assert len(ents) == 1 and len(ents[0]["procedencias"]) == 1  # dedup por archivo_id
+
     def test_ancla_debil_email_si_no_hay_curp(self, config: Config) -> None:
         filas = [{"correo": "solo@example.com", "primer_nombre": "Ana"}]
         r = proyectar(config, PERSONA_FZ1, ASIGN, filas)
@@ -240,7 +248,11 @@ class TestProyeccionDinamica:
 class TestBackfillExtraccion:
     """Detección de persona por CURP/RFC en un documento indexado (lógica pura)."""
 
-    RFC_OK = "MERV960314AB1"  # física 13, fecha válida (homoclave no se verifica aún)
+    RFC_OK = "GODE561231GR8"  # RFC físico con dígito verificador válido (otra persona)
+
+    @staticmethod
+    def _rfc(rfc12: str) -> str:
+        return rfc12 + N.digito_verificador_rfc(rfc12)
 
     def test_curp_valida_en_texto(self) -> None:
         from normalizacion.entidades.backfill import personas_de_doc
@@ -258,27 +270,37 @@ class TestBackfillExtraccion:
         filas, _ = personas_de_doc({"texto_indexable": f"ruido {mala} ruido"})
         assert filas == []
 
-    def test_una_curp_un_rfc_misma_persona(self) -> None:
+    def test_una_curp_un_rfc_mismo_prefijo_misma_persona(self) -> None:
         from normalizacion.entidades.backfill import personas_de_doc
 
-        doc = {"texto_indexable": f"{CURP_VALERIA} y su RFC {self.RFC_OK}."}
+        rfc = self._rfc("MERV960314A0")  # comparte los 10 chars de la CURP de Valeria
+        doc = {"texto_indexable": f"{CURP_VALERIA} y su RFC {rfc}."}
         filas, _ = personas_de_doc(doc)
-        assert filas == [{"curp": CURP_VALERIA, "rfc": self.RFC_OK}]
+        assert filas == [{"curp": CURP_VALERIA, "rfc": rfc}]
 
-    def test_varias_curps_no_mezclan_rfc(self) -> None:
+    def test_rfc_de_otro_prefijo_no_se_funde_pero_no_se_pierde(self) -> None:
         from normalizacion.entidades.backfill import personas_de_doc
 
         otra = _curp("FUCD940519HDFNNG0")
         doc = {"texto_indexable": f"{CURP_VALERIA} ... {otra} ... RFC {self.RFC_OK}"}
         filas, _ = personas_de_doc(doc)
-        assert {f["curp"] for f in filas} == {CURP_VALERIA, otra}
-        assert all("rfc" not in f for f in filas)  # ambiguo: no se asigna el RFC
+        curp_filas = [f for f in filas if "curp" in f]
+        assert {f["curp"] for f in curp_filas} == {CURP_VALERIA, otra}
+        assert all("rfc" not in f for f in curp_filas)  # prefijo no coincide: no se funde
+        assert {"rfc": self.RFC_OK} in filas  # pero ancla aparte (no se pierde)
 
     def test_solo_rfc_sin_curp(self) -> None:
         from normalizacion.entidades.backfill import personas_de_doc
 
         filas, _ = personas_de_doc({"texto_indexable": f"Contribuyente {self.RFC_OK}"})
         assert filas == [{"rfc": self.RFC_OK}]
+
+    def test_anclas_en_campos_extraidos_anidados(self) -> None:
+        from normalizacion.entidades.backfill import personas_de_doc
+
+        doc = {"campos_extraidos": {"tabla": [{"clave": CURP_VALERIA}], "n": 3}}
+        filas, _ = personas_de_doc(doc)
+        assert filas == [{"curp": CURP_VALERIA}]  # aplanado recursivo
 
     def test_sin_ancla_no_es_persona(self) -> None:
         from normalizacion.entidades.backfill import personas_de_doc

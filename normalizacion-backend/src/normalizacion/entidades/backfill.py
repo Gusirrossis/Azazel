@@ -25,8 +25,9 @@ indexado o enganchar la resolución al pipeline de ingesta (el resto de E4).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 
@@ -46,6 +47,7 @@ _SCAN_CURP = re.compile(r"(?<![0-9A-ZÑ])[A-ZÑ]{4}\d{6}[HM][A-ZÑ]{5}[0-9A-ZÑ]
 _SCAN_RFC = re.compile(r"(?<![0-9A-ZÑ&])[A-ZÑ&]{4}\d{6}[0-9A-ZÑ]{3}(?![0-9A-ZÑ])")
 
 _CURSOR_CLAVE = "backfill_entidades_cursor"
+_LOCK_ID = 0x42_4143_4B46  # advisory lock para serializar el backfill (un proceso a la vez)
 _VERSION_RES = "backfill-anclas-v1"
 # Solo el ancla: asignacion fila→campo mínima (nombre/email/tel del texto = E8).
 _ASIGNACION = {"curp": "curp", "rfc": "rfc"}
@@ -73,15 +75,28 @@ class ResumenBackfill:
         }
 
 
+def _aplanar(v: Any) -> Any:
+    """Genera los escalares str/numéricos de un valor anidado (dict/list), recursivo."""
+    if isinstance(v, bool):
+        return  # los bool no aportan anclas, y "True"/"False" sería ruido
+    if isinstance(v, (str, int, float)):
+        yield str(v)
+    elif isinstance(v, dict):
+        for x in v.values():
+            yield from _aplanar(x)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            yield from _aplanar(x)
+
+
 def _texto_de_doc(doc: dict[str, Any]) -> str:
-    """Concatena los campos del doc donde puede aparecer una CURP/RFC (en MAYÚSCULAS)."""
+    """Concatena los campos del doc donde puede aparecer una CURP/RFC (en MAYÚSCULAS).
+
+    Aplana recursivamente campos_extraidos (listas/dicts anidados) para no ocultar
+    anclas dentro de estructuras."""
     partes: list[str] = []
     for clave in _FUENTES:
-        v = doc.get(clave)
-        if isinstance(v, str):
-            partes.append(v)
-        elif isinstance(v, dict):  # campos_extraidos: valores estructurados
-            partes.extend(str(x) for x in v.values() if isinstance(x, (str, int)))
+        partes.extend(_aplanar(doc.get(clave)))
     return " ".join(partes).upper()
 
 
@@ -103,20 +118,27 @@ def _anclas_validas(texto: str) -> tuple[list[str], list[str]]:
 def personas_de_doc(doc: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Extrae las filas-persona (anclas) de un documento indexado + su procedencia.
 
-    Regla de anclaje (evita duplicar a la misma persona en docs multi-persona):
-      · hay CURP(s): una fila por CURP; si es 1 CURP + 1 RFC, el RFC va en esa fila.
-      · no hay CURP pero sí RFC(s): una fila por RFC.
+    Regla de anclaje (sin duplicar ni perder anclas en docs multi-persona):
+      · una fila por CURP.
+      · un RFC enriquece la fila de una CURP SOLO si comparten los 10 primeros chars
+        (4 letras del nombre + AAMMDD): garantía fuerte de que son la misma persona.
+      · cualquier RFC que no se haya asociado a una CURP ancla su propia persona (no
+        se descarta).
     """
     curps, rfcs = _anclas_validas(_texto_de_doc(doc))
     filas: list[dict[str, str]] = []
-    if curps:
-        for c in curps:
-            fila = {"curp": c}
-            if len(curps) == 1 and len(rfcs) == 1:
-                fila["rfc"] = rfcs[0]
-            filas.append(fila)
-    else:
-        filas = [{"rfc": r} for r in rfcs]
+    asociados: set[str] = set()
+    for c in curps:
+        fila = {"curp": c}
+        # RFC del MISMO prefijo (misma persona) y 1:1 → enriquece esta CURP.
+        mismos = [r for r in rfcs if r[:10] == c[:10] and r not in asociados]
+        if len(mismos) == 1:
+            fila["rfc"] = mismos[0]
+            asociados.add(mismos[0])
+        filas.append(fila)
+    for r in rfcs:  # RFCs sin asociar → su propia persona (no se pierden)
+        if r not in asociados:
+            filas.append({"rfc": r})
     procedencia = {
         "fuente": "backfill_indice",
         "archivo_id": doc.get("archivo_id"),
@@ -144,11 +166,22 @@ def _buscar_lote(cliente: Any, alias: str, cursor: str | None, lote: int) -> lis
         "size": lote,
         "sort": [{"archivo_id": "asc"}],
         "query": {"match_all": {}},
-        "_source": list(_FUENTES) + ["archivo_id", "disco_id"],
+        "_source": [*_FUENTES, "archivo_id", "disco_id"],
     }
     if cursor:
         cuerpo["search_after"] = [cursor]
     return cliente.search(index=alias, body=cuerpo)["hits"]["hits"]
+
+
+def _borrar_cursor(conn: psycopg.Connection[Any]) -> None:
+    conn.execute("DELETE FROM control WHERE clave = %s", (_CURSOR_CLAVE,))
+
+
+def _indice_existe(cliente: Any, alias: str) -> bool:
+    try:
+        return bool(cliente.indices.exists(index=alias))
+    except Exception:
+        return False
 
 
 def _resolver_fila(
@@ -158,12 +191,12 @@ def _resolver_fila(
     ent = construir_entidad(receta, _ASIGNACION, fila)
     if ent is None:
         return
-    resumen.anclas += 1
     eid = calcular_entidad_id(receta.tipo, ent["ancla_tipo"], ent["ancla_valor"])
     resultado = _upsert(
         conn, eid, receta.tipo, ent["ancla_tipo"], ent["ancla_valor"],
         ent["campos"], receta.version, _VERSION_RES, procedencia,
     )
+    resumen.anclas += 1
     if resultado == "nueva":
         resumen.entidades_nuevas += 1
     else:
@@ -177,9 +210,14 @@ def backfill_desde_indice(
     """Recorre el índice y resuelve entidades de los docs que traen CURP/RFC.
 
     `max_docs` acota una corrida (para un botón "procesar siguiente lote"); sin él,
-    drena hasta el final. `reiniciar` ignora el cursor guardado y empieza de cero.
-    El cursor se persiste por lote, así que una corrida interrumpida continúa donde
-    quedó y re-ejecutarla es idempotente (no duplica entidades)."""
+    drena hasta el final. `reiniciar` borra el cursor y empieza de cero. El cursor se
+    persiste por lote y cada fila va en su propio savepoint, así que una corrida
+    interrumpida (o una fila envenenada) no tumba el lote y re-ejecutar no duplica.
+    Un advisory lock serializa: dos backfills a la vez no se pisan el cursor.
+
+    Limitación (una PASADA): el orden por archivo_id (hash) completa el barrido de lo
+    YA indexado; para capturar docs nuevos re-corre con `reiniciar=True` (rescan
+    completo, idempotente). El modo continuo es el enganche al pipeline (resto de E4)."""
     from normalizacion.core.indexador.opensearch import crear_cliente
 
     cliente = crear_cliente(config)
@@ -188,33 +226,47 @@ def backfill_desde_indice(
     lote = max(1, min(lote, 2000))
 
     with psycopg.connect(config.postgres_dsn) as conn:
-        cursor = None if reiniciar else _leer_cursor(conn)
-        while True:
-            hits = _buscar_lote(cliente, config.indice_alias, cursor, lote)
-            if not hits:
-                break
-            for hit in hits:
-                doc = hit["_source"]
-                resumen.docs += 1
-                cursor = doc.get("archivo_id") or hit.get("sort", [None])[0]
-                filas, procedencia = personas_de_doc(doc)
-                if not filas:
-                    resumen.sin_persona += 1
-                    continue
-                resumen.con_persona += 1
-                for fila in filas:
-                    try:
-                        _resolver_fila(conn, receta, fila, procedencia, resumen)
-                    except Exception as exc:  # fila/doc envenenado → dead-letter, sigue
-                        resumen.errores += 1
-                        log.warning("backfill_fila_fallida", error=str(exc)[:200])
-            if cursor:
-                _guardar_cursor(conn, cursor)
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,)).fetchone()[0]:
+            conn.rollback()
+            raise RuntimeError("ya hay un backfill de entidades en curso (otro proceso lo tiene)")
+        try:
+            if reiniciar:
+                _borrar_cursor(conn)
+            cursor = _leer_cursor(conn)
+            conn.commit()  # cierra el tx del lock/cursor; cada lote abre el suyo
+            if not _indice_existe(cliente, config.indice_alias):
+                log.warning("backfill_sin_indice", alias=config.indice_alias)
+                return resumen
+            while True:
+                hits = _buscar_lote(cliente, config.indice_alias, cursor, lote)
+                if not hits:
+                    break
+                with conn.transaction():  # un tx por lote (cursor + filas juntos)
+                    for hit in hits:
+                        doc = hit["_source"]
+                        resumen.docs += 1
+                        cursor = (hit.get("sort") or [None])[0] or doc.get("archivo_id")
+                        filas, procedencia = personas_de_doc(doc)
+                        if not filas:
+                            resumen.sin_persona += 1
+                            continue
+                        resumen.con_persona += 1
+                        for fila in filas:
+                            try:
+                                with conn.transaction():  # savepoint por fila
+                                    _resolver_fila(conn, receta, fila, procedencia, resumen)
+                            except Exception as exc:  # fila envenenada → dead-letter, sigue
+                                resumen.errores += 1
+                                log.warning("backfill_fila_fallida", error=str(exc)[:200])
+                    if cursor:
+                        _guardar_cursor(conn, cursor)
+                resumen.cursor = cursor
+                if on_progress:
+                    on_progress(resumen)
+                if max_docs is not None and resumen.docs >= max_docs:
+                    break
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
             conn.commit()
-            resumen.cursor = cursor
-            if on_progress:
-                on_progress(resumen)
-            if max_docs is not None and resumen.docs >= max_docs:
-                break
     log.info("backfill_completo", **resumen.como_dict())
     return resumen

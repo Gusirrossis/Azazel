@@ -55,15 +55,25 @@ class TestCurp:
         r = N.validar_curp(f"  {curp.lower()}  ")
         assert r.valido is True and r.valor == curp and r.crudo == f"  {curp.lower()}  "
 
+    def test_curp_con_enie_valida(self) -> None:
+        curp = _curp_valida("PEÑA900101HDFRRL0")  # apellido PEÑA: la Ñ es legal
+        r = N.validar_curp(curp)
+        assert r.valido is True and r.valor == curp
+
 
 class TestRfc:
     def test_fisica_valida_deriva_fecha(self) -> None:
-        r = N.validar_rfc("MERV9603143A2")
+        r = N.validar_rfc("GODE561231GR8")  # ejemplo oficial SAT, DV correcto
         assert r.valido is True
-        assert r.derivados["dob"] == "1996-03-14"
+        assert r.derivados["dob"] == "1956-12-31"
+
+    def test_digito_verificador_roto_invalida(self) -> None:
+        # formato y fecha OK, pero el DV no cuadra → se rechaza (clave para anclar)
+        assert N.validar_rfc("MERV9603143A2").valido is False
+        assert N.validar_rfc("GODE561231GR0").valido is False  # DV real es 8
 
     def test_basura_invalida(self) -> None:
-        for b in ["", "MERV", "MERV9613993A2"]:  # mes 13
+        for b in ["", "MERV", "MERV9613993A2"]:  # vacío, corto, mes 13
             assert N.validar_rfc(b).valido is False
 
 

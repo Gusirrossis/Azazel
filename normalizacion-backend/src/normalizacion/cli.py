@@ -224,8 +224,8 @@ def aplicar_indice_cmd(
 @app.command("backfill-entidades")
 def backfill_entidades_cmd(
     lote: int = typer.Option(500, help="Documentos por lote (1-2000)"),
-    max_docs: int | None = typer.Option(None, help="Tope de docs en esta corrida (sin tope = drena todo)"),
-    reiniciar: bool = typer.Option(False, "--reiniciar", help="Ignora el cursor guardado y empieza de cero"),
+    max_docs: int | None = typer.Option(None, help="Tope de docs esta corrida (sin tope = todo)"),
+    reiniciar: bool = typer.Option(False, "--reiniciar", help="Ignora el cursor y empieza de cero"),
 ) -> None:
     """Resuelve entidades de los registros YA INDEXADOS (los que traen CURP/RFC).
 

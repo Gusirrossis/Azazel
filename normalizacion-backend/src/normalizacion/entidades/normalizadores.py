@@ -57,8 +57,10 @@ ESTADOS_CURP: dict[str, str] = {
 
 # Alfabeto oficial para el dígito verificador de la CURP (incluye la Ñ).
 _DICC_CURP = "0123456789ABCDEFGHIJKLMNÑOPQRSTUVWXYZ"
+# La Ñ es legal en los grupos de letras (apellidos PEÑA, MUÑOZ, NUÑEZ…). El estado
+# (pos 11-12) nunca lleva Ñ. La homoclave puede ser letra (incl. Ñ) o dígito.
 _RE_CURP = re.compile(
-    r"^[A-Z][A-Z]{3}\d{6}[HM][A-Z]{2}[A-Z]{3}[A-Z0-9]\d$"
+    r"^[A-ZÑ][A-ZÑ]{3}\d{6}[HM][A-Z]{2}[A-ZÑ]{3}[A-Z0-9Ñ]\d$"
 )
 
 
@@ -115,16 +117,31 @@ def validar_curp(curp: str) -> Normalizado:
 
 _RE_RFC_FISICA = re.compile(r"^[A-ZÑ&]{4}\d{6}[A-Z0-9]{3}$")
 
+# Tabla oficial SAT para el dígito verificador del RFC (carácter → valor).
+_VALOR_RFC = {c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMN&OPQRSTUVWXYZ")}
+_VALOR_RFC[" "] = 37
+_VALOR_RFC["Ñ"] = 38
+
+
+def digito_verificador_rfc(rfc12: str) -> str:
+    """13o caracter del RFC fisico, de los 12 previos (algoritmo oficial SAT).
+
+    Suma ponderada por posicion (13..2) sobre la tabla, luego 11 - (suma mod 11),
+    con 11 -> '0' y 10 -> 'A'."""
+    suma = sum(_VALOR_RFC.get(c, 0) * (13 - i) for i, c in enumerate(rfc12))
+    dv = 11 - (suma % 11)
+    return "0" if dv == 11 else "A" if dv == 10 else str(dv)
+
 
 def validar_rfc(rfc: str) -> Normalizado:
-    """RFC de persona física (13 chars). Valida formato + fecha y deriva la fecha.
-
-    (El dígito verificador del RFC usa otra tabla; se añade en E4. Para el ancla
-    basta el formato + fecha válida, que ya descarta casi todo el ruido.)
-    """
+    """RFC de persona física (13 chars). Valida formato + fecha + DÍGITO VERIFICADOR
+    y deriva la fecha. El DV es clave para anclar desde texto: sin él, ~1 de cada 28
+    cadenas con forma de RFC pasaría por azar (IDs, folios, hashes)."""
     crudo = rfc or ""
     r = re.sub(r"\s+", "", crudo).upper()
     if len(r) != 13 or not _RE_RFC_FISICA.match(r):
+        return Normalizado(None, False, crudo)
+    if r[12] != digito_verificador_rfc(r[:12]):  # dígito verificador no cuadra
         return Normalizado(None, False, crudo)
     # El RFC NO lleva bit de siglo (a diferencia de la CURP): heurística de corte en
     # el año 30 (31-99 → 19xx, 00-30 → 20xx). LIMITACIÓN: para nacidos 2031+ habrá
