@@ -67,13 +67,13 @@ def guardar_receta(config: Config, r: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"la receta '{r['clave']}' es base y no es editable (clónala)")
         conn.execute(
             "INSERT INTO recetas (clave, clase, tipo, nombre, descripcion, definicion,"
-            " version, activa, editable) VALUES (%s,%s,%s,%s,%s,%s,%s,true,true)"
+            " version, activa, editable) VALUES (%s,%s,%s,%s,%s,%s,%s,true,%s)"
             " ON CONFLICT (clave) DO UPDATE SET nombre = EXCLUDED.nombre,"
             " descripcion = EXCLUDED.descripcion, definicion = EXCLUDED.definicion,"
             " version = EXCLUDED.version, actualizado_en = now()",
             (r["clave"], r.get("clase", "proyeccion"), r.get("tipo", "persona"),
              r["nombre"], r.get("descripcion", ""), Jsonb(r["definicion"]),
-             r.get("version", "v1")),
+             r.get("version", "v1"), r.get("editable", True)),
         )
         conn.commit()
     out = leer_receta(config, r["clave"])

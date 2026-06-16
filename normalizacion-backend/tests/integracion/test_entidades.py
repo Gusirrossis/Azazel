@@ -175,6 +175,30 @@ class TestProyeccionDinamica:
         set_path(d, "a.b.c", 7)
         assert get_path(d, "a.b.c") == 7 and get_path(d, "a.x") is None
 
+    def test_set_path_colision_escalar_lanza(self) -> None:
+        from normalizacion.entidades.proyeccion import set_path
+
+        d: dict = {}
+        set_path(d, "contact", "x")  # escalar
+        with pytest.raises(ValueError):
+            set_path(d, "contact.email", "y")  # colisión
+
+    def test_validacion_rechaza_definiciones_rotas(self) -> None:
+        from normalizacion.entidades.proyeccion import validar_definicion
+
+        malas = [
+            {"salida": []},  # vacía
+            {"salida": [{"de": "x"}]},  # sin path
+            {"salida": [{"path": "p", "constante": "H", "mapa": {"H": "M"}}]},  # mapa+constante
+            {"salida": [{"path": "p", "de": "x", "constante": "y"}]},  # ambos
+            {"salida": [{"path": "a..b", "de": "x"}]},  # ruta inválida
+            {"salida": [{"path": "contact", "de": "a"}, {"path": "contact.email", "de": "b"}]},  # colisión
+        ]
+        for d in malas:
+            with pytest.raises(ValueError):
+                validar_definicion(d)
+        validar_definicion({"passthrough": True})  # válida, no lanza
+
 
 class TestRecetasCRUD:
     def test_seed_lista_fz1_y_ejemplo(self, config: Config) -> None:
