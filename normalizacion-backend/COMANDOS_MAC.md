@@ -133,7 +133,30 @@ uv run norm exportador                # métricas Prometheus en :9108 (opcional)
 
 ---
 
-## 7 · Apagar
+## 7 · Entidades (Fase 2: resolver personas y exportar)
+
+Convierte lo indexado en **personas canónicas** (deduplicadas por CURP/RFC) y arma la
+salida con la forma que pida cada sistema. Lo normal es desde la pestaña **Entidades**
+de la UI; por terminal:
+
+```bash
+# Procesar el lago YA INDEXADO: detecta CURP/RFC en el texto y resuelve personas.
+# Reanudable e idempotente (re-correr no duplica). Es la corrida grande del backfill.
+uv run norm backfill-entidades                 # drena todo el índice
+uv run norm backfill-entidades --reiniciar     # re-escanea desde cero (para captar nuevos)
+
+# Proyectar un dataset tabular (CSV) a personas (propone el mapeo columna→campo):
+uv run norm proyectar /Volumes/ORIGEN/padron.csv
+```
+
+La **estructura de salida** se define por recetas editables (UI → Entidades → *Recetas*;
+arranca con `fz1_bundle` y `sistema_plano`). Para **exportar el archivo completo** (p. ej.
+el Fz1 entero): UI → Entidades → *Personas* → **Descargar JSON**, o
+`curl "$API/entidades/exportar?receta=fz1_bundle"`. Detalle en `docs/PLAN_ENTIDADES.md` §10–§12.
+
+---
+
+## 8 · Apagar
 
 ```bash
 # Ctrl+C en las terminales de la API y el front. Las bases pueden quedarse

@@ -156,6 +156,9 @@ calidad · K13 triggers de flush · K14 reintentos.
   ≤31 GB/nodo, tiering hot-warm-cold con ISM); Postgres en su máquina; almacén
   MinIO/Ceph (la línea de hardware más cara). Escalar = añadir máquinas, sin reescribir.
 - **Estado actual:** M1–M6 alcanzados (pipeline completo, búsqueda por nombre y
-  contenido, robustez, workers paralelos). **Pendiente:** T4 (falta etiquetado),
-  el **piloto en Mac M4** para medir escala real, y la **proyección a entidades**
-  para alimentar otros sistemas.
+  contenido, robustez, workers paralelos). **Fase 2 (entidades) en marcha:**
+  resolución de personas por ancla (CURP/RFC), recetas de proyección por sistema
+  consumidor (incl. el archivo Fz1 completo) y backfill desde el índice ya existente
+  — ver [PLAN_ENTIDADES.md](PLAN_ENTIDADES.md). **Pendiente:** T4 (falta etiquetado),
+  el **piloto en Mac M4** para medir escala real, y de Fase 2: resolución difusa,
+  NER sobre documentos, grafo de relaciones y control de acceso por campo (PII).

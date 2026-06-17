@@ -1,7 +1,31 @@
 # PLAN_ENTIDADES.md — Proyección a entidades para alimentar otros sistemas
 
-**Estado:** diseño (planeación) · 2026-06-10
-**Decisiones tomadas con el usuario:** contrato de salida = **API que el consumidor consulta (pull)**; resolución de identidad = **la hace Azazel**; primera fuente = **tabular** (padrones, DBF, SQL); mapeo de columnas = **propone y yo confirmo** (semiautomático); tipos de entidad **dinámicos** (no casados con "personas").
+**Estado:** EN MARCHA — diseño 2026-06-10, primera rebanada construida 2026-06-16.
+**Decisiones tomadas con el usuario:** contrato de salida = **API que el consumidor consulta (pull)** + **proyección por receta de salida** (cada sistema, su estructura) + **exportación de archivo completo**; resolución de identidad = **la hace Azazel**; primera fuente = **tabular** (padrones, DBF, SQL) y **el propio índice ya existente**; mapeo de columnas = **propone y yo confirmo** (semiautomático); tipos de entidad **dinámicos**; criterio de "doc = persona" en el backfill = **trae CURP o RFC válida**.
+
+---
+
+## Estado de implementación (2026-06-16)
+
+Lo que sigue (§1–§9) es el diseño aprobado. Esto es lo CONSTRUIDO contra ese diseño;
+el detalle de lo nuevo está en §10–§12.
+
+| Capacidad | Estado | Dónde |
+|---|---|---|
+| Recetas + normalizadores núcleo (CURP, RFC, email, teléfono, nombre) | ✅ construido | `entidades/normalizadores.py`, `receta.py` |
+| Mapeo tabular semiautomático (propone columna→campo) | ✅ construido | `entidades/mapeo.py`; `POST /entidades/mapeo/proponer` |
+| Almacén de entidades + API pull | ✅ construido | tabla `entidades` (mig. 0006); `GET /entidades`, `/entidades/{id}`, `/entidades/estadisticas` |
+| Resolución por anclas fuertes (dedup exacto, idempotente) | ✅ construido | `entidades/pipeline.py` (`_upsert`, `_fusionar_campos`) |
+| **Proyección de salida por receta editable** (cada sistema, su estructura) | ✅ construido | `entidades/proyeccion.py`, `recetas_db.py` (tabla `recetas`, mig. 0007); ver **§10** |
+| **Export del archivo completo** (p. ej. el Fz1 entero) | ✅ construido | receta de colección `fz1_bundle`; `GET /entidades/exportar`; ver **§10** |
+| Contingencia (soft-delete reversible, LFPDPPP) | ✅ construido | `POST /entidades/{id}/activo` (flag `activo`) |
+| **Backfill desde el índice ya existente** (CURP/RFC del texto indexado) | ✅ construido | `entidades/backfill.py`; `norm backfill-entidades`; `POST /entidades/backfill`; ver **§12** |
+| UI: pestaña Entidades (Personas + Recetas, ver-como-receta, export, backfill) | ✅ construido | `normalizacion-front/.../Entidades.tsx` |
+| Resolución difusa (Splink, sin ancla exacta) | ⏳ pendiente | §4 fase E4 |
+| NER completo sobre documentos | ⏳ pendiente | §7 fase E5 (el backfill §12 es el primer puente: solo anclas por regex) |
+| Grafo de relaciones (`vincular_con`) | ⏳ pendiente | E5 |
+| Control de acceso por campo + bitácora de consultas (PII / LFPDPPP) | ⏳ pendiente (bloqueante para producción) | §9 decisión #3 |
+| Modo continuo (resolver al indexar, no solo en lote) | ⏳ pendiente | §12 "limitaciones" |
 
 ---
 
@@ -147,15 +171,17 @@ Los mismos validadores alimentan el **mapeo automático** de la fase A (una colu
 
 ## 7. Fases de implementación sugeridas
 
-| Fase | Alcance | Valor |
-|---|---|---|
-| **E1 — Recetas + mapeo tabular semiautomático** | Modelo de receta, proponer/confirmar columna→campo, normalizadores núcleo | Arranca con padrones/DBF/SQL reales |
-| **E2 — Almacén de entidades + API pull** | Tabla + índice `entidades`, endpoints genéricos | Otro sistema ya puede consumir |
-| **E3 — Resolución por anclas fuertes** | Dedup exacto por RFC/CURP/correo | Una entidad = un registro confiable |
-| **E4 — Resolución difusa** | Matching aproximado + banda de revisión | Más alcance, con control humano |
-| **E5 — Entidades desde documentos** | NER + patrones sobre `texto_indexable` | Desbloquea los millones de PDFs |
+| Fase | Alcance | Valor | Estado |
+|---|---|---|---|
+| **E1 — Recetas + mapeo tabular semiautomático** | Modelo de receta, proponer/confirmar columna→campo, normalizadores núcleo | Arranca con padrones/DBF/SQL reales | ✅ construido |
+| **E2 — Almacén de entidades + API pull** | Tabla `entidades`, endpoints genéricos | Otro sistema ya puede consumir | ✅ construido |
+| **E3 — Resolución por anclas fuertes** | Dedup exacto por CURP/RFC/correo | Una entidad = un registro confiable | ✅ construido |
+| **E4 — Resolución difusa** | Matching aproximado + banda de revisión (Splink) | Más alcance, con control humano | ⏳ pendiente |
+| **E5 — Entidades desde documentos** | NER + patrones sobre `texto_indexable` | Desbloquea los millones de PDFs | ⏳ pendiente (puente parcial: backfill por anclas, §12) |
 
-E1+E2+E3 es la rebanada de alto valor (tabular de punta a punta). E4/E5 vienen después.
+E1+E2+E3 es la rebanada de alto valor (tabular de punta a punta) — **construida**, con dos
+piezas extra que el diseño no anticipaba y resultaron clave: la **proyección de salida por
+receta** (§10) y el **backfill desde el índice** (§12). E4/E5 vienen después.
 
 ---
 
@@ -172,5 +198,97 @@ E1+E2+E3 es la rebanada de alto valor (tabular de punta a punta). E4/E5 vienen d
 
 1. ¿La aprobación de mapeos vive en el **front** (vista nueva) o en **CLI/archivos de receta** al principio?
 2. Catálogo inicial de **tipos de entidad** que de verdad te sirven (persona, empresa, correo, negocio…) — para priorizar normalizadores.
-3. **Control de acceso por entidad/campo** en la API (¿todo el que tiene API key ve todo, o hay niveles?).
-4. ¿La API de entidades vive en el **mismo servicio** que la búsqueda o en uno aparte?
+3. **Control de acceso por entidad/campo** en la API (¿todo el que tiene API key ve todo, o hay niveles?). — **bloqueante para producción**; hoy la API expone CURP/RFC sin filtro de rol ni bitácora.
+4. ¿La API de entidades vive en el **mismo servicio** que la búsqueda o en uno aparte? — **resuelto:** mismo servicio (los endpoints `/entidades/*` viven en la misma API).
+
+---
+
+## 10. Proyección de salida: una persona, muchas estructuras (CONSTRUIDO)
+
+El diseño separó dos cosas que el §3 mezclaba, y resultó la pieza más útil:
+
+- **Resolución** (§11) → produce la **persona canónica ESTABLE**: siempre la misma forma interna.
+- **Proyección** → transforma esa persona a **la estructura que pide cada sistema consumidor**.
+  La estructura de salida es **un DATO editable (una "receta"), no código**: añadir un sistema =
+  otra receta, sin tocar ni redesplegar.
+
+### Dos clases de receta de proyección
+
+Las recetas viven en la tabla `recetas` (migración 0007), editables desde la UI o la API. La
+definición es JSON:
+
+1. **Por-ítem** (una persona → un objeto):
+   - `{ "passthrough": true }` — la canónica tal cual.
+   - `{ "salida": [ { "path": …, "de" | "constante": …, "mapa"?: …, "default"?: … }, … ] }`
+     - `path`: ruta de salida con puntos (anida: `contact.email`).
+     - `de`: ruta de origen en la canónica; **`constante`**: valor fijo (excluyente con `de`).
+     - `mapa`: traduce valores (`{"H":"male","M":"female"}`); `default`: relleno si viene vacío.
+
+2. **Colección** (N personas → el ARCHIVO completo): `{ "sobre": {…}, "coleccion": "personas", "item": {…} }`
+   - `sobre`: lo constante del nivel superior (p. ej. `_metadata`, `_mapeo_normalizacion_sistema`).
+   - `coleccion`: la clave del arreglo; `item`: la receta por-ítem aplicada a cada persona.
+   - Reproduce el **archivo Fz1 entero** (la semilla `fz1_bundle`).
+
+### Semillas, endpoints y UI
+
+- Arranca con **dos** recetas: `fz1_bundle` (colección = el archivo Fz1) y `sistema_plano`
+  (ejemplo por-ítem que muestra renombrar, mapear, constante y anidar). Las demás se clonan.
+- `GET /entidades/recetas` · `PUT|DELETE /entidades/recetas/{clave}` — CRUD.
+- `GET /entidades/{id}/proyectar?receta=X` — la misma persona bajo una receta por-ítem
+  (rechaza recetas de colección con **400**; ésas se exportan, no se proyectan de a una).
+- `GET /entidades/exportar?receta=X` — arma el **archivo completo** (p. ej. `fz1_bundle`).
+- UI → pestaña **Entidades**: *Recetas* (gestionar con editor JSON) y *Personas*
+  ("ver como receta" en el detalle + botón **Descargar JSON** del archivo).
+- `validar_definicion` rechaza rutas mal formadas, `mapa` sin `de`, **colisión de prefijo**
+  (una ruta es prefijo de otra) y **datos pegados como receta** (un JSON con `personas`/`_metadata`).
+
+> **Honesto:** los campos del Fz1 que E1–E3 aún no resuelve (`es_objetivo`, `redes`, `notas`,
+> `vincular_con`) **no** se inventan; salen del NER/grafo (E5) y se agregan a la receta con una
+> línea cada uno cuando existan. La receta `fz1_bundle` solo emite lo que de verdad se resuelve.
+
+---
+
+## 11. Resolución: invariantes y política de fusión (CONSTRUIDO)
+
+- **Ancla** (orden de preferencia): **CURP › RFC › EMAIL › TELÉFONO**. El identificador es
+  `entidad_id = sha256(tipo:ancla_tipo:ancla_valor.upper())`. **Misma ancla = misma entidad**
+  (idempotente: re-ejecutar no duplica, fusiona).
+- **Normalizadores con validación fuerte** (no solo formato):
+  - **CURP** (18): dígito verificador + fecha/estado válidos; **deriva** sexo, fecha y estado de
+    nacimiento; admite la **Ñ** (apellidos PEÑA/MUÑOZ).
+  - **RFC** físico (13): formato + fecha + **dígito verificador SAT** (sin él, ~1 de cada 28
+    cadenas con forma de RFC pasaría por azar — crítico para anclar desde texto).
+  - email, teléfono MX (a 10 dígitos).
+- **Fusión** (`_fusionar_campos`): **rellena huecos sin pisar lo ya puesto** (gana el primer dato
+  no vacío), recursiva en subobjetos. **No sobrescribe** un valor existente con uno distinto: hoy
+  ese conflicto se **ignora** → la política de conflicto explícita (confianza/recencia/procedencia
+  **por campo**) es trabajo de E4. Las **procedencias se acumulan deduplicadas** por `archivo_id`
+  (re-correr no infla las "fuentes").
+- **Sin carreras:** `INSERT … ON CONFLICT DO NOTHING` + `SELECT … FOR UPDATE` antes de fusionar;
+  dead-letter por fila envenenada (una fila mala no tumba la corrida).
+
+---
+
+## 12. Backfill desde el índice ya existente (CONSTRUIDO — primer puente a E5)
+
+Los datos que **ya** están indexados (en la Mac) no habían pasado por entidades. El backfill
+recorre **todo el índice de OpenSearch**, detecta personas y las resuelve con el motor de §11.
+
+- **Criterio "doc = persona":** trae una **CURP o RFC válida** en su texto (`texto_indexable` +
+  `campos_extraidos` aplanado). Regex liberal para encontrar candidatos + **validador estricto**
+  (dígito verificador) para descartar basura.
+- **Anclaje seguro en docs multi-persona:** una fila por CURP; un RFC enriquece a una CURP **solo
+  si comparten los 10 primeros chars** (mismo nombre+fecha = misma persona); todo RFC sin asociar
+  ancla su propia persona (no se pierde).
+- **Honesto:** solo fija el **ancla** y lo derivado de la CURP. **No** saca nombre/email/teléfono
+  del texto libre — asociarlos a la persona correcta es NER (E5/E8).
+- **Idempotente y reanudable:** cursor por `archivo_id` en la tabla `control`; **savepoint por
+  fila** (una fila envenenada no aborta el lote); **advisory lock** (un backfill a la vez).
+- **Limitación (una PASADA):** el orden por `archivo_id` (hash) completa el barrido de lo ya
+  indexado; para capturar docs **nuevos** se re-corre con `--reiniciar` (rescan completo,
+  idempotente). El **modo continuo** (resolver al momento de indexar) es el enganche al pipeline,
+  pendiente. `search_after` sin PIT queda anotado como deuda de robustez.
+- **Cómo se dispara:**
+  - CLI (la corrida grande, en la Mac): `uv run norm backfill-entidades [--lote N] [--max-docs N] [--reiniciar]`
+  - API acotada: `POST /entidades/backfill?lote=&max_docs=&reiniciar=` (devuelve el resumen).
+  - UI: pestaña Entidades → Personas → botón **"⟳ Procesar ya indexados (CURP/RFC)"**.
