@@ -2111,3 +2111,33 @@ button.chip-estado.activo .chip-clave {
   line-height: 1;
 }
 .icono-quitar:hover { color: var(--ink); border-color: var(--gold-soft); }
+
+/* configuración de atributos: a ancho completo, campos en rejilla */
+.config-atributos {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px 18px;
+}
+.campos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 4px 0;
+}
+.campo-celda {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  border: 0.5px solid var(--line);
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.campo-celda.es-ancla { border-left-color: var(--gold-soft); }
+.campo-celda.editable { border-left-color: var(--silver); }
+.campo-nombre { font-weight: 600; color: var(--ink); font-size: 14.5px; }
+.campo-norm { font-size: 12px; color: var(--silver); }
+.campo-celda .icono-quitar { position: absolute; top: 7px; right: 7px; }

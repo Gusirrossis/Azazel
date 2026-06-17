@@ -378,64 +378,56 @@ function GestionAtributos() {
   const quitar = (nombre: string) => persistir(lista.filter((a) => a.nombre !== nombre));
 
   return (
-    <div className="recetas-cuerpo">
-      <div className="receta-editor" style={{ width: "100%" }}>
-        <h3>Núcleo fijo (siempre se captura)</h3>
-        <p className="panel-nota">
-          Estos campos vienen por defecto y NO se editan. Las marcadas como <b>ancla</b>
-          (CURP/RFC/email/teléfono) identifican a la persona y deduplican.
-        </p>
-        {nucleo && (
-          <table>
-            <thead><tr><th>Campo</th><th>Normalizador</th><th>Ancla</th></tr></thead>
-            <tbody>
-              {nucleo.campos.map((c) => (
-                <tr key={c.nombre}>
-                  <td className="celda-nombre">{c.nombre}</td>
-                  <td className="celda-tipo">{c.normalizador}</td>
-                  <td>{c.ancla ? <span className="chip ok">ancla</span> : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {nucleo && (
-          <p className="panel-nota">Derivados de la CURP (automáticos): {nucleo.derivados.join(" · ")}</p>
-        )}
-
-        <h3 style={{ marginTop: 20 }}>Atributos extra (declarados por ti)</h3>
-        <p className="panel-nota">
-          Además del núcleo, declara qué datos EXTRA capturar (p. ej. <code>color_favorito</code>,
-          <code>placa</code>). Lo declarado se guarda en <code>atributos</code>; lo no declarado se
-          descarta (el archivo origen queda en el lago, reproyectable). Aplica a la próxima proyección/backfill.
-        </p>
-        {error && <div className="banner-error">{error}</div>}
-        {aviso && <div className="banner-aviso">{aviso}</div>}
-        <div className="explorador-campos">
-          <input value={nuevoNombre} placeholder="nombre (a-z, dígitos, _)"
-                 onChange={(e) => setNuevoNombre(e.target.value)} />
-          <select className="select-receta" value={nuevoNorm} onChange={(e) => setNuevoNorm(e.target.value)}>
-            {NORMALIZADORES.map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-          <button className="primario" disabled={!nuevoNombre.trim() || guardando} onClick={agregar}>＋ Declarar</button>
+    <div className="config-atributos">
+      <h3>Núcleo fijo (siempre se captura)</h3>
+      <p className="panel-nota">
+        Estos campos vienen por defecto y NO se editan. Las marcadas como <b>ancla</b>
+        (CURP/RFC/email/teléfono) identifican a la persona y deduplican.
+      </p>
+      {nucleo && (
+        <div className="campos-grid">
+          {nucleo.campos.map((c) => (
+            <div key={c.nombre} className={`campo-celda${c.ancla ? " es-ancla" : ""}`}>
+              <span className="campo-nombre">{c.nombre}</span>
+              <span className="campo-norm">{c.normalizador}{c.ancla ? " · ancla" : ""}</span>
+            </div>
+          ))}
         </div>
-        {lista.length === 0 ? (
-          <p className="panel-nota">Aún no hay atributos extra: solo se captura el núcleo.</p>
-        ) : (
-          <table>
-            <thead><tr><th>Atributo</th><th>Normalizador</th><th></th></tr></thead>
-            <tbody>
-              {lista.map((a) => (
-                <tr key={a.nombre}>
-                  <td className="celda-nombre">{a.nombre}</td>
-                  <td className="celda-tipo">{a.normalizador}</td>
-                  <td><button className="secundario" disabled={guardando} onClick={() => quitar(a.nombre)}>quitar</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      )}
+      {nucleo && (
+        <p className="panel-nota">Derivados de la CURP (automáticos): {nucleo.derivados.join(" · ")}</p>
+      )}
+
+      <h3 style={{ marginTop: 24 }}>Atributos extra (declarados por ti)</h3>
+      <p className="panel-nota">
+        Además del núcleo, declara qué datos EXTRA capturar (p. ej. <code>color_favorito</code>,{" "}
+        <code>placa</code>). Lo declarado se guarda en <code>atributos</code>; lo no declarado se
+        descarta (el archivo origen queda en el lago, reproyectable). Aplica a la próxima proyección/backfill.
+      </p>
+      {error && <div className="banner-error">{error}</div>}
+      {aviso && <div className="banner-aviso">{aviso}</div>}
+      <div className="explorador-campos">
+        <input value={nuevoNombre} placeholder="nombre (a-z, dígitos, _)"
+               onChange={(e) => setNuevoNombre(e.target.value)} />
+        <select className="select-receta" value={nuevoNorm} onChange={(e) => setNuevoNorm(e.target.value)}>
+          {NORMALIZADORES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <button className="primario" disabled={!nuevoNombre.trim() || guardando} onClick={agregar}>＋ Declarar</button>
       </div>
+      {lista.length === 0 ? (
+        <p className="panel-nota">Aún no hay atributos extra: solo se captura el núcleo.</p>
+      ) : (
+        <div className="campos-grid">
+          {lista.map((a) => (
+            <div key={a.nombre} className="campo-celda editable">
+              <span className="campo-nombre">{a.nombre}</span>
+              <span className="campo-norm">{a.normalizador}</span>
+              <button className="icono-quitar" disabled={guardando} title="quitar"
+                      onClick={() => quitar(a.nombre)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
