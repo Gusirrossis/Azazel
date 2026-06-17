@@ -11,9 +11,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta, entidadActivo,
   entidadProyectar, entidades as pedirEntidades, entidadesStats, exportarEntidades,
-  guardarAtributos, guardarReceta, recetas as pedirRecetas,
+  guardarAtributos, guardarReceta, nucleoEntidad, recetas as pedirRecetas,
 } from "../api";
-import type { AtributoDeclarado } from "../api";
+import type { AtributoDeclarado, NucleoEntidad } from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
 
 const NORMALIZADORES = ["texto", "curp", "rfc", "email", "telefono", "nombre"];
@@ -130,39 +130,136 @@ function DetalleEntidad({
 
 // ---------------------------------------------------------------- gestión de recetas
 
-const PLANTILLA_NUEVA = JSON.stringify(
-  { salida: [
-      { path: "full_name", de: "nombre_completo" },
-      { path: "id", de: "curp" },
-      { path: "gender", de: "sexo", mapa: { H: "male", M: "female" } },
-    ] },
-  null, 2,
-);
+type FilaSalida = { path: string; modo: "de" | "constante"; valor: string; mapa: string };
+
+// Campos canónicos sugeridos para el origen "de" (autocompletado).
+const CAMPOS_CANONICOS = [
+  "curp", "rfc", "nombre_completo", "nombre.nombre1", "nombre.nombre2",
+  "nombre.apellido1", "nombre.apellido2", "alias", "sexo", "edad", "email", "telefono",
+  "relacion", "direccion.calle", "direccion.colonia", "direccion.municipio",
+  "direccion.estado", "direccion.codigo_postal", "normalizados.normalized_dob",
+  "normalizados.normalized_estado", "atributos",
+];
+
+function defAsalida(def: Record<string, any>): { salida: any[]; tipo: "item" | "coleccion" | "passthrough" } {
+  if (def?.passthrough) return { salida: [], tipo: "passthrough" };
+  if (def && "coleccion" in def) return { salida: def.item?.salida ?? [], tipo: "coleccion" };
+  return { salida: def?.salida ?? [], tipo: "item" };
+}
+
+function aFilas(salida: any[]): FilaSalida[] {
+  return (salida || []).map((s) => ({
+    path: s.path ?? "",
+    modo: "constante" in s ? "constante" : "de",
+    valor: "constante" in s ? String(s.constante) : (s.de ?? ""),
+    mapa: s.mapa ? Object.entries(s.mapa).map(([k, v]) => `${k}:${v}`).join(", ") : "",
+  }));
+}
+
+function aSalida(filas: FilaSalida[]): any[] {
+  return filas.filter((f) => f.path.trim()).map((f) => {
+    const spec: Record<string, any> = { path: f.path.trim() };
+    if (f.modo === "constante") { spec.constante = f.valor; return spec; }
+    spec.de = f.valor.trim();
+    const mapa: Record<string, string> = {};
+    for (const par of f.mapa.split(",")) {
+      const i = par.indexOf(":");
+      if (i > 0) mapa[par.slice(0, i).trim()] = par.slice(i + 1).trim();
+    }
+    if (Object.keys(mapa).length) spec.mapa = mapa;
+    return spec;
+  });
+}
+
+// Editor VISUAL de los campos de salida (una fila por campo, sin tocar JSON).
+function EditorSalida({ filas, setFilas, editable }: {
+  filas: FilaSalida[]; setFilas: (f: FilaSalida[]) => void; editable: boolean;
+}) {
+  const set = (i: number, patch: Partial<FilaSalida>) =>
+    setFilas(filas.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  return (
+    <div className="editor-salida">
+      <table className="tabla-salida">
+        <thead><tr><th>Campo de salida</th><th>Origen</th><th>Valor</th><th>Mapa</th><th /></tr></thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr key={i}>
+              <td><input value={f.path} disabled={!editable} placeholder="contact.email"
+                         onChange={(e) => set(i, { path: e.target.value })} /></td>
+              <td>
+                <select value={f.modo} disabled={!editable}
+                        onChange={(e) => set(i, { modo: e.target.value as "de" | "constante" })}>
+                  <option value="de">de campo</option>
+                  <option value="constante">constante</option>
+                </select>
+              </td>
+              <td><input list={f.modo === "de" ? "campos-canonicos" : undefined} value={f.valor}
+                         disabled={!editable} placeholder={f.modo === "de" ? "email" : "valor fijo"}
+                         onChange={(e) => set(i, { valor: e.target.value })} /></td>
+              <td>{f.modo === "de"
+                ? <input value={f.mapa} disabled={!editable} placeholder="ej: H:male, M:female"
+                         onChange={(e) => set(i, { mapa: e.target.value })} />
+                : <span className="panel-nota">—</span>}</td>
+              <td>{editable && <button className="icono-quitar"
+                    onClick={() => setFilas(filas.filter((_, j) => j !== i))}>×</button>}</td>
+            </tr>
+          ))}
+          {filas.length === 0 && <tr><td colSpan={5} className="vacio">sin campos — agrega el primero</td></tr>}
+        </tbody>
+      </table>
+      <datalist id="campos-canonicos">{CAMPOS_CANONICOS.map((c) => <option key={c} value={c} />)}</datalist>
+      {editable && (
+        <button className="secundario" onClick={() => setFilas([...filas, { path: "", modo: "de", valor: "", mapa: "" }])}>
+          ＋ Agregar campo
+        </button>
+      )}
+    </div>
+  );
+}
 
 function GestionRecetas() {
   const [lista, setLista] = useState<Receta[]>([]);
   const [sel, setSel] = useState<Receta | null>(null);
-  const [editJson, setEditJson] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [aviso, setAviso] = useState<string | null>(null);
   const [creando, setCreando] = useState(false);
   const [nuevaClave, setNuevaClave] = useState("");
   const [nuevoNombre, setNuevoNombre] = useState("");
+  const [filas, setFilas] = useState<FilaSalida[]>([]);
+  const [tipoDef, setTipoDef] = useState<"item" | "coleccion" | "passthrough">("item");
+  const [baseDef, setBaseDef] = useState<Record<string, any>>({});
+  const [modoJson, setModoJson] = useState(false);
+  const [editJson, setEditJson] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
 
   const cargar = useCallback(() => {
     pedirRecetas().then(setLista).catch((e) => setError(String(e)));
   }, []);
   useEffect(() => cargar(), [cargar]);
 
+  const cargarDef = (def: Record<string, any>) => {
+    const { salida, tipo } = defAsalida(def);
+    setBaseDef(def); setTipoDef(tipo); setFilas(aFilas(salida));
+    setEditJson(JSON.stringify(def, null, 2));
+    setModoJson(tipo === "passthrough");
+  };
+
   const abrir = (r: Receta) => {
     setSel(r); setCreando(false); setAviso(null); setError(null);
-    setEditJson(JSON.stringify(r.definicion, null, 2));
+    cargarDef(r.definicion);
+  };
+
+  const definicionActual = (): Record<string, any> | null => {
+    if (modoJson) {
+      try { return JSON.parse(editJson); } catch { setError("El JSON no es válido"); return null; }
+    }
+    if (tipoDef === "passthrough") return { passthrough: true };
+    if (tipoDef === "coleccion") return { ...baseDef, item: { salida: aSalida(filas) } };
+    return { salida: aSalida(filas) };
   };
 
   const guardar = (clave: string, nombre: string) => {
-    let def: Record<string, unknown>;
-    try { def = JSON.parse(editJson); }
-    catch { setError("La definición no es JSON válido"); return; }
+    const def = definicionActual();
+    if (!def) return;
     guardarReceta({ clave, nombre, definicion: def })
       .then((r) => { setAviso(`guardada: ${r.clave}`); setError(null); cargar(); abrir(r); setCreando(false); })
       .catch((e) => setError(String(e)));
@@ -173,13 +270,36 @@ function GestionRecetas() {
     borrarReceta(r.clave).then(() => { setSel(null); cargar(); }).catch((e) => setError(String(e)));
   };
 
+  const editable = creando || (sel?.editable ?? false);
+  const verVisual = () => { const d = definicionActual(); if (d) { cargarDef(d); setModoJson(false); } };
+  const verJson = () => { setEditJson(JSON.stringify(definicionActual() ?? baseDef, null, 2)); setModoJson(true); };
+
+  const editor = (
+    <>
+      {tipoDef === "coleccion" && (
+        <p className="panel-nota">Receta de COLECCIÓN (archivo completo): editas la receta por-persona; el sobre/_metadata se conserva (tócalo en JSON avanzado).</p>
+      )}
+      <div className="receta-modo">
+        <button className={!modoJson ? "pestana activa" : "pestana"} disabled={tipoDef === "passthrough"} onClick={verVisual}>Editor visual</button>
+        <button className={modoJson ? "pestana activa" : "pestana"} onClick={verJson}>JSON avanzado</button>
+      </div>
+      {modoJson ? (
+        <textarea className="json-receta" value={editJson} disabled={!editable} spellCheck={false} onChange={(e) => setEditJson(e.target.value)} />
+      ) : tipoDef === "passthrough" ? (
+        <p className="panel-nota">Devuelve la persona canónica tal cual (passthrough): no hay campos que editar.</p>
+      ) : (
+        <EditorSalida filas={filas} setFilas={setFilas} editable={editable} />
+      )}
+    </>
+  );
+
   return (
     <div className="recetas-cuerpo">
       <div className="recetas-lista">
         <div className="explorador-filtros">
           <button className="primario" onClick={() => {
             setCreando(true); setSel(null); setError(null); setAviso(null);
-            setNuevaClave(""); setNuevoNombre(""); setEditJson(PLANTILLA_NUEVA);
+            setNuevaClave(""); setNuevoNombre(""); cargarDef({ salida: [{ path: "id", de: "curp" }] });
           }}>＋ Nueva receta</button>
         </div>
         {lista.map((r) => (
@@ -196,13 +316,13 @@ function GestionRecetas() {
         {aviso && <div className="banner-aviso">{aviso}</div>}
         {creando && (
           <>
-            <h3>Nueva receta de proyección</h3>
+            <h3>Nueva receta de salida</h3>
             <div className="explorador-campos">
               <input value={nuevaClave} placeholder="clave (a-z0-9_-)" onChange={(e) => setNuevaClave(e.target.value)} />
-              <input value={nuevoNombre} placeholder="nombre" onChange={(e) => setNuevoNombre(e.target.value)} />
+              <input value={nuevoNombre} placeholder="nombre visible" onChange={(e) => setNuevoNombre(e.target.value)} />
             </div>
-            <p className="panel-nota">definición: {"{ passthrough: true }"} = canónica; {"{ salida: [{ path, de | constante, mapa? }] }"} = transformar 1 persona; {"{ sobre, coleccion, item }"} = archivo completo (exportable).</p>
-            <textarea className="json-receta" value={editJson} onChange={(e) => setEditJson(e.target.value)} spellCheck={false} />
+            <p className="panel-nota">Cada renglón = un campo de salida: a dónde va (<b>path</b>) y de dónde sale (un campo canónico) o un valor fijo. Traduce valores con <code>H:male, M:female</code>.</p>
+            {editor}
             <div className="filtro-acciones">
               <button className="primario" disabled={!nuevaClave.trim() || !nuevoNombre.trim()} onClick={() => guardar(nuevaClave.trim(), nuevoNombre.trim())}>Crear</button>
             </div>
@@ -212,14 +332,14 @@ function GestionRecetas() {
           <>
             <h3>{sel.nombre} <span className="receta-clave">({sel.clave})</span></h3>
             <p className="panel-nota">{sel.descripcion}{sel.editable ? "" : " — receta BASE: clónala para variar (no editable)."}</p>
-            <textarea className="json-receta" value={editJson} onChange={(e) => setEditJson(e.target.value)} spellCheck={false} disabled={!sel.editable} />
+            {editor}
             <div className="filtro-acciones">
               <button className="primario" disabled={!sel.editable} onClick={() => guardar(sel.clave, sel.nombre)}>Guardar</button>
               {sel.editable && <button className="secundario" onClick={() => borrar(sel)}>Borrar</button>}
             </div>
           </>
         )}
-        {!sel && !creando && <p className="panel-nota">Elige una receta para ver/editar su definición, o crea una nueva.</p>}
+        {!sel && !creando && <p className="panel-nota">Elige una receta para ver/editar, o crea una nueva.</p>}
       </div>
     </div>
   );
@@ -229,8 +349,10 @@ function GestionRecetas() {
 
 function GestionAtributos() {
   const [lista, setLista] = useState<AtributoDeclarado[]>([]);
+  const [nucleo, setNucleo] = useState<NucleoEntidad | null>(null);
   const [nuevoNombre, setNuevoNombre] = useState("");
   const [nuevoNorm, setNuevoNorm] = useState("texto");
+  const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
 
@@ -238,11 +360,14 @@ function GestionAtributos() {
     pedirAtributos().then(setLista).catch((e) => setError(String(e)));
   }, []);
   useEffect(() => cargar(), [cargar]);
+  useEffect(() => { nucleoEntidad().then(setNucleo).catch(() => setNucleo(null)); }, []);
 
   const persistir = (next: AtributoDeclarado[]) => {
+    setGuardando(true);
     guardarAtributos(next)
       .then((r) => { setLista(r); setAviso("guardado"); setError(null); })
-      .catch((e) => { setError(String(e)); setAviso(null); });
+      .catch((e) => { setError(String(e)); setAviso(null); })
+      .finally(() => setGuardando(false));
   };
   const agregar = () => {
     const nombre = nuevoNombre.trim().toLowerCase();
@@ -255,12 +380,34 @@ function GestionAtributos() {
   return (
     <div className="recetas-cuerpo">
       <div className="receta-editor" style={{ width: "100%" }}>
-        <h3>Atributos extra de la persona</h3>
+        <h3>Núcleo fijo (siempre se captura)</h3>
         <p className="panel-nota">
-          El núcleo (nombre, CURP, dirección…) es fijo. Aquí declaras qué datos EXTRA se
-          capturan (p. ej. <code>color_favorito</code>, <code>placa</code>). Lo declarado se
-          guarda en <code>atributos</code>; lo no declarado se descarta (el archivo origen
-          queda en el lago, reproyectable). Aplica a la próxima proyección/backfill.
+          Estos campos vienen por defecto y NO se editan. Las marcadas como <b>ancla</b>
+          (CURP/RFC/email/teléfono) identifican a la persona y deduplican.
+        </p>
+        {nucleo && (
+          <table>
+            <thead><tr><th>Campo</th><th>Normalizador</th><th>Ancla</th></tr></thead>
+            <tbody>
+              {nucleo.campos.map((c) => (
+                <tr key={c.nombre}>
+                  <td className="celda-nombre">{c.nombre}</td>
+                  <td className="celda-tipo">{c.normalizador}</td>
+                  <td>{c.ancla ? <span className="chip ok">ancla</span> : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {nucleo && (
+          <p className="panel-nota">Derivados de la CURP (automáticos): {nucleo.derivados.join(" · ")}</p>
+        )}
+
+        <h3 style={{ marginTop: 20 }}>Atributos extra (declarados por ti)</h3>
+        <p className="panel-nota">
+          Además del núcleo, declara qué datos EXTRA capturar (p. ej. <code>color_favorito</code>,
+          <code>placa</code>). Lo declarado se guarda en <code>atributos</code>; lo no declarado se
+          descarta (el archivo origen queda en el lago, reproyectable). Aplica a la próxima proyección/backfill.
         </p>
         {error && <div className="banner-error">{error}</div>}
         {aviso && <div className="banner-aviso">{aviso}</div>}
@@ -270,7 +417,7 @@ function GestionAtributos() {
           <select className="select-receta" value={nuevoNorm} onChange={(e) => setNuevoNorm(e.target.value)}>
             {NORMALIZADORES.map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
-          <button className="primario" disabled={!nuevoNombre.trim()} onClick={agregar}>＋ Declarar</button>
+          <button className="primario" disabled={!nuevoNombre.trim() || guardando} onClick={agregar}>＋ Declarar</button>
         </div>
         {lista.length === 0 ? (
           <p className="panel-nota">Aún no hay atributos extra: solo se captura el núcleo.</p>
@@ -282,7 +429,7 @@ function GestionAtributos() {
                 <tr key={a.nombre}>
                   <td className="celda-nombre">{a.nombre}</td>
                   <td className="celda-tipo">{a.normalizador}</td>
-                  <td><button className="secundario" onClick={() => quitar(a.nombre)}>quitar</button></td>
+                  <td><button className="secundario" disabled={guardando} onClick={() => quitar(a.nombre)}>quitar</button></td>
                 </tr>
               ))}
             </tbody>
@@ -379,26 +526,27 @@ export default function Entidades() {
             </div>
           </div>
           {error && <div className="banner-error">{error}</div>}
-          <div className="explorador-filtros" style={{ paddingTop: 0 }}>
-            <div className="explorador-campos">
-              <span className="panel-nota" style={{ margin: 0, alignSelf: "center" }}>Registros ya indexados:</span>
-              <button className="secundario" disabled={backfilling} onClick={procesarIndexados}>
-                {backfilling ? "procesando…" : "⟳ Procesar ya indexados (CURP/RFC)"}
+          <div className="entidades-barra">
+            <div className="acc-grupo">
+              <span className="acc-etq">Ya indexados</span>
+              <button className="secundario" disabled={backfilling} onClick={procesarIndexados}
+                      title="Resuelve personas de los archivos ya indexados que traen CURP/RFC">
+                {backfilling ? "procesando…" : "⟳ Procesar (CURP/RFC)"}
               </button>
             </div>
+            {colecciones.length > 0 && (
+              <div className="acc-grupo">
+                <span className="acc-etq">Exportar archivo</span>
+                <select className="select-receta" value={recetaExp} onChange={(e) => setRecetaExp(e.target.value)}>
+                  {colecciones.map((r) => <option key={r.clave} value={r.clave}>{r.nombre}</option>)}
+                </select>
+                <button className="secundario" disabled={exportando} onClick={descargar}>
+                  {exportando ? "exportando…" : "⬇ Descargar JSON"}
+                </button>
+              </div>
+            )}
           </div>
           {backfillMsg && <div className="banner-aviso">{backfillMsg}</div>}
-          {colecciones.length > 0 && (
-            <div className="explorador-filtros" style={{ paddingTop: 0 }}>
-              <div className="explorador-campos">
-                <span className="panel-nota" style={{ margin: 0, alignSelf: "center" }}>Exportar archivo completo:</span>
-                <select className="select-receta" value={recetaExp} onChange={(e) => setRecetaExp(e.target.value)}>
-                  {colecciones.map((r) => <option key={r.clave} value={r.clave}>{r.nombre} ({r.clave})</option>)}
-                </select>
-                <button className="secundario" disabled={exportando} onClick={descargar}>{exportando ? "exportando…" : "⬇ Descargar JSON"}</button>
-              </div>
-            </div>
-          )}
           <div className="resultados-resumen"><b>{total.toLocaleString()}</b> personas resueltas — cada una deduplicada por su ancla fuerte</div>
           <table>
             <thead><tr><th>Nombre</th><th>CURP</th><th>Sexo</th><th>Edad</th><th>Estado</th><th>Ancla</th><th>Fuentes</th></tr></thead>

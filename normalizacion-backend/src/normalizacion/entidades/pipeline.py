@@ -123,6 +123,8 @@ def construir_entidad(
     # bolsa, que la fusión combina recursivamente entre fuentes.
     atributos: dict[str, Any] = {}
     for attr in atributos_declarados:
+        if receta.por_nombre(attr["nombre"]):  # es campo del núcleo: NO duplicar en la bolsa
+            continue
         crudo = crudos.get(attr["nombre"])
         if crudo:
             n = _norm_campo(attr.get("normalizador", "texto"), crudo)

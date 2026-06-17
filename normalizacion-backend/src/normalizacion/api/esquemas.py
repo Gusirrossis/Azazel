@@ -6,7 +6,7 @@ el servidor construye la consulta (allowlist implícita, PROPUESTA §9).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -214,7 +214,7 @@ class AtributoDeclarado(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nombre: str = Field(min_length=2, max_length=40, pattern=r"^[a-z][a-z0-9_]*$")
-    normalizador: str = "texto"
+    normalizador: Literal["texto", "curp", "rfc", "email", "telefono", "nombre"] = "texto"
 
 
 class SolicitudAtributos(BaseModel):

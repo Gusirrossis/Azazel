@@ -119,6 +119,16 @@ export function backfillEntidades(maxDocs = 2000): Promise<ResumenBackfill> {
 
 export interface AtributoDeclarado { nombre: string; normalizador: string }
 
+export interface NucleoEntidad {
+  campos: { nombre: string; normalizador: string; ancla: boolean }[];
+  derivados: string[];
+}
+
+// El esquema FIJO de la persona (de solo lectura): lo que SIEMPRE se captura.
+export function nucleoEntidad(): Promise<NucleoEntidad> {
+  return pedir<NucleoEntidad>("/entidades/config/nucleo");
+}
+
 // Atributos EXTRA que la entidad captura además del núcleo fijo (color_favorito…).
 export function atributosDeclarados(): Promise<AtributoDeclarado[]> {
   return pedir<AtributoDeclarado[]>("/entidades/config/atributos");

@@ -142,12 +142,34 @@ class TestAtributosDeclarados:
     def test_guardar_valida(self, config: Config) -> None:
         from normalizacion.entidades.config_entidad import guardar_atributos
 
-        # reservado, formato inválido (espacio), normalizador desconocido
-        for malo in ([{"nombre": "curp"}], [{"nombre": "color raro"}], [{"nombre": "x", "normalizador": "zzz"}]):
+        # núcleo, CAMPO DE RECETA (municipio/nombre1), contenedor, formato, normalizador
+        malos = ([{"nombre": "curp"}], [{"nombre": "municipio"}], [{"nombre": "nombre1"}],
+                 [{"nombre": "direccion"}], [{"nombre": "color raro"}],
+                 [{"nombre": "x", "normalizador": "zzz"}])
+        for malo in malos:
             with pytest.raises(ValueError):
                 guardar_atributos(config, malo)
         out = guardar_atributos(config, [{"nombre": "placa"}, {"nombre": "placa"}])  # dedup
         assert out == [{"nombre": "placa", "normalizador": "texto"}]
+
+    def test_construir_no_duplica_campo_nucleo(self) -> None:
+        from normalizacion.entidades.pipeline import construir_entidad
+
+        # aunque se cuele un atributo con nombre de campo de receta, NO se duplica en la bolsa
+        ent = construir_entidad(
+            PERSONA_FZ1, {"curp": "curp", "muni": "municipio"},
+            {"curp": CURP_VALERIA, "muni": "Cuauhtemoc"},
+            ({"nombre": "municipio", "normalizador": "texto"},),
+        )
+        assert ent["campos"]["direccion"]["municipio"] == "Cuauhtemoc"  # va al núcleo
+        assert "atributos" not in ent["campos"]  # NO se duplica en atributos
+
+    def test_mapeo_nucleo_tiene_precedencia(self) -> None:
+        # una columna 'correo' mapea a email (núcleo), no a un atributo declarado 'correo'
+        prop = mapeo.proponer_mapeo(
+            PERSONA_FZ1, ["correo"], None, [{"nombre": "correo", "normalizador": "texto"}],
+        )
+        assert prop["correo"]["campo"] == "email"
 
     def test_mapeo_propone_atributo_declarado(self) -> None:
         prop = mapeo.proponer_mapeo(

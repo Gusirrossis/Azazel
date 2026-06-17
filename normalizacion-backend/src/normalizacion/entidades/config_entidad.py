@@ -18,14 +18,25 @@ import psycopg
 
 from normalizacion.core.config import Config
 
+from .receta import RECETAS
+
 _CLAVE = "entidad_atributos_declarados"
 NORMALIZADORES = ("texto", "curp", "rfc", "email", "telefono", "nombre")
 _RE_NOMBRE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
-# Nombres del núcleo canónico: un atributo declarado no puede pisarlos.
-_RESERVADOS = {
-    "nombre", "nombre_completo", "alias", "curp", "rfc", "sexo", "edad", "direccion",
-    "email", "telefono", "relacion", "normalizados", "atributos",
+# Llaves contenedoras/derivadas del documento canónico (no son campos de receta).
+_CONTENEDORES = {
+    "nombre", "nombre_completo", "direccion", "normalizados", "atributos", "edad",
 }
+
+
+def _prohibidos() -> set[str]:
+    """Nombres que un atributo EXTRA NO puede usar: contenedores/derivados del canónico
+    + TODOS los nombres de campo de las recetas (nombre1, calle, municipio, codigo_postal,
+    estado…). Si no, un atributo 'municipio' duplicaría el campo del núcleo."""
+    nombres = set(_CONTENEDORES)
+    for r in RECETAS.values():
+        nombres.update(c.nombre for c in r.campos)
+    return nombres
 
 
 def leer_atributos(config: Config) -> list[dict[str, str]]:
@@ -38,6 +49,7 @@ def leer_atributos(config: Config) -> list[dict[str, str]]:
 def guardar_atributos(config: Config, lista: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Valida y persiste la lista de atributos declarados. Rechaza nombres inválidos,
     reservados (chocan con el núcleo) o normalizadores desconocidos. Devuelve la limpia."""
+    prohibidos = _prohibidos()
     limpia: list[dict[str, str]] = []
     vistos: set[str] = set()
     for a in lista:
@@ -45,7 +57,7 @@ def guardar_atributos(config: Config, lista: list[dict[str, Any]]) -> list[dict[
         norm = str(a.get("normalizador", "texto")).strip().lower()
         if not _RE_NOMBRE.match(nombre):
             raise ValueError(f"nombre de atributo inválido: '{nombre}' (minúsculas, dígitos y _)")
-        if nombre in _RESERVADOS:
+        if nombre in prohibidos:
             raise ValueError(f"'{nombre}' es un campo del núcleo: elige otro nombre")
         if norm not in NORMALIZADORES:
             opciones = ", ".join(NORMALIZADORES)

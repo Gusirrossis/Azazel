@@ -2046,5 +2046,68 @@ button.chip-estado.activo .chip-clave {
   color: var(--ink);
   padding: 8px 12px;
   font-size: 14.5px;
-  min-width: 260px;
+  min-width: 240px;
 }
+
+/* barra de acciones de Personas: grupos compactos en una sola fila */
+.entidades-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 24px;
+  padding: 10px 18px;
+}
+.acc-grupo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.acc-etq {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--silver);
+}
+
+/* recetas: toggle editor visual / JSON + editor de filas */
+.receta-modo { display: flex; gap: 4px; margin: 2px 0 6px; }
+.editor-salida { display: flex; flex-direction: column; gap: 10px; }
+.tabla-salida { width: 100%; border-collapse: collapse; }
+.tabla-salida th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--silver);
+  padding: 4px 6px;
+  border-bottom: 0.5px solid var(--line);
+}
+.tabla-salida td { padding: 5px 6px; vertical-align: middle; }
+.tabla-salida input,
+.tabla-salida select {
+  width: 100%;
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 7px 9px;
+  font-size: 13.5px;
+}
+.tabla-salida input:disabled,
+.tabla-salida select:disabled { opacity: 0.6; }
+.icono-quitar {
+  background: transparent;
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  color: var(--silver);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  line-height: 1;
+}
+.icono-quitar:hover { color: var(--ink); border-color: var(--gold-soft); }

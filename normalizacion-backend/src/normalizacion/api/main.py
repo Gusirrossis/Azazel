@@ -488,6 +488,23 @@ def crear_app(config: Config) -> FastAPI:
 
         return leer_atributos(request.app.state.config)
 
+    @aplicacion.get("/entidades/config/nucleo")
+    def get_config_nucleo(_: Autorizado, request: Request) -> dict[str, Any]:
+        """El esquema FIJO de la persona: campos del núcleo (de la receta) + los
+        derivados de la CURP. Solo lectura — los EXTRA editables van por /config/atributos."""
+        from normalizacion.entidades.receta import obtener_receta
+
+        r = obtener_receta("persona")
+        campos = [
+            {"nombre": c.nombre, "normalizador": c.normalizador, "ancla": c.es_ancla}
+            for c in r.campos
+        ]
+        derivados = [
+            "nombre_completo", "edad", "normalized_dob (de CURP)",
+            "normalized_sex (de CURP)", "normalized_estado (de CURP)", "normalized_mpio",
+        ]
+        return {"campos": campos, "derivados": derivados}
+
     @aplicacion.put("/entidades/config/atributos")
     def put_config_atributos(
         solicitud: SolicitudAtributos, _: Autorizado, request: Request

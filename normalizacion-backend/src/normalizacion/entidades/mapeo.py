@@ -77,16 +77,17 @@ def proponer_mapeo(
                         continue
                     if best is None or cand[0] > best[0]:
                         best = cand
-            for attr in declarados:  # atributos EXTRA declarados como destino
-                ap = N.plegar(attr["nombre"])
-                if plg == ap:
-                    cand = (0.8, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
-                elif f" {ap} " in plg_pad:
-                    cand = (0.6, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
-                else:
-                    continue
-                if best is None or cand[0] > best[0]:
-                    best = cand
+            if best is None:  # el núcleo SIEMPRE tiene precedencia; el extra solo si no hubo match
+                for attr in declarados:  # atributos EXTRA declarados como destino
+                    ap = N.plegar(attr["nombre"])
+                    if plg == ap:
+                        cand = (0.8, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
+                    elif f" {ap} " in plg_pad:
+                        cand = (0.6, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
+                    else:
+                        continue
+                    if best is None or cand[0] > best[0]:
+                        best = cand
             if best:
                 mejor = {"campo": best[1], "confianza": best[0], "motivo": best[2]}
 
