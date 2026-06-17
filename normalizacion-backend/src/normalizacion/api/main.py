@@ -28,6 +28,7 @@ from normalizacion.api.esquemas import (
     RespuestaFiltro,
     RespuestaReprocesar,
     RespuestaTablero,
+    SolicitudAtributos,
     SolicitudProponerMapeo,
     SolicitudProyectar,
     SolicitudReceta,
@@ -479,6 +480,28 @@ def crear_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail="receta no encontrada")
         return exportar(request.app.state.config, rec["definicion"], limite=limite)
 
+    @aplicacion.get("/entidades/config/atributos")
+    def get_config_atributos(_: Autorizado, request: Request) -> list[dict[str, str]]:
+        """Atributos EXTRA que la entidad captura además del núcleo fijo (color_favorito…).
+        Lo declarado aquí se guarda en `campos.atributos`; lo no declarado se descarta."""
+        from normalizacion.entidades.config_entidad import leer_atributos
+
+        return leer_atributos(request.app.state.config)
+
+    @aplicacion.put("/entidades/config/atributos")
+    def put_config_atributos(
+        solicitud: SolicitudAtributos, _: Autorizado, request: Request
+    ) -> list[dict[str, str]]:
+        """Reemplaza la lista de atributos declarados (valida nombres/normalizadores)."""
+        from normalizacion.entidades.config_entidad import guardar_atributos
+
+        try:
+            return guardar_atributos(
+                request.app.state.config, [a.model_dump() for a in solicitud.atributos]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @aplicacion.get("/entidades/{entidad_id}", response_model=Entidad)
     def get_entidad(entidad_id: str, _: Autorizado, request: Request) -> Entidad:
         from normalizacion.entidades.consultas import obtener_entidad
@@ -533,13 +556,15 @@ def crear_app(config: Config) -> FastAPI:
         """E2: propone columna→campo (sinónimos + contenido) para que el operador
         confirme. No persiste — eso es el paso de aprobación."""
         from normalizacion.entidades import mapeo
+        from normalizacion.entidades.config_entidad import leer_atributos
         from normalizacion.entidades.receta import obtener_receta
 
         try:
             receta = obtener_receta(solicitud.tipo)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        prop = mapeo.proponer_mapeo(receta, solicitud.columnas, solicitud.muestras)
+        declarados = leer_atributos(request.app.state.config)
+        prop = mapeo.proponer_mapeo(receta, solicitud.columnas, solicitud.muestras, declarados)
         return {"huella": mapeo.huella_columnas(solicitud.columnas), "propuestas": prop}
 
     @aplicacion.post("/entidades/proyectar")

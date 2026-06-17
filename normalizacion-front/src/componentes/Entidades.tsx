@@ -9,11 +9,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  backfillEntidades, borrarReceta, entidadActivo, entidadProyectar,
-  entidades as pedirEntidades, entidadesStats, exportarEntidades, guardarReceta,
-  recetas as pedirRecetas,
+  atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta, entidadActivo,
+  entidadProyectar, entidades as pedirEntidades, entidadesStats, exportarEntidades,
+  guardarAtributos, guardarReceta, recetas as pedirRecetas,
 } from "../api";
+import type { AtributoDeclarado } from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
+
+const NORMALIZADORES = ["texto", "curp", "rfc", "email", "telefono", "nombre"];
 
 const ANCLA_ETQ: Record<string, string> = {
   curp: "CURP", rfc: "RFC", email: "correo", telefono: "teléfono",
@@ -103,6 +106,19 @@ function DetalleEntidad({
       {fila("Estado de nacimiento", norm.normalized_estado)}
       {fila("Email", c.email)}
       {fila("Teléfono", c.telefono)}
+
+      {c.atributos && Object.keys(c.atributos).length > 0 && (
+        <>
+          <h3>Atributos extra (declarados)</h3>
+          {Object.entries(c.atributos as Record<string, unknown>).map(([k, v]) => fila(k, v))}
+        </>
+      )}
+
+      <h3>Ficha completa (canónica)</h3>
+      <details>
+        <summary className="panel-nota" style={{ cursor: "pointer" }}>ver TODO el dato canónico de esta persona (JSON)</summary>
+        <pre className="texto-extraido">{JSON.stringify(c, null, 2)}</pre>
+      </details>
 
       <h3>Contingencia</h3>
       {aviso && <div className="banner-error">{aviso}</div>}
@@ -209,10 +225,78 @@ function GestionRecetas() {
   );
 }
 
+// ---------------------------------------------------------------- atributos extra
+
+function GestionAtributos() {
+  const [lista, setLista] = useState<AtributoDeclarado[]>([]);
+  const [nuevoNombre, setNuevoNombre] = useState("");
+  const [nuevoNorm, setNuevoNorm] = useState("texto");
+  const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  const cargar = useCallback(() => {
+    pedirAtributos().then(setLista).catch((e) => setError(String(e)));
+  }, []);
+  useEffect(() => cargar(), [cargar]);
+
+  const persistir = (next: AtributoDeclarado[]) => {
+    guardarAtributos(next)
+      .then((r) => { setLista(r); setAviso("guardado"); setError(null); })
+      .catch((e) => { setError(String(e)); setAviso(null); });
+  };
+  const agregar = () => {
+    const nombre = nuevoNombre.trim().toLowerCase();
+    if (!nombre) return;
+    persistir([...lista, { nombre, normalizador: nuevoNorm }]);
+    setNuevoNombre(""); setNuevoNorm("texto");
+  };
+  const quitar = (nombre: string) => persistir(lista.filter((a) => a.nombre !== nombre));
+
+  return (
+    <div className="recetas-cuerpo">
+      <div className="receta-editor" style={{ width: "100%" }}>
+        <h3>Atributos extra de la persona</h3>
+        <p className="panel-nota">
+          El núcleo (nombre, CURP, dirección…) es fijo. Aquí declaras qué datos EXTRA se
+          capturan (p. ej. <code>color_favorito</code>, <code>placa</code>). Lo declarado se
+          guarda en <code>atributos</code>; lo no declarado se descarta (el archivo origen
+          queda en el lago, reproyectable). Aplica a la próxima proyección/backfill.
+        </p>
+        {error && <div className="banner-error">{error}</div>}
+        {aviso && <div className="banner-aviso">{aviso}</div>}
+        <div className="explorador-campos">
+          <input value={nuevoNombre} placeholder="nombre (a-z, dígitos, _)"
+                 onChange={(e) => setNuevoNombre(e.target.value)} />
+          <select className="select-receta" value={nuevoNorm} onChange={(e) => setNuevoNorm(e.target.value)}>
+            {NORMALIZADORES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <button className="primario" disabled={!nuevoNombre.trim()} onClick={agregar}>＋ Declarar</button>
+        </div>
+        {lista.length === 0 ? (
+          <p className="panel-nota">Aún no hay atributos extra: solo se captura el núcleo.</p>
+        ) : (
+          <table>
+            <thead><tr><th>Atributo</th><th>Normalizador</th><th></th></tr></thead>
+            <tbody>
+              {lista.map((a) => (
+                <tr key={a.nombre}>
+                  <td className="celda-nombre">{a.nombre}</td>
+                  <td className="celda-tipo">{a.normalizador}</td>
+                  <td><button className="secundario" onClick={() => quitar(a.nombre)}>quitar</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- pestaña
 
 export default function Entidades() {
-  const [modo, setModo] = useState<"personas" | "recetas">("personas");
+  const [modo, setModo] = useState<"personas" | "recetas" | "atributos">("personas");
   const [stats, setStats] = useState<EstadisticasEntidades | null>(null);
   const [lista, setLista] = useState<Entidad[]>([]);
   const [total, setTotal] = useState(0);
@@ -278,9 +362,10 @@ export default function Entidades() {
       <div className="pestanas" style={{ margin: "0 0 6px", padding: "10px 18px 0" }}>
         <button className={modo === "personas" ? "pestana activa" : "pestana"} onClick={() => setModo("personas")}>Personas</button>
         <button className={modo === "recetas" ? "pestana activa" : "pestana"} onClick={() => setModo("recetas")}>Recetas</button>
+        <button className={modo === "atributos" ? "pestana activa" : "pestana"} onClick={() => setModo("atributos")}>Atributos</button>
       </div>
 
-      {modo === "recetas" ? <GestionRecetas /> : (
+      {modo === "recetas" ? <GestionRecetas /> : modo === "atributos" ? <GestionAtributos /> : (
         <>
           <div className="kpis kpis-secundarios" style={{ padding: "10px 18px 0" }}>
             <div className="kpi tono-ok"><span className="kpi-valor kpi-ok">{(stats?.total ?? 0).toLocaleString()}</span><span className="kpi-etiqueta">personas canónicas</span></div>

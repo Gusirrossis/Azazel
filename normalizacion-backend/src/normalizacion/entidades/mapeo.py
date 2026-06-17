@@ -37,12 +37,15 @@ def proponer_mapeo(
     receta: Receta,
     columnas: list[str],
     muestras: dict[str, list[Any]] | None = None,
+    atributos_declarados: list[dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Propone {columna: {campo, confianza, motivo}} para cada columna del dataset.
 
     Confianza: 0.95 si el CONTENIDO valida como un ancla; 0.8 si el nombre coincide
-    exacto con un sinónimo; 0.6 si lo contiene. None (sin propuesta) si nada encaja.
-    """
+    exacto con un sinónimo (o atributo declarado); 0.6 si lo contiene. None si nada encaja.
+    Los atributos EXTRA declarados también son destino: una columna 'color_favorito'
+    mapea al atributo 'color_favorito'."""
+    declarados = atributos_declarados or []
     propuestas: dict[str, dict[str, Any]] = {}
     for col in columnas:
         plg = N.plegar(col)
@@ -74,6 +77,16 @@ def proponer_mapeo(
                         continue
                     if best is None or cand[0] > best[0]:
                         best = cand
+            for attr in declarados:  # atributos EXTRA declarados como destino
+                ap = N.plegar(attr["nombre"])
+                if plg == ap:
+                    cand = (0.8, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
+                elif f" {ap} " in plg_pad:
+                    cand = (0.6, attr["nombre"], f"atributo declarado '{attr['nombre']}'")
+                else:
+                    continue
+                if best is None or cand[0] > best[0]:
+                    best = cand
             if best:
                 mejor = {"campo": best[1], "confianza": best[0], "motivo": best[2]}
 

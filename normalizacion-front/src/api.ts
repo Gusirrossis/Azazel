@@ -117,6 +117,19 @@ export function backfillEntidades(maxDocs = 2000): Promise<ResumenBackfill> {
   return pedir<ResumenBackfill>(`/entidades/backfill?max_docs=${maxDocs}`, { method: "POST" });
 }
 
+export interface AtributoDeclarado { nombre: string; normalizador: string }
+
+// Atributos EXTRA que la entidad captura además del núcleo fijo (color_favorito…).
+export function atributosDeclarados(): Promise<AtributoDeclarado[]> {
+  return pedir<AtributoDeclarado[]>("/entidades/config/atributos");
+}
+
+export function guardarAtributos(atributos: AtributoDeclarado[]): Promise<AtributoDeclarado[]> {
+  return pedir<AtributoDeclarado[]>("/entidades/config/atributos", {
+    method: "PUT", body: JSON.stringify({ atributos }),
+  });
+}
+
 // ----- recetas de proyección (editables) -----
 
 export function recetas(clase?: string): Promise<Receta[]> {

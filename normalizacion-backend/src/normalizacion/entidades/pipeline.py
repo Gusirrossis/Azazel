@@ -55,9 +55,15 @@ def _norm_campo(normalizador: str, crudo: str) -> N.Normalizado:
             return N.Normalizado(v or None, bool(v), crudo)
 
 
-def construir_entidad(receta: Receta, asignacion: dict[str, str], fila: dict[str, Any]) -> dict[str, Any] | None:
+def construir_entidad(
+    receta: Receta, asignacion: dict[str, str], fila: dict[str, Any],
+    atributos_declarados: tuple[dict[str, str], ...] = (),
+) -> dict[str, Any] | None:
     """Normaliza una fila a la forma Fz1. Devuelve {campos, ancla_tipo, ancla_valor}
-    o None si no hay ancla fuerte (esos van a E4: resolución difusa)."""
+    o None si no hay ancla fuerte (esos van a E4: resolución difusa).
+
+    `atributos_declarados` [{nombre, normalizador}] captura datos EXTRA (color_favorito,
+    placa…) en `campos.atributos` cuando vienen mapeados; lo no declarado se descarta."""
     # 1) columna → campo canónico (valor crudo)
     crudos: dict[str, str] = {}
     for col, campo in asignacion.items():
@@ -112,6 +118,18 @@ def construir_entidad(receta: Receta, asignacion: dict[str, str], fila: dict[str
             "normalized_mpio": N.plegar(val("municipio")) if val("municipio") else None,
         },
     }
+
+    # 3b) atributos EXTRA declarados (lo demás se descarta): se acumulan en su propia
+    # bolsa, que la fusión combina recursivamente entre fuentes.
+    atributos: dict[str, Any] = {}
+    for attr in atributos_declarados:
+        crudo = crudos.get(attr["nombre"])
+        if crudo:
+            n = _norm_campo(attr.get("normalizador", "texto"), crudo)
+            if n.valido and n.valor:
+                atributos[attr["nombre"]] = n.valor
+    if atributos:
+        campos["atributos"] = atributos
 
     # 4) elegir el ancla fuerte (CURP > RFC > email > teléfono)
     valores_ancla = {
@@ -198,12 +216,15 @@ def proyectar(
 ) -> ResumenProyeccion:
     """Proyecta una lista de filas (de un dataset) a entidades canónicas resueltas
     por ancla fuerte. Idempotente: re-ejecutar no duplica (misma CURP = misma fila)."""
+    from .config_entidad import leer_atributos
+
     r = ResumenProyeccion()
+    declarados = tuple(leer_atributos(config))  # atributos EXTRA a capturar
     with psycopg.connect(config.postgres_dsn) as conn:
         for fila in filas:
             r.filas += 1
             try:
-                ent = construir_entidad(receta, asignacion, fila)
+                ent = construir_entidad(receta, asignacion, fila, declarados)
             except Exception as exc:  # fila envenenada → dead-letter, la corrida sigue
                 r.errores += 1
                 log.warning("fila_envenenada", error=str(exc)[:200])

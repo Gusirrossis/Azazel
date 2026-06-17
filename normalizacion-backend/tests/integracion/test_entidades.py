@@ -113,6 +113,51 @@ class TestMapeoPropuesto:
         assert mapeo.huella_columnas(["CURP", "Nombre"]) == mapeo.huella_columnas(["nombre", "curp"])
 
 
+class TestAtributosDeclarados:
+    """El núcleo es fijo; los atributos EXTRA declarados se capturan, lo demás se descarta."""
+
+    def test_captura_declarado_descarta_lo_demas(self, config: Config) -> None:
+        from normalizacion.entidades.config_entidad import guardar_atributos
+
+        guardar_atributos(config, [{"nombre": "color_favorito", "normalizador": "texto"}])
+        asign = {**ASIGN, "color": "color_favorito", "secreto": "dato_no_declarado"}
+        filas = [{"curp": CURP_VALERIA, "primer_nombre": "Valeria",
+                  "color": "azul", "secreto": "ssh"}]
+        proyectar(config, PERSONA_FZ1, asign, filas)
+        c = listar_entidades(config)["entidades"][0]["campos"]
+        assert c["atributos"]["color_favorito"] == "azul"  # declarado → se captura
+        assert "dato_no_declarado" not in c.get("atributos", {})  # no declarado → se descarta
+        assert "secreto" not in c
+
+    def test_atributo_se_acumula_entre_fuentes(self, config: Config) -> None:
+        from normalizacion.entidades.config_entidad import guardar_atributos
+
+        guardar_atributos(config, [{"nombre": "color_favorito"}, {"nombre": "hobby"}])
+        asign = {**ASIGN, "color": "color_favorito", "pasatiempo": "hobby"}
+        proyectar(config, PERSONA_FZ1, asign, [{"curp": CURP_VALERIA, "color": "azul"}])
+        proyectar(config, PERSONA_FZ1, asign, [{"curp": CURP_VALERIA, "pasatiempo": "ajedrez"}])
+        a = listar_entidades(config)["entidades"][0]["campos"]["atributos"]
+        assert a == {"color_favorito": "azul", "hobby": "ajedrez"}  # de dos fuentes
+
+    def test_guardar_valida(self, config: Config) -> None:
+        from normalizacion.entidades.config_entidad import guardar_atributos
+
+        # reservado, formato inválido (espacio), normalizador desconocido
+        for malo in ([{"nombre": "curp"}], [{"nombre": "color raro"}], [{"nombre": "x", "normalizador": "zzz"}]):
+            with pytest.raises(ValueError):
+                guardar_atributos(config, malo)
+        out = guardar_atributos(config, [{"nombre": "placa"}, {"nombre": "placa"}])  # dedup
+        assert out == [{"nombre": "placa", "normalizador": "texto"}]
+
+    def test_mapeo_propone_atributo_declarado(self) -> None:
+        prop = mapeo.proponer_mapeo(
+            PERSONA_FZ1, ["color_favorito", "Otra"], None,
+            [{"nombre": "color_favorito", "normalizador": "texto"}],
+        )
+        assert prop["color_favorito"]["campo"] == "color_favorito"
+        assert prop["Otra"]["campo"] is None
+
+
 class TestConstruirEntidad:
     def test_deriva_todo_de_curp(self) -> None:
         ent = construir_entidad(PERSONA_FZ1, {"curp": "curp"}, {"curp": CURP_VALERIA})

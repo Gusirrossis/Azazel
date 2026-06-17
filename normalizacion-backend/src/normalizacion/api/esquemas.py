@@ -208,6 +208,23 @@ class SolicitudReceta(BaseModel):
     clase: str = "proyeccion"
 
 
+class AtributoDeclarado(BaseModel):
+    """Un atributo EXTRA que la entidad captura además del núcleo fijo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str = Field(min_length=2, max_length=40, pattern=r"^[a-z][a-z0-9_]*$")
+    normalizador: str = "texto"
+
+
+class SolicitudAtributos(BaseModel):
+    """La lista completa de atributos declarados (reemplaza la anterior)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    atributos: list[AtributoDeclarado] = Field(default_factory=list, max_length=100)
+
+
 # ------------------------------------------------------------------- tablero
 
 
