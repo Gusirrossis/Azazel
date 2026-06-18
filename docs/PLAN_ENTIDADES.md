@@ -5,10 +5,10 @@
 
 ---
 
-## Estado de implementación (2026-06-16)
+## Estado de implementación (2026-06-17)
 
 Lo que sigue (§1–§9) es el diseño aprobado. Esto es lo CONSTRUIDO contra ese diseño;
-el detalle de lo nuevo está en §10–§12.
+el detalle de lo nuevo está en §10–§13.
 
 | Capacidad | Estado | Dónde |
 |---|---|---|
@@ -20,7 +20,8 @@ el detalle de lo nuevo está en §10–§12.
 | **Export del archivo completo** (p. ej. el Fz1 entero) | ✅ construido | receta de colección `fz1_bundle`; `GET /entidades/exportar`; ver **§10** |
 | Contingencia (soft-delete reversible, LFPDPPP) | ✅ construido | `POST /entidades/{id}/activo` (flag `activo`) |
 | **Backfill desde el índice ya existente** (CURP/RFC del texto indexado) | ✅ construido | `entidades/backfill.py`; `norm backfill-entidades`; `POST /entidades/backfill`; ver **§12** |
-| UI: pestaña Entidades (Personas + Recetas, ver-como-receta, export, backfill) | ✅ construido | `normalizacion-front/.../Entidades.tsx` |
+| **Atributos EXTRA declarados** (núcleo fijo + extras en `campos.atributos`) | ✅ construido | `entidades/config_entidad.py`; `GET/PUT /entidades/config/atributos`, `GET /entidades/config/nucleo`; ver **§13** |
+| UI: pestaña Entidades (Personas, Recetas con **editor visual**, Atributos con **núcleo + extras**, ver-como-receta, export, backfill, ficha completa) | ✅ construido | `normalizacion-front/.../Entidades.tsx` |
 | Resolución difusa (Splink, sin ancla exacta) | ⏳ pendiente | §4 fase E4 |
 | NER completo sobre documentos | ⏳ pendiente | §7 fase E5 (el backfill §12 es el primer puente: solo anclas por regex) |
 | Grafo de relaciones (`vincular_con`) | ⏳ pendiente | E5 |
@@ -292,3 +293,44 @@ recorre **todo el índice de OpenSearch**, detecta personas y las resuelve con e
   - CLI (la corrida grande, en la Mac): `uv run norm backfill-entidades [--lote N] [--max-docs N] [--reiniciar]`
   - API acotada: `POST /entidades/backfill?lote=&max_docs=&reiniciar=` (devuelve el resumen).
   - UI: pestaña Entidades → Personas → botón **"⟳ Procesar ya indexados (CURP/RFC)"**.
+
+---
+
+## 13. Atributos de la persona: núcleo fijo + extras declarados (CONSTRUIDO)
+
+Para **no desperdiciar datos** sin que la entidad crezca sin control, el esquema tiene
+dos partes:
+
+- **Núcleo fijo** (en código, `receta.py` + `construir_entidad`): los campos de siempre
+  (nombre, curp, rfc, dirección, email, teléfono, relación, sexo, edad, `normalizados`).
+  No se editan; las **anclas** (CURP/RFC/email/teléfono) identifican a la persona.
+- **Atributos EXTRA declarados** (editables): el operador declara qué datos adicionales
+  capturar (`color_favorito`, `placa`, `hobby`…). **Solo lo declarado se guarda** en
+  `campos.atributos`; lo no declarado se descarta (pero el archivo origen queda en el
+  lago → reproyectable). *Decisión del usuario: capturar solo lo declarado, no una bolsa
+  abierta.* Se acumula entre fuentes (la fusión §11 es recursiva).
+
+**Reglas y endpoints:**
+- `GET /entidades/config/nucleo` — el esquema fijo (campos del núcleo + derivados), solo lectura.
+- `GET/PUT /entidades/config/atributos` — la lista de atributos declarados (editable). La lista
+  se guarda en la tabla `control`. Validación: nombre `[a-z][a-z0-9_]*`, normalizador de
+  `{texto,curp,rfc,email,telefono,nombre}`, y **no puede chocar con un campo del núcleo** (la
+  lista de reservados se deriva de la receta: `municipio`, `nombre1`, `calle`… quedan vetados).
+- En el mapeo, el **núcleo tiene precedencia**: un atributo extra nunca le roba la columna a un
+  campo base. `construir_entidad` además omite un atributo que coincida con un campo del núcleo
+  (defensa contra duplicación).
+- UI → pestaña **Entidades → Atributos**: ve el **núcleo fijo** (rejilla, anclas marcadas) y
+  **declara/quita** los extra. El detalle de cada persona trae **"Ficha completa"** (todo el
+  canónico, incl. `atributos`) y **"ver como receta"**.
+
+> **Deuda (E7/PII):** la ficha completa y la API exponen CURP/RFC en claro, sin control de
+> acceso por rol ni bitácora — pendiente y **bloqueante para producción** (§9 #3).
+
+## 14. Editor de recetas y backfill desde la UI (CONSTRUIDO)
+
+- **Editor visual de recetas** (no JSON crudo): en Entidades → Recetas, cada campo de salida es
+  una fila (`Campo de salida` / `Origen: de-campo | constante` / `Valor` / `Mapa` `H:male,M:female`),
+  con `＋ Agregar campo` y autocompletado de campos canónicos. Un toggle **"JSON avanzado"** queda
+  para casos estructurales (el `sobre` de las colecciones, passthrough).
+- **Acciones de Personas** agrupadas en tarjetas: "Ya indexados → Procesar (CURP/RFC)" y
+  "Exportar archivo → [receta] Descargar JSON".
