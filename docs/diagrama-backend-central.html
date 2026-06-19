@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backend Central de Datos (SDE) — Diagrama</title>
+<style>
+  :root{
+    --bg:#131210; --panel:#1c1a15; --panel2:#23201a; --line:#39342a;
+    --gold:#d3b15f; --gold-soft:rgba(211,177,95,.5); --gold-faint:rgba(211,177,95,.09);
+    --ink:#e9e3d5; --silver:#9c9483;
+    --azul:#5aa9d4; --verde:#7bc27a; --rojo:#d98a7a; --morado:#b08ad4; --naranja:#d4a55e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#1b1812,#0f0e0c 70%);
+    color:var(--ink);font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    padding:34px 22px 60px}
+  .wrap{max-width:1280px;margin:0 auto}
+  h1{font-weight:600;letter-spacing:.14em;font-size:23px;margin:0 0 4px}
+  h1 .b{color:var(--gold)}
+  .sub{color:var(--silver);font-style:italic;margin:0 0 4px}
+  .meta{color:var(--silver);font-size:12.5px;margin:0 0 26px}
+  h2{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--gold);
+    border-bottom:.5px solid var(--line);padding-bottom:7px;margin:42px 0 18px}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:var(--silver);margin:0 0 8px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  /* ---- flujo principal (3 carriles) ---- */
+  .flujo{display:grid;grid-template-columns:1fr 60px 2.1fr 60px 1fr;align-items:stretch;gap:0}
+  .carril{display:flex;flex-direction:column;gap:12px}
+  .carril-tit{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--silver);
+    text-align:center;margin-bottom:2px}
+  .caja{background:var(--panel);border:.5px solid var(--line);border-radius:9px;padding:14px 15px}
+  .caja .t{font-weight:600;color:var(--ink)}
+  .caja .d{font-size:12.5px;color:var(--silver);margin-top:4px}
+  .caja.prod{border-left:3px solid var(--naranja)}
+  .caja.cons{border-left:3px solid var(--azul);cursor:default}
+  .caja.cons .proj{display:inline-block;margin-top:6px;font-size:11px;color:var(--gold);
+    background:var(--gold-faint);border:.5px solid var(--gold-soft);border-radius:20px;padding:2px 9px}
+  .flecha{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--gold)}
+  .flecha .ln{font-size:24px;line-height:1}
+  .flecha .lb{font-size:10.5px;color:var(--silver);text-align:center;letter-spacing:.04em;writing-mode:horizontal-tb}
+
+  /* central */
+  .central{background:linear-gradient(180deg,#221f18,#1a1813);border:1px solid var(--gold-soft);
+    border-radius:11px;padding:14px;display:flex;flex-direction:column;gap:10px;box-shadow:0 0 0 1px rgba(211,177,95,.06)}
+  .central > .hd{display:flex;align-items:center;justify-content:space-between}
+  .central .nm{font-weight:600;letter-spacing:.08em;color:var(--gold)}
+  .central .tag{font-size:11px;color:var(--silver);border:.5px solid var(--line);border-radius:20px;padding:2px 10px}
+  .capa{border-radius:8px;padding:10px 12px;border:.5px solid var(--line);background:var(--panel)}
+  .capa .ct{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px}
+  .capa .cd{font-size:12px;color:var(--silver);margin-top:4px}
+  .capa.ingesta{border-left:3px solid var(--naranja)}
+  .capa.store{border-left:3px solid var(--verde)}
+  .capa.api{border-left:3px solid var(--gold)}
+  .capa.seg{border-left:3px solid var(--rojo)}
+  .capa.jobs{border-left:3px solid var(--morado)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .chip{font-size:11px;color:var(--ink);background:var(--panel2);border:.5px solid var(--line);
+    border-radius:6px;padding:3px 8px}
+  .chip.cur{border-color:var(--rojo);color:var(--rojo)}
+
+  /* grids genéricos */
+  .grid{display:grid;gap:12px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:var(--panel);border:.5px solid var(--line);border-radius:9px;padding:13px 14px}
+  .card h3{margin:0 0 6px;font-size:13.5px;color:var(--ink)}
+  .card.alt{border-top:2px solid var(--gold-soft)}
+  .card ul{margin:6px 0 0;padding-left:16px;color:var(--silver);font-size:12.5px}
+  .card li{margin:3px 0}
+  .k{color:var(--gold);font-family:"Cascadia Code",Consolas,monospace;font-size:12px}
+
+  /* modelo de datos */
+  .modelo{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+  .tabla{flex:1;min-width:190px;background:var(--panel);border:.5px solid var(--line);border-radius:9px;overflow:hidden}
+  .tabla .th{background:var(--panel2);padding:8px 12px;font-weight:600;color:var(--gold);font-size:12.5px;
+    border-bottom:.5px solid var(--line);font-family:"Cascadia Code",monospace}
+  .tabla .row{padding:6px 12px;font-size:12px;color:var(--silver);border-bottom:.5px solid rgba(57,52,42,.5)}
+  .tabla .row b{color:var(--ink);font-weight:500}
+  .tabla .row:last-child{border-bottom:0}
+
+  /* fases */
+  .fases{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+  .fase{min-width:150px;flex:1;background:var(--panel);border:.5px solid var(--line);border-radius:9px;
+    border-top:3px solid var(--gold-soft);padding:11px 12px}
+  .fase .fn{font-weight:600;color:var(--gold);font-size:13px}
+  .fase .fd{font-size:11.5px;color:var(--silver);margin-top:4px}
+
+  /* decisiones */
+  .dec{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .dec .item{background:var(--panel);border:.5px solid var(--line);border-left:3px solid var(--gold);
+    border-radius:8px;padding:10px 12px;font-size:12.5px}
+  .dec .item .q{font-weight:600;color:var(--ink)}
+  .dec .item .r{color:var(--silver);margin-top:3px}
+  .dec .item .r b{color:var(--verde)}
+
+  .note{color:var(--silver);font-size:12px;margin-top:30px;border-top:.5px solid var(--line);padding-top:14px}
+  .secintro{color:var(--silver);font-size:12.5px;margin:-8px 0 18px;max-width:920px}
+  .tabla .cap{padding:7px 12px;font-size:11.5px;color:var(--silver);font-style:italic;
+    background:rgba(0,0,0,.18);border-bottom:.5px solid rgba(57,52,42,.6)}
+  .card-lead{font-size:12px;color:var(--ink);margin:0 0 8px;opacity:.85}
+  .glos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .glos .g{background:var(--panel);border:.5px solid var(--line);border-radius:8px;padding:10px 12px}
+  .glos .gt{font-weight:600;color:var(--gold);font-size:12.5px;font-family:"Cascadia Code",Consolas,monospace}
+  .glos .gd{font-size:12.5px;color:var(--silver);margin-top:3px}
+  .glos .gd b{color:var(--ink);font-weight:500}
+  @media(max-width:760px){.glos{grid-template-columns:1fr}}
+  @media(max-width:980px){
+    .flujo{grid-template-columns:1fr;gap:14px}
+    .flecha{flex-direction:row;padding:4px 0}.flecha .ln{transform:rotate(90deg)}
+    .g3,.g4,.dec{grid-template-columns:1fr 1fr}
+  }
+  @media(max-width:620px){.g3,.g4,.dec{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1><span class="b">SDE</span> · Servicio de Datos de Entidades</h1>
+  <p class="sub">Backend central de SOLO datos (almacén + consulta) — Azazel alimenta, los sistemas OSINT consultan</p>
+  <p class="meta">Diagrama del diseño · 2026-06-17 · acompaña a <code>docs/PLAN_BACKEND_CENTRAL.md</code> · (nombre/repo por confirmar)</p>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--naranja)"></i> Ingesta / Productor</span>
+    <span><i class="dot" style="background:var(--verde)"></i> Almacén</span>
+    <span><i class="dot" style="background:var(--gold)"></i> API / Consulta</span>
+    <span><i class="dot" style="background:var(--rojo)"></i> Seguridad / PII</span>
+    <span><i class="dot" style="background:var(--morado)"></i> Jobs / Tiempo real</span>
+    <span><i class="dot" style="background:var(--azul)"></i> Consumidores</span>
+  </div>
+
+  <!-- ============ FLUJO PRINCIPAL ============ -->
+  <h2>1 · Arquitectura general</h2>
+  <p class="secintro">El SDE es <b>un solo servicio de datos</b> entre quien produce (Azazel) y quien consume (los sistemas OSINT). Lee de izquierda a derecha: Azazel <b>empuja</b> entidades resueltas; el SDE las guarda y las <b>sirve</b>; cada sistema <b>jala</b> lo que necesita en SU forma. Las 5 capas internas son las responsabilidades del backend (qué hace con cada dato que entra y sale).</p>
+  <div class="flujo">
+    <!-- productor -->
+    <div class="carril">
+      <div class="carril-tit">Productor</div>
+      <div class="caja prod">
+        <div class="t">Azazel</div>
+        <div class="d">Indexa el lago (OpenSearch) y <b>resuelve entidades</b> por ancla CURP (Fase 2 ya hecha).</div>
+      </div>
+    </div>
+    <!-- flecha 1 -->
+    <div class="flecha"><div class="ln">▶</div><div class="lb">push / ETL<br>(outbox idempotente<br>por external_id)</div></div>
+    <!-- central -->
+    <div class="carril">
+      <div class="carril-tit">Backend central (VPS de datos)</div>
+      <div class="central">
+        <div class="hd"><span class="nm">SDE</span><span class="tag">solo datos · sin lógica de app</span></div>
+
+        <div class="capa ingesta">
+          <div class="ct"><i class="dot" style="background:var(--naranja)"></i> Ingesta (ETL)</div>
+          <div class="cd">Valida → upsert por <span class="k">external_id → id</span> → procedencia y conflicto <b>por campo</b>. Evento upsert/tombstone con <span class="k">version_origen</span>.</div>
+        </div>
+
+        <div class="capa store">
+          <div class="ct"><i class="dot" style="background:var(--verde)"></i> Almacén</div>
+          <div class="cd"><b>Postgres</b> = canónico (entidades, relaciones, evidencias, procedencia, auth, manifests, audit). <b>Federa OpenSearch</b> de Azazel para lo masivo (padrón/leaks) — <b>cero copia de 100+ TB</b>. <b>Blobs</b> (fotos/PDF) con URL firmada.</div>
+        </div>
+
+        <div class="capa api">
+          <div class="ct"><i class="dot" style="background:var(--gold)"></i> API de consulta <span class="k">/v1</span></div>
+          <div class="cd">Contrato <span class="k">Registry / LookupKey / GenericRecord</span> · search · enrich · cursor. <b>Proyección por sistema = manifest</b> (gramática versionada: por-ítem, colección, grafo).</div>
+        </div>
+
+        <div class="capa seg">
+          <div class="ct"><i class="dot" style="background:var(--rojo)"></i> Seguridad &amp; PII (LFPDPPP)</div>
+          <div class="cd">API-key M2M + JWT · <b>RBAC por CAMPO en el core, deny-by-default</b> · TLS · cifrado en reposo · audit · derecho al olvido.</div>
+        </div>
+
+        <div class="capa jobs">
+          <div class="ct"><i class="dot" style="background:var(--morado)"></i> Jobs &amp; tiempo real</div>
+          <div class="cd">Consultas/exports pesados → <span class="k">arq + Redis Streams + WebSocket</span> de progreso.</div>
+        </div>
+      </div>
+    </div>
+    <!-- flecha 2 -->
+    <div class="flecha"><div class="ln">◀</div><div class="lb">pull<br>(proyección<br>por sistema)</div></div>
+    <!-- consumidores -->
+    <div class="carril">
+      <div class="carril-tit">Consumidores (su propio back)</div>
+      <div class="caja cons"><div class="t">FLUX</div><div class="d">Grafo OSINT 3D (Node+SQLite). Consultará el SDE en vez de su base local; recibe personas como <b>nodos planos + aristas</b> y las absorbe por <span class="k">external_id</span>.</div><span class="proj">→ nodo plano + edges + inject</span></div>
+      <div class="caja cons"><div class="t">Gotham</div><div class="d">Plataforma OSINT (FastAPI+ReactFlow). Monta el SDE como <b>una fuente más</b> y pide datos por LookupKey; su app (transforms, grafo, cámaras) sigue en su propio back.</div><span class="proj">→ Entity / GenericRecord</span></div>
+      <div class="caja cons"><div class="t">Fz1</div><div class="d">OSINT con su <b>Nexus API</b> (:3001) sobre bases locales. Pide por <b>búsqueda + filtros</b> o por identificador, con <b>streaming SSE</b>; el SDE le sirve las entidades de Azazel en ese contrato.</div><span class="proj">→ /api/search + filtros + SSE</span></div>
+      <div class="caja cons"><div class="t">Futuros</div><div class="d">Cualquier sistema nuevo se conecta declarando <b>un manifest</b> (su forma de salida). No se toca el core del backend.</div><span class="proj">→ otro manifest, sin reescribir</span></div>
+    </div>
+  </div>
+
+  <!-- ============ CONTRATOS DE CONSUMIDORES ============ -->
+  <h2>2 · Contratos de los consumidores (cómo pide y recibe cada uno)</h2>
+  <p class="secintro">El SDE <b>no impone un formato</b>: expone un modelo de consulta canónico y <b>un adaptador por sistema</b>. Cada sistema conserva su propio backend; nosotros solo lo alimentamos con las entidades de Azazel, en SU forma. Agregar un 4º = otro adaptador, sin tocar el core.</p>
+  <div class="grid g3">
+    <div class="card"><h3>FLUX <span style="color:var(--silver);font-weight:400;font-size:11px">· grafo 3D (Node)</span></h3>
+      <p class="card-lead"><b>Pide:</b> inyección masiva + lee el universo por caso</p>
+      <p class="card-lead"><b>Recibe:</b> nodos planos + aristas; upsert por <span class="k">external_id</span></p>
+      <p class="card-lead" style="color:var(--silver)">Tiempo real: —</p></div>
+    <div class="card"><h3>Gotham <span style="color:var(--silver);font-weight:400;font-size:11px">· FastAPI/ReactFlow</span></h3>
+      <p class="card-lead"><b>Pide:</b> <span class="k">registry.search</span> por LookupKey + transforms</p>
+      <p class="card-lead"><b>Recibe:</b> <span class="k">GenericRecord / Entity{kind,value,metadata}</span></p>
+      <p class="card-lead" style="color:var(--silver)">Tiempo real: WebSocket (jobs)</p></div>
+    <div class="card"><h3>Fz1 <span style="color:var(--silver);font-weight:400;font-size:11px">· Nexus API :3001</span></h3>
+      <p class="card-lead"><b>Pide:</b> <span class="k">/api/search {query, mode, categories, filters}</span> o por identificador (CURP/placa/tel)</p>
+      <p class="card-lead"><b>Recibe:</b> resultados por categoría (INE/PLACAS/BANCOS)</p>
+      <p class="card-lead" style="color:var(--silver)">Tiempo real: SSE (streaming)</p></div>
+  </div>
+  <p class="secintro" style="margin-top:14px"><b>Modelo de consulta canónico</b> (lo que el SDE entiende, y al que cada adaptador traduce): texto + <b>identificador autodetectado</b> (CURP/RFC/placa/tel) · <b>filtros</b> (nombre/paterno/materno, estado, género, edad min–max, año nac., dirección, teléfono, CP, email) · <b>categorías/fuentes</b> (registries: INE, placas, bancos, leaks, entidades de Azazel) · <b>cursor</b> + <b>streaming</b> sobre un solo bus de eventos que sirve <b>SSE y WebSocket</b>.</p>
+
+  <!-- ============ MODELO DE DATOS ============ -->
+  <h2>3 · Modelo de datos (Postgres canónico)</h2>
+  <p class="secintro">Cómo se guarda la verdad. Cada tabla resuelve un problema concreto que el review marcó como crítico (sobre todo: que la <b>identidad sea estable</b> y que cada dato sepa <b>de dónde vino y si es legal usarlo</b>).</p>
+  <div class="modelo">
+    <div class="tabla">
+      <div class="th">entidades</div>
+      <div class="cap">La ficha de cada persona/objeto. Una fila = una entidad resuelta.</div>
+      <div class="row"><b>id</b> · ULID propio, estable (nunca cambia)</div>
+      <div class="row"><b>kind</b> · person, company…</div>
+      <div class="row"><b>campos</b> · JSONB (esquema Fz1)</div>
+      <div class="row"><b>identifiers</b> · LookupKey→valor</div>
+      <div class="row"><b>activo</b> · + borrado real (ARCO)</div>
+    </div>
+    <div class="tabla">
+      <div class="th">entidad_external_ids</div>
+      <div class="cap">Liga la entidad con el/los id(s) que le da Azazel. Por qué: el id de Azazel cambia al re-anclar (RFC→CURP); aquí se guarda como atributo, no como identidad.</div>
+      <div class="row"><b>id</b> → entidades</div>
+      <div class="row"><b>external_id</b> · de Azazel (N:1)</div>
+      <div class="row" style="color:var(--silver)">re-anclaje no rompe identidad</div>
+    </div>
+    <div class="tabla">
+      <div class="th">entidad_alias</div>
+      <div class="cap">Redirección cuando dos entidades resultan ser la misma (merge) o una se parte (split): los consumidores siguen el id viejo al nuevo sin romperse.</div>
+      <div class="row"><b>id_viejo → id_nuevo</b></div>
+      <div class="row" style="color:var(--silver)">merge / split de entidades</div>
+    </div>
+    <div class="tabla">
+      <div class="th">relaciones</div>
+      <div class="cap">Las aristas del grafo (quién con quién y de qué tipo). El SDE sirve solo el vecindario directo; el grafo grande lo arma cada consumidor.</div>
+      <div class="row"><b>origen_id → destino_id</b></div>
+      <div class="row"><b>tipo</b> · familia/pareja/…</div>
+      <div class="row" style="color:var(--silver)">grafo: 1 salto + cursor</div>
+    </div>
+    <div class="tabla">
+      <div class="th">evidencias</div>
+      <div class="cap">Fotos, PDFs y videos de una entidad. No se guardan en la base: se guarda la URL al blob, servida con permiso firmado.</div>
+      <div class="row"><b>entidad_id</b></div>
+      <div class="row"><b>url</b> → blob firmado</div>
+      <div class="row"><b>procedencia</b></div>
+    </div>
+    <div class="tabla">
+      <div class="th">procedencia · fuentes</div>
+      <div class="cap">De dónde salió CADA dato y si es legal usarlo. Es la base de la auditoría, de la política de conflicto y del control legal (LFPDPPP).</div>
+      <div class="row"><b>por CAMPO</b>: valor+confianza</div>
+      <div class="row"><b>version_origen</b> · timestamp</div>
+      <div class="row"><b>estatus_legal</b> · lícita/leak/menor</div>
+    </div>
+  </div>
+
+  <!-- ============ SEGURIDAD ============ -->
+  <h2>4 · Seguridad &amp; cumplimiento (el riesgo es PENAL, no solo técnico)</h2>
+  <p class="secintro">Son datos personales reales (padrón electoral, filtraciones, biométricos). Concentrarlos sin estos controles es exactamente lo que la ley mexicana (LFPDPPP) sanciona con cárcel. Por eso esto se diseña <b>desde el día 1</b>, no al final.</p>
+  <div class="grid g3">
+    <div class="card alt"><h3>Legalidad por fuente</h3>
+      <p class="card-lead">¿Tenemos derecho a usar este dato? Cada fuente trae su estatus legal y se trata distinto según el riesgo.</p><ul>
+      <li>Estatus legal obligatorio en la procedencia</li>
+      <li><b>Leaks</b> (datos robados por terceros) ultra-restringidos o excluidos</li>
+      <li><b>Menores</b> no-servibles por defecto (protección reforzada)</li>
+      <li>Base legal LFPDPPP + asesoría antes de desplegar</li>
+    </ul></div>
+    <div class="card alt"><h3>Acceso por campo</h3>
+      <p class="card-lead">Que cada sistema vea solo los campos que le corresponden — y que un error de configuración no filtre CURPs.</p><ul>
+      <li>El filtro vive <b>en el core, deny-by-default</b> (si no está permitido, no sale)</li>
+      <li>CURP/RFC enmascarados salvo permiso explícito + registro</li>
+      <li>El manifest NO decide la seguridad (no es configurable por quien lo edita)</li>
+      <li>Mismo filtro en búsqueda, enrich y export</li>
+    </ul></div>
+    <div class="card alt"><h3>Datos en reposo + olvido</h3>
+      <p class="card-lead">Que un robo de disco/respaldo no exponga nada, y que "borrar" borre de verdad y para siempre.</p><ul>
+      <li>Cifrado en reposo + de columna (CURP/RFC/biométricos)</li>
+      <li><b>Tombstone</b>: lo borrado no "resucita" si Azazel lo re-empuja</li>
+      <li>Borrado real en PG + lago + blobs + caché (no solo ocultar)</li>
+      <li>Bitácora sin el dato en claro, encadenada (íntegra)</li>
+    </ul></div>
+  </div>
+
+  <!-- ============ FASES ============ -->
+  <h2>5 · Plan por fases</h2>
+  <p class="secintro">Se construye por etapas, cada una con un entregable verificable (no "todo de golpe"). Cada bloque depende del anterior; la seguridad (B4) entra temprano, no al final, porque son PII.</p>
+  <div class="fases">
+    <div class="fase"><div class="fn">B0</div><div class="fd">Cimientos: repo, scaffolding hexagonal, CI, Docker, /health</div></div>
+    <div class="fase"><div class="fn">B1</div><div class="fd">Núcleo de datos: esquema PG + migraciones + blobs</div></div>
+    <div class="fase"><div class="fn">B2</div><div class="fd">Ingesta ETL idempotente desde Azazel</div></div>
+    <div class="fase"><div class="fn">B3</div><div class="fd">API de consulta: Registry/LookupKey + OpenAPI</div></div>
+    <div class="fase"><div class="fn">B4</div><div class="fd">Seguridad: API-key/JWT + RBAC campo + TLS + audit</div></div>
+    <div class="fase"><div class="fn">B5</div><div class="fd">Proyección por sistema (manifests): FLUX, Gotham</div></div>
+    <div class="fase"><div class="fn">B6</div><div class="fd">Jobs + tiempo real + export</div></div>
+    <div class="fase"><div class="fn">B7</div><div class="fd">Endurecer + desplegar (VPS, DR, observabilidad)</div></div>
+  </div>
+
+  <!-- ============ DECISIONES ============ -->
+  <h2>6 · Decisiones que faltan por cerrar (bloquean B0/B1)</h2>
+  <p class="secintro">Son los pocos "forks" que ramifican toda la arquitectura: hasta no cerrarlos, no conviene escribir código (un cambio aquí después cuesta mucho). En <b style="color:var(--verde)">verde</b>, mi recomendación.</p>
+  <div class="dec">
+    <div class="item"><div class="q">1 · Repo + nombre</div><div class="r"><b>Repo nuevo dedicado</b> (recomendado) o dentro del monorepo Azazel. <span style="color:var(--silver)">Define dónde vive y cómo se versiona el código.</span></div></div>
+    <div class="item"><div class="q">2 · Capa masiva</div><div class="r"><b>Federar el OpenSearch de Azazel (cero copia)</b> vs montar un ClickHouse propio. <span style="color:var(--silver)">Decide si duplicamos o no los 100+ TB — la decisión más cara de revertir.</span></div></div>
+    <div class="item"><div class="q">3 · Topología / VPS</div><div class="r">Dónde vive cada store y el lago (¿la Mac M4?, ¿un VPS?) y la red privada entre Azazel↔SDE↔sistemas. <span style="color:var(--silver)">Define latencia, costo y seguridad de red.</span></div></div>
+    <div class="item"><div class="q">4 · Legal (leaks)</div><div class="r">¿Los datos filtrados se pueden servir legalmente o se excluyen? <span style="color:var(--silver)">Riesgo penal — requiere base LFPDPPP y asesoría legal.</span></div></div>
+    <div class="item"><div class="q">5 · Modelo de acceso</div><div class="r"><b>Single-tenant compartido + RBAC por campo</b> (recomendado) vs multi-tenant aislado; auditar por sistema o por usuario final. <span style="color:var(--silver)">Define quién ve qué y cómo se audita.</span></div></div>
+    <div class="item"><div class="q">6 · Alcance v1</div><div class="r"><b>Solo persona</b> (resto roadmap, recomendado) vs multi-tipo desde ya. <span style="color:var(--silver)">Cada tipo nuevo necesita su ancla y su normalizador.</span></div></div>
+  </div>
+
+  <!-- ============ GLOSARIO ============ -->
+  <h2>7 · Glosario — qué significa cada término</h2>
+  <p class="secintro">Los conceptos que aparecen en los bloques de arriba, en lenguaje simple.</p>
+  <div class="glos">
+    <div class="g"><div class="gt">SDE</div><div class="gd">Servicio de Datos de Entidades: <b>el backend central</b> que estamos diseñando. Solo guarda y sirve datos; no tiene lógica de ninguna app.</div></div>
+    <div class="g"><div class="gt">push / ETL</div><div class="gd">Azazel <b>empuja</b> sus entidades al SDE (Extract-Transform-Load), por lotes, en vez de que el SDE las pida. Más rápido para volúmenes grandes.</div></div>
+    <div class="g"><div class="gt">pull / consultar</div><div class="gd">Cada sistema <b>jala</b> del SDE los datos que necesita, cuando los necesita (API de consulta). No recibe todo: pide lo que va a usar.</div></div>
+    <div class="g"><div class="gt">entidad canónica</div><div class="gd">La <b>versión única y limpia</b> de una persona (o empresa…), juntando lo que aparece en muchas fuentes. Una entidad = una persona real.</div></div>
+    <div class="g"><div class="gt">ancla (CURP/RFC)</div><div class="gd">El identificador fuerte que dice "estas dos filas son la misma persona". Azazel resuelve por ancla; sin ella, hay que adivinar.</div></div>
+    <div class="g"><div class="gt">id (ULID) vs external_id</div><div class="gd"><b>id</b> = identificador propio del SDE que <b>nunca cambia</b>. <b>external_id</b> = el id que le da Azazel (puede cambiar al re-anclar), guardado aparte para no romper referencias.</div></div>
+    <div class="g"><div class="gt">proyección / manifest</div><div class="gd">La <b>receta</b> que transforma la entidad canónica a la forma que pide cada sistema. Es un <b>dato editable</b>, no código: agregar un sistema = un manifest nuevo.</div></div>
+    <div class="g"><div class="gt">LookupKey</div><div class="gd">Las <b>claves de búsqueda</b> normalizadas (curp, rfc, nombre, teléfono, email, CP…). Todos los sistemas buscan con el mismo vocabulario.</div></div>
+    <div class="g"><div class="gt">GenericRecord</div><div class="gd">El <b>envoltorio uniforme</b> de salida: {id, campos, identificadores, procedencia}. Cada consumidor lo recibe y lo pinta a su manera.</div></div>
+    <div class="g"><div class="gt">Registry</div><div class="gd">El patrón (heredado de Gotham) para sumar una fuente nueva <b>sin tocar código</b>: declara qué claves acepta y cómo busca.</div></div>
+    <div class="g"><div class="gt">federar (OpenSearch)</div><div class="gd">Consultar el lago de Azazel <b>en su sitio</b> (sin copiarlo) en vez de duplicar 100+ TB en otra base.</div></div>
+    <div class="g"><div class="gt">RBAC por campo</div><div class="gd">Control de acceso a nivel de <b>cada campo</b> (no solo "puede o no entrar"): un sistema/rol ve unos campos y otros no. CURP/RFC ocultos por defecto.</div></div>
+    <div class="g"><div class="gt">deny-by-default</div><div class="gd">"Negar por defecto": si un campo no está <b>explícitamente permitido</b>, no se entrega — aunque alguien lo pida por error. Más seguro.</div></div>
+    <div class="g"><div class="gt">tombstone</div><div class="gd">"Lápida": una marca que dice "esto se borró, no lo vuelvas a meter". Evita que un dato eliminado <b>resucite</b> cuando Azazel re-empuja.</div></div>
+    <div class="g"><div class="gt">ARCO / derecho al olvido</div><div class="gd">Derechos LFPDPPP (Acceso, Rectificación, Cancelación, Oposición): borrar/anonimizar un dato <b>de verdad</b> y avisar a quien ya lo tenía.</div></div>
+    <div class="g"><div class="gt">cifrado en reposo</div><div class="gd">Los discos y respaldos guardan el dato <b>cifrado</b>: si roban el disco o un backup, no se lee nada.</div></div>
+    <div class="g"><div class="gt">API-key M2M / JWT</div><div class="gd">Credenciales: <b>API-key</b> identifica al sistema (máquina-a-máquina); <b>JWT</b> identifica al usuario final (para auditar quién consultó).</div></div>
+    <div class="g"><div class="gt">jobs (arq + Redis + WS)</div><div class="gd">Para consultas/exports <b>pesados</b>: se mandan a una cola y se sigue su progreso en vivo por WebSocket (no se bloquea la respuesta).</div></div>
+    <div class="g"><div class="gt">procedencia</div><div class="gd">El <b>rastro</b> de cada dato: de qué archivo/dump salió, con qué confianza y cuándo. Base de la auditoría y del control legal.</div></div>
+    <div class="g"><div class="gt">hexagonal / puertos-adaptadores</div><div class="gd">Estilo de código donde <b>el núcleo no conoce a los consumidores</b>: los adaptadores (FLUX, Gotham…) se enchufan por fuera. Permite agregar sistemas sin tocar el centro.</div></div>
+    <div class="g"><div class="gt">single-tenant / multi-tenant</div><div class="gd"><b>Single</b> = un solo lago compartido con permisos por campo. <b>Multi</b> = cada sistema con sus datos aislados. Define el modelo de aislamiento.</div></div>
+    <div class="g"><div class="gt">RPO / RTO (DR)</div><div class="gd">Recuperación ante desastre: <b>RPO</b> = cuántos datos podemos perder; <b>RTO</b> = cuánto tardamos en volver. Definen la estrategia de respaldo.</div></div>
+  </div>
+
+  <p class="note">Defaults recomendados de arranque: repo nuevo dedicado · federar OpenSearch · v1 solo-persona · single-tenant con RBAC-por-campo. Con eso, B0 (cimientos) puede arrancar en cuanto se cierren las decisiones 1–3.</p>
+
+</div>
+</body>
+</html>
