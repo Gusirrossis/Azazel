@@ -71,6 +71,7 @@ def test_envia_en_lotes_con_cable_correcto(config: Config, monkeypatch: Any) -> 
     # Sobre canónico (no fz1_bundle) con la fuente y el header de auth correctos.
     assert fake.lotes[0]["fuente"] == "azazel_resolucion"
     assert fake.lotes[0]["productor"] == "azazel"
+    assert fake.lotes[0]["modo_merge"] == "reemplazar"  # Azazel propaga cambios (last-write-wins)
     assert fake.headers[0]["X-API-Key"] == "secreto"
     item = fake.lotes[0]["entidades"][0]
     assert item["external_id"] and item["kind"] == "person"

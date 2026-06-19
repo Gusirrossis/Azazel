@@ -164,6 +164,9 @@ def enviar_a_destino(
                 cuerpo = {
                     "version_cable": "1", "productor": "azazel",
                     "fuente": "azazel_resolucion",
+                    # Azazel es el resolvedor autoritativo: el AEB toma su valor como verdad
+                    # (last-write-wins) para que los cambios re-resueltos SÍ se propaguen.
+                    "modo_merge": "reemplazar",
                     "entidades": [_item_aeb(f) for f in filas],
                 }
                 status, resp = _post_json(endpoint, headers, cuerpo)
