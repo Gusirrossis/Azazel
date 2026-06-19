@@ -539,6 +539,26 @@ def crear_app(config: Config) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @aplicacion.post("/entidades/enviar")
+    def post_entidades_enviar(
+        _: Autorizado, request: Request, max_lotes: int = 20, reiniciar: bool = False
+    ) -> dict[str, Any]:
+        """Empuja al AEB las entidades nuevas/modificadas (formato canónico), en lotes.
+        Reanudable por cursor; `reiniciar=true` reenvía todo desde cero."""
+        from normalizacion.entidades.envio import enviar_a_destino
+
+        r = enviar_a_destino(
+            request.app.state.config, max_lotes=max(1, max_lotes), reiniciar=reiniciar
+        )
+        return r.como_dict()
+
+    @aplicacion.get("/entidades/enviar/estado")
+    def get_entidades_enviar_estado(_: Autorizado, request: Request) -> dict[str, Any]:
+        """Estado del envío al AEB: habilitado, cursor y cuántas entidades faltan por enviar."""
+        from normalizacion.entidades.envio import estado_envio
+
+        return estado_envio(request.app.state.config)
+
     @aplicacion.get("/entidades/{entidad_id}", response_model=Entidad)
     def get_entidad(entidad_id: str, _: Autorizado, request: Request) -> Entidad:
         from normalizacion.entidades.consultas import obtener_entidad

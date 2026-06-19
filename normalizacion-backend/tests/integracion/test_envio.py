@@ -1,0 +1,119 @@
+"""Worker de envío al AEB contra Postgres real, con el POST mockeado."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from normalizacion.core.config import Config
+from normalizacion.entidades import normalizadores as N
+from normalizacion.entidades.destino import guardar_destino
+from normalizacion.entidades.envio import enviar_a_destino, estado_envio
+from normalizacion.entidades.pipeline import proyectar
+from normalizacion.entidades.receta import PERSONA_FZ1
+
+pytestmark = pytest.mark.integracion
+
+ASIGN = {"curp": "curp", "primer_nombre": "nombre1", "apellido_paterno": "apellido1"}
+
+
+def _curp(prefijo17: str) -> str:
+    return prefijo17 + N.digito_verificador_curp(prefijo17)
+
+
+@pytest.fixture()
+def config(dsn: str, conexion: Any) -> Config:
+    return Config(_env_file=None, postgres_dsn=dsn)
+
+
+def _habilitar(config: Config, lote: int = 2) -> None:
+    guardar_destino(config, {
+        "habilitado": True, "modo": "push", "url": "http://aeb.local",
+        "auth_header": "X-API-Key", "auth_token": "secreto", "receta": "fz1_bundle", "lote": lote,
+    })
+
+
+class _FakeAEB:
+    """Captura los lotes POSTeados y simula la respuesta del AEB (todo creado)."""
+
+    def __init__(self) -> None:
+        self.lotes: list[dict[str, Any]] = []
+        self.headers: list[dict[str, str]] = []
+
+    def __call__(self, url: str, headers: dict[str, str], cuerpo: dict[str, Any]) -> Any:
+        self.lotes.append(cuerpo)
+        self.headers.append(headers)
+        n = len(cuerpo["entidades"])
+        return 200, {"recibidas": n, "creadas": n, "actualizadas": 0,
+                     "sin_cambio": 0, "fallidas": 0}
+
+
+def _sembrar(config: Config, cuantas: int) -> None:
+    for i in range(cuantas):
+        curp = _curp(f"MERV96031{i}MDFNSL0")
+        proyectar(config, PERSONA_FZ1, ASIGN, [{"curp": curp, "primer_nombre": f"P{i}"}])
+
+
+def test_deshabilitado_no_envia(config: Config) -> None:
+    r = enviar_a_destino(config)
+    assert r.detuvo_en == "destino deshabilitado" and r.entidades == 0
+
+
+def test_envia_en_lotes_con_cable_correcto(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config, lote=2)
+    _sembrar(config, 3)
+    fake = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
+
+    r = enviar_a_destino(config)
+    assert r.entidades == 3 and r.creadas == 3 and r.lotes == 2  # 2 + 1
+    # Sobre canónico (no fz1_bundle) con la fuente y el header de auth correctos.
+    assert fake.lotes[0]["fuente"] == "azazel_resolucion"
+    assert fake.lotes[0]["productor"] == "azazel"
+    assert fake.headers[0]["X-API-Key"] == "secreto"
+    item = fake.lotes[0]["entidades"][0]
+    assert item["external_id"] and item["kind"] == "person"
+    assert "personas" not in fake.lotes[0] and "_metadata" not in fake.lotes[0]
+
+
+def test_reanudable_e_idempotente(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 3)
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", _FakeAEB())
+    enviar_a_destino(config)
+    # Segunda corrida: nada nuevo que enviar (cursor drenado).
+    fake2 = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake2)
+    r2 = enviar_a_destino(config)
+    assert r2.entidades == 0 and r2.lotes == 0 and not fake2.lotes
+    # reiniciar reenvía TODO desde cero.
+    fake3 = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake3)
+    r3 = enviar_a_destino(config, reiniciar=True)
+    assert r3.entidades == 3
+
+
+def test_entidad_modificada_se_reenvia(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    curp = _curp("GOMC900101HDFXYZ0")
+    proyectar(config, PERSONA_FZ1, ASIGN, [{"curp": curp, "primer_nombre": "Carlos"}])
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", _FakeAEB())
+    enviar_a_destino(config)
+    # Fusión que rellena un campo nuevo → bumpea actualizado_en → el cursor la vuelve a tomar.
+    proyectar(config, PERSONA_FZ1, ASIGN, [{"curp": curp, "apellido_paterno": "Gómez"}])
+    fake = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
+    r = enviar_a_destino(config)
+    assert r.entidades == 1
+
+
+def test_estado_envio_cuenta_pendientes(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 2)
+    est = estado_envio(config)
+    assert est["habilitado"] is True and est["pendientes"] == 2 and est["cursor"] is None
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", _FakeAEB())
+    enviar_a_destino(config)
+    est2 = estado_envio(config)
+    assert est2["pendientes"] == 0 and est2["cursor"] is not None

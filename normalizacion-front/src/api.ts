@@ -156,6 +156,24 @@ export function guardarDestino(d: DestinoEntidades): Promise<DestinoEntidades> {
   });
 }
 
+export interface EstadoEnvio {
+  habilitado: boolean; url: string | null; cursor: string | null; pendientes: number;
+}
+export interface ResumenEnvio {
+  lotes: number; entidades: number; creadas: number; actualizadas: number;
+  sin_cambio: number; fallidas: number; cursor: string | null;
+  detuvo_en: string | null; errores: string[];
+}
+
+// Estado del envío de entidades al AEB (cuántas faltan) y disparo del worker.
+export function estadoEnvio(): Promise<EstadoEnvio> {
+  return pedir<EstadoEnvio>("/entidades/enviar/estado");
+}
+
+export function enviarEntidades(reiniciar = false): Promise<ResumenEnvio> {
+  return pedir<ResumenEnvio>(`/entidades/enviar?reiniciar=${reiniciar}`, { method: "POST" });
+}
+
 // ----- recetas de proyección (editables) -----
 
 export function recetas(clase?: string): Promise<Receta[]> {

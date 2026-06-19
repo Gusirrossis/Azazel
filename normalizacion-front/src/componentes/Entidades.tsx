@@ -11,10 +11,13 @@ import { useCallback, useEffect, useState } from "react";
 import {
   atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta,
   destinoEntidades as pedirDestino, entidadActivo, entidadProyectar,
-  entidades as pedirEntidades, entidadesStats, exportarEntidades, guardarAtributos,
+  entidades as pedirEntidades, entidadesStats, enviarEntidades, estadoEnvio,
+  exportarEntidades, guardarAtributos,
   guardarDestino, guardarReceta, nucleoEntidad, recetas as pedirRecetas,
 } from "../api";
-import type { AtributoDeclarado, DestinoEntidades, NucleoEntidad } from "../api";
+import type {
+  AtributoDeclarado, DestinoEntidades, EstadoEnvio, NucleoEntidad, ResumenEnvio,
+} from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
 
 const NORMALIZADORES = ["texto", "curp", "rfc", "email", "telefono", "nombre"];
@@ -440,17 +443,33 @@ function GestionDestino() {
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
+  const [est, setEst] = useState<EstadoEnvio | null>(null);
+  const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState<ResumenEnvio | null>(null);
 
-  useEffect(() => { pedirDestino().then(setD).catch((e) => setError(String(e))); }, []);
+  const refrescarEstado = useCallback(() => {
+    estadoEnvio().then(setEst).catch(() => setEst(null));
+  }, []);
+  useEffect(() => {
+    pedirDestino().then(setD).catch((e) => setError(String(e)));
+    refrescarEstado();
+  }, [refrescarEstado]);
 
   const set = (patch: Partial<DestinoEntidades>) => setD((x) => (x ? { ...x, ...patch } : x));
   const guardar = () => {
     if (!d) return;
     setGuardando(true);
     guardarDestino(d)
-      .then((r) => { setD(r); setAviso("guardado"); setError(null); })
+      .then((r) => { setD(r); setAviso("guardado"); setError(null); refrescarEstado(); })
       .catch((e) => { setError(String(e)); setAviso(null); })
       .finally(() => setGuardando(false));
+  };
+  const enviar = (reiniciar: boolean) => {
+    setEnviando(true); setResultado(null); setError(null);
+    enviarEntidades(reiniciar)
+      .then((r) => { setResultado(r); refrescarEstado(); })
+      .catch((e) => setError(String(e)))
+      .finally(() => setEnviando(false));
   };
 
   if (!d) return <div className="config-atributos"><p className="panel-nota">{error ?? "cargando…"}</p></div>;
@@ -458,8 +477,9 @@ function GestionDestino() {
     <div className="config-atributos">
       <h3>Destino de envío (backend central)</h3>
       <p className="panel-nota">
-        A qué <b>endpoint o webhook</b> del backend central (AEB) Azazel manda las entidades resueltas
-        cuando esté hosteado. El envío lo hará un worker; aquí dejas la configuración lista.
+        A qué <b>endpoint</b> del backend central (AEB) Azazel empuja las entidades resueltas. Configura
+        aquí el destino y dispara el envío con <b>Enviar ahora</b>: el worker manda solo lo nuevo o
+        cambiado (incremental y reanudable), en formato canónico.
       </p>
       {error && <div className="banner-error">{error}</div>}
       {aviso && <div className="banner-aviso">{aviso}</div>}
@@ -491,6 +511,32 @@ function GestionDestino() {
         </div>
         <div className="filtro-acciones">
           <button className="primario" disabled={guardando} onClick={guardar}>Guardar destino</button>
+        </div>
+
+        <div className="config-atributos" style={{ marginTop: 8 }}>
+          <h3 style={{ marginTop: 0 }}>Envío al AEB</h3>
+          {est && (
+            <p className="panel-nota">
+              {est.habilitado
+                ? <>Pendientes por enviar: <b>{est.pendientes}</b>{est.cursor ? " · ya sincronizado hasta un punto" : " · nada enviado aún"}.</>
+                : <>El envío está <b>deshabilitado</b>; actívalo arriba y guarda.</>}
+            </p>
+          )}
+          {resultado && (
+            <div className={resultado.detuvo_en ? "banner-error" : "banner-aviso"}>
+              {resultado.detuvo_en
+                ? <>Detenido: {resultado.detuvo_en}{resultado.errores[0] ? ` — ${resultado.errores[0]}` : ""}</>
+                : <>Enviadas {resultado.entidades} · creadas {resultado.creadas} · actualizadas {resultado.actualizadas} · fallidas {resultado.fallidas} ({resultado.lotes} lote(s)).</>}
+            </div>
+          )}
+          <div className="filtro-acciones">
+            <button className="primario" disabled={enviando || !est?.habilitado} onClick={() => enviar(false)}>
+              {enviando ? "Enviando…" : "Enviar ahora"}
+            </button>
+            <button disabled={enviando || !est?.habilitado} onClick={() => enviar(true)} title="Reenvía todas las entidades desde cero (seguro: el AEB es idempotente)">
+              Reenviar todo
+            </button>
+          </div>
         </div>
       </div>
     </div>
