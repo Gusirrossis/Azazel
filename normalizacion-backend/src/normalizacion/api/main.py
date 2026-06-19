@@ -29,6 +29,7 @@ from normalizacion.api.esquemas import (
     RespuestaReprocesar,
     RespuestaTablero,
     SolicitudAtributos,
+    SolicitudDestino,
     SolicitudProponerMapeo,
     SolicitudProyectar,
     SolicitudReceta,
@@ -516,6 +517,25 @@ def crear_app(config: Config) -> FastAPI:
             return guardar_atributos(
                 request.app.state.config, [a.model_dump() for a in solicitud.atributos]
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @aplicacion.get("/entidades/config/destino")
+    def get_config_destino(_: Autorizado, request: Request) -> dict[str, Any]:
+        """Config del destino de envío de entidades al backend central (AEB)."""
+        from normalizacion.entidades.destino import leer_destino
+
+        return leer_destino(request.app.state.config)
+
+    @aplicacion.put("/entidades/config/destino")
+    def put_config_destino(
+        solicitud: SolicitudDestino, _: Autorizado, request: Request
+    ) -> dict[str, Any]:
+        """Configura a qué endpoint/webhook se mandan las entidades (cuando esté hosteado)."""
+        from normalizacion.entidades.destino import guardar_destino
+
+        try:
+            return guardar_destino(request.app.state.config, solicitud.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

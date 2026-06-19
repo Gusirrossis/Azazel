@@ -225,6 +225,20 @@ class SolicitudAtributos(BaseModel):
     atributos: list[AtributoDeclarado] = Field(default_factory=list, max_length=100)
 
 
+class SolicitudDestino(BaseModel):
+    """Destino de envío de entidades al backend central (AEB): endpoint/webhook + auth."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    habilitado: bool = False
+    modo: Literal["push", "webhook"] = "push"
+    url: str = Field(default="", max_length=500)
+    auth_header: str = Field(default="X-API-Key", max_length=80)
+    auth_token: str = Field(default="", max_length=500)
+    receta: str = Field(default="fz1_bundle", max_length=80)
+    lote: int = Field(default=500, ge=1, le=5000)
+
+
 # ------------------------------------------------------------------- tablero
 
 

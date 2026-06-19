@@ -180,6 +180,28 @@ class TestAtributosDeclarados:
         assert prop["Otra"]["campo"] is None
 
 
+class TestDestinoEnvio:
+    """Config del destino de envío de entidades al backend central (AEB)."""
+
+    def test_default_y_guardar(self, config: Config) -> None:
+        from normalizacion.entidades.destino import guardar_destino, leer_destino
+
+        d = leer_destino(config)
+        assert d["habilitado"] is False and d["modo"] == "push" and d["receta"] == "fz1_bundle"
+        guardar_destino(config, {**d, "habilitado": True, "url": "https://aeb.vps/v1/ingest"})
+        guardado = leer_destino(config)
+        assert guardado["habilitado"] is True
+        assert guardado["url"] == "https://aeb.vps/v1/ingest"
+
+    def test_habilitado_exige_url_valida(self, config: Config) -> None:
+        from normalizacion.entidades.destino import guardar_destino
+
+        with pytest.raises(ValueError):
+            guardar_destino(config, {"habilitado": True, "url": "no-es-una-url"})
+        with pytest.raises(ValueError):
+            guardar_destino(config, {"modo": "ftp"})  # modo inválido
+
+
 class TestConstruirEntidad:
     def test_deriva_todo_de_curp(self) -> None:
         ent = construir_entidad(PERSONA_FZ1, {"curp": "curp"}, {"curp": CURP_VALERIA})

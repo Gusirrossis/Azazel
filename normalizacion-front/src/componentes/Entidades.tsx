@@ -9,11 +9,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta, entidadActivo,
-  entidadProyectar, entidades as pedirEntidades, entidadesStats, exportarEntidades,
-  guardarAtributos, guardarReceta, nucleoEntidad, recetas as pedirRecetas,
+  atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta,
+  destinoEntidades as pedirDestino, entidadActivo, entidadProyectar,
+  entidades as pedirEntidades, entidadesStats, exportarEntidades, guardarAtributos,
+  guardarDestino, guardarReceta, nucleoEntidad, recetas as pedirRecetas,
 } from "../api";
-import type { AtributoDeclarado, NucleoEntidad } from "../api";
+import type { AtributoDeclarado, DestinoEntidades, NucleoEntidad } from "../api";
 import type { Entidad, EstadisticasEntidades, Receta } from "../tipos";
 
 const NORMALIZADORES = ["texto", "curp", "rfc", "email", "telefono", "nombre"];
@@ -432,10 +433,74 @@ function GestionAtributos() {
   );
 }
 
+// ---------------------------------------------------------------- destino de envío
+
+function GestionDestino() {
+  const [d, setD] = useState<DestinoEntidades | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => { pedirDestino().then(setD).catch((e) => setError(String(e))); }, []);
+
+  const set = (patch: Partial<DestinoEntidades>) => setD((x) => (x ? { ...x, ...patch } : x));
+  const guardar = () => {
+    if (!d) return;
+    setGuardando(true);
+    guardarDestino(d)
+      .then((r) => { setD(r); setAviso("guardado"); setError(null); })
+      .catch((e) => { setError(String(e)); setAviso(null); })
+      .finally(() => setGuardando(false));
+  };
+
+  if (!d) return <div className="config-atributos"><p className="panel-nota">{error ?? "cargando…"}</p></div>;
+  return (
+    <div className="config-atributos">
+      <h3>Destino de envío (backend central)</h3>
+      <p className="panel-nota">
+        A qué <b>endpoint o webhook</b> del backend central (AEB) Azazel manda las entidades resueltas
+        cuando esté hosteado. El envío lo hará un worker; aquí dejas la configuración lista.
+      </p>
+      {error && <div className="banner-error">{error}</div>}
+      {aviso && <div className="banner-aviso">{aviso}</div>}
+      <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 12 }}>
+        <label className="switch-destino">
+          <input type="checkbox" checked={d.habilitado} onChange={(e) => set({ habilitado: e.target.checked })} />
+          Habilitar envío de entidades
+        </label>
+        <div className="campo-destino">
+          <span>Endpoint (URL del AEB)</span>
+          <input value={d.url} placeholder="https://aeb.tu-vps/v1/ingest" onChange={(e) => set({ url: e.target.value })} />
+        </div>
+        <div className="explorador-campos">
+          <div className="campo-destino"><span>Modo</span>
+            <select className="select-receta" value={d.modo} onChange={(e) => set({ modo: e.target.value as "push" | "webhook" })}>
+              <option value="push">push (lotes)</option>
+              <option value="webhook">webhook (por cambio)</option>
+            </select></div>
+          <div className="campo-destino"><span>Receta de salida</span>
+            <input value={d.receta} placeholder="fz1_bundle" onChange={(e) => set({ receta: e.target.value })} /></div>
+          <div className="campo-destino"><span>Lote</span>
+            <input type="number" min={1} max={5000} value={d.lote} onChange={(e) => set({ lote: +e.target.value })} /></div>
+        </div>
+        <div className="explorador-campos">
+          <div className="campo-destino"><span>Header de auth</span>
+            <input value={d.auth_header} placeholder="X-API-Key" onChange={(e) => set({ auth_header: e.target.value })} /></div>
+          <div className="campo-destino"><span>Token / API key (secreto)</span>
+            <input type="password" value={d.auth_token} placeholder="(secreto)" onChange={(e) => set({ auth_token: e.target.value })} /></div>
+        </div>
+        <div className="filtro-acciones">
+          <button className="primario" disabled={guardando} onClick={guardar}>Guardar destino</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- pestaña
 
 export default function Entidades() {
-  const [modo, setModo] = useState<"personas" | "recetas" | "atributos">("personas");
+  const [modo, setModo] = useState<"personas" | "recetas" | "atributos" | "destino">("personas");
   const [stats, setStats] = useState<EstadisticasEntidades | null>(null);
   const [lista, setLista] = useState<Entidad[]>([]);
   const [total, setTotal] = useState(0);
@@ -502,9 +567,10 @@ export default function Entidades() {
         <button className={modo === "personas" ? "pestana activa" : "pestana"} onClick={() => setModo("personas")}>Personas</button>
         <button className={modo === "recetas" ? "pestana activa" : "pestana"} onClick={() => setModo("recetas")}>Recetas</button>
         <button className={modo === "atributos" ? "pestana activa" : "pestana"} onClick={() => setModo("atributos")}>Atributos</button>
+        <button className={modo === "destino" ? "pestana activa" : "pestana"} onClick={() => setModo("destino")}>Destino</button>
       </div>
 
-      {modo === "recetas" ? <GestionRecetas /> : modo === "atributos" ? <GestionAtributos /> : (
+      {modo === "recetas" ? <GestionRecetas /> : modo === "atributos" ? <GestionAtributos /> : modo === "destino" ? <GestionDestino /> : (
         <>
           <div className="kpis kpis-secundarios" style={{ padding: "10px 18px 0" }}>
             <div className="kpi tono-ok"><span className="kpi-valor kpi-ok">{(stats?.total ?? 0).toLocaleString()}</span><span className="kpi-etiqueta">personas canónicas</span></div>

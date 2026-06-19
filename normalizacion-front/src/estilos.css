@@ -2141,3 +2141,9 @@ button.chip-estado.activo .chip-clave {
 .campo-nombre { font-weight: 600; color: var(--ink); font-size: 14.5px; }
 .campo-norm { font-size: 12px; color: var(--silver); }
 .campo-celda .icono-quitar { position: absolute; top: 7px; right: 7px; }
+
+/* destino de envío de entidades */
+.campo-destino { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1; }
+.campo-destino > span { font-size: 12px; color: var(--silver); }
+.switch-destino { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); font-size: 14px; }
+.switch-destino input { width: auto; }
