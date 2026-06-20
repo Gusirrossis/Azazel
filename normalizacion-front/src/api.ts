@@ -156,8 +156,13 @@ export function guardarDestino(d: DestinoEntidades): Promise<DestinoEntidades> {
   });
 }
 
+export interface UltimoEnvio {
+  ts: string; ok: boolean; detuvo_en: string | null;
+  entidades: number; creadas: number; actualizadas: number; fallidas: number; errores: string[];
+}
 export interface EstadoEnvio {
   habilitado: boolean; url: string | null; cursor: string | null; pendientes: number;
+  intervalo_seg: number; ultimo: UltimoEnvio | null;
 }
 export interface ResumenEnvio {
   lotes: number; entidades: number; creadas: number; actualizadas: number;

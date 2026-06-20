@@ -438,6 +438,14 @@ function GestionAtributos() {
 
 // ---------------------------------------------------------------- destino de envío
 
+function haceCuanto(iso: string): string {
+  const seg = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seg < 60) return `hace ${seg} s`;
+  if (seg < 3600) return `hace ${Math.round(seg / 60)} min`;
+  if (seg < 86400) return `hace ${Math.round(seg / 3600)} h`;
+  return `hace ${Math.round(seg / 86400)} d`;
+}
+
 function GestionDestino() {
   const [d, setD] = useState<DestinoEntidades | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -453,6 +461,9 @@ function GestionDestino() {
   useEffect(() => {
     pedirDestino().then(setD).catch((e) => setError(String(e)));
     refrescarEstado();
+    // Refresca cada 10 s para vigilar el envío automático de un vistazo.
+    const id = setInterval(refrescarEstado, 10000);
+    return () => clearInterval(id);
   }, [refrescarEstado]);
 
   const set = (patch: Partial<DestinoEntidades>) => setD((x) => (x ? { ...x, ...patch } : x));
@@ -518,8 +529,16 @@ function GestionDestino() {
           {est && (
             <p className="panel-nota">
               {est.habilitado
-                ? <>Pendientes por enviar: <b>{est.pendientes}</b>{est.cursor ? " · ya sincronizado hasta un punto" : " · nada enviado aún"}.</>
+                ? <>Pendientes por enviar: <b>{est.pendientes}</b>{est.intervalo_seg > 0 ? <> · automático cada <b>{est.intervalo_seg}s</b></> : " · modo manual"}.</>
                 : <>El envío está <b>deshabilitado</b>; actívalo arriba y guarda.</>}
+            </p>
+          )}
+          {est?.ultimo && (
+            <p className="panel-nota">
+              Último intento: <b>{haceCuanto(est.ultimo.ts)}</b> —{" "}
+              {est.ultimo.detuvo_en
+                ? <span style={{ color: "#e88" }}>❌ {est.ultimo.detuvo_en}</span>
+                : <span style={{ color: "#8e8" }}>✅ OK ({est.ultimo.entidades} enviadas{est.ultimo.fallidas ? `, ${est.ultimo.fallidas} fallidas` : ""})</span>}
             </p>
           )}
           {resultado && (

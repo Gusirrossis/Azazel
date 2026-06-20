@@ -18,6 +18,7 @@ import threading
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
@@ -29,6 +30,7 @@ from normalizacion.entidades.destino import leer_destino
 log = obtener_logger("entidades.envio")
 
 _CLAVE_CURSOR = "envio_aeb_cursor"
+_CLAVE_ULTIMO = "envio_aeb_ultimo"  # resumen del último intento (para vigilar el automático)
 _LOCK_ID = 0x4145_4256  # "AEBV" — advisory lock del envío
 _RUTA_INGESTA = "/v1/ingest/entidades"
 # Mapa identificador Azazel (en `campos`) → clave LookupKey del AEB.
@@ -226,9 +228,34 @@ def enviar_a_destino(
         r.detuvo_en = f"error de la base de datos de Azazel ({type(exc).__name__})"
         r.errores.append(r.detuvo_en)
         log.warning("envio_db_error", error=str(exc)[:200])
+        _guardar_ultimo(config, r)
         return r
     log.info("envio_aeb_completo", entidades=r.entidades, creadas=r.creadas, fallidas=r.fallidas)
+    _guardar_ultimo(config, r)
     return r
+
+
+def _guardar_ultimo(config: Config, r: ResumenEnvio) -> None:
+    """Persiste el resumen del último intento (para mostrar 'último intento: hace X — OK/Error').
+    Best-effort: si la BD falla no debe romper el envío."""
+    valor = {
+        "ts": datetime.now(UTC).isoformat(),
+        "ok": not r.detuvo_en,
+        "detuvo_en": r.detuvo_en,
+        "entidades": r.entidades, "creadas": r.creadas,
+        "actualizadas": r.actualizadas, "fallidas": r.fallidas,
+        "errores": r.errores[:5],
+    }
+    try:
+        with psycopg.connect(config.postgres_dsn) as conn:
+            conn.execute(
+                "INSERT INTO control (clave, valor) VALUES (%s, %s)"
+                " ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_en = now()",
+                (_CLAVE_ULTIMO, json.dumps(valor, ensure_ascii=False)),
+            )
+            conn.commit()
+    except Exception:
+        pass
 
 
 def _anotar_fallos(r: ResumenEnvio, resp: dict[str, Any], fallidas: int) -> None:
@@ -304,9 +331,13 @@ def estado_envio(config: Config) -> dict[str, Any]:
                 " AND (actualizado_en, entidad_id) > (%s::timestamptz, %s)",
                 (cursor[0], cursor[1]),
             ).fetchone()
+        fu = conn.execute("SELECT valor FROM control WHERE clave = %s", (_CLAVE_ULTIMO,)).fetchone()
+    ultimo = json.loads(fu[0]) if fu else None
     return {
         "habilitado": bool(destino.get("habilitado")),
         "url": destino.get("url"),
         "cursor": f"{cursor[0]}|{cursor[1]}" if cursor else None,
         "pendientes": int(pendientes[0]) if pendientes else 0,
+        "intervalo_seg": int(destino.get("intervalo_seg") or 0),
+        "ultimo": ultimo,
     }

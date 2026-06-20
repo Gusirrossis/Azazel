@@ -159,6 +159,27 @@ def test_fallos_por_item_se_anotan_con_codigos(config: Config, monkeypatch: Any)
     assert any("tipo_relacion_invalido" in e for e in r.errores)
 
 
+def test_estado_incluye_ultimo_intento_ok(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config, intervalo_seg=300)
+    _sembrar(config, 1)
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", _FakeAEB())
+    enviar_a_destino(config)
+    est = estado_envio(config)
+    assert est["intervalo_seg"] == 300
+    assert est["ultimo"] and est["ultimo"]["ok"] is True and est["ultimo"]["entidades"] == 1
+
+
+def test_ultimo_intento_registra_el_fallo(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 1)
+    monkeypatch.setattr(
+        "normalizacion.entidades.envio._post_json", lambda u, h, c: (0, {"detail": "caído"}),
+    )
+    enviar_a_destino(config)
+    ultimo = estado_envio(config)["ultimo"]
+    assert ultimo and ultimo["ok"] is False and ultimo["detuvo_en"]
+
+
 def test_pasada_automatica_envia_y_devuelve_intervalo(config: Config, monkeypatch: Any) -> None:
     from normalizacion.entidades.envio import _pasada
 
