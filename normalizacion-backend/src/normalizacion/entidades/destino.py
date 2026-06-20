@@ -22,6 +22,8 @@ _DEFAULT: dict[str, Any] = {
     "auth_token": "",
     "receta": "fz1_bundle",    # con qué receta se proyectan las entidades al enviarlas
     "lote": 500,
+    # 0 = solo manual (botón "Enviar ahora"); >0 = el sistema envía SOLO cada N segundos.
+    "intervalo_seg": 0,
 }
 
 
@@ -41,6 +43,7 @@ def guardar_destino(config: Config, valor: dict[str, Any]) -> dict[str, Any]:
     if limpio["habilitado"] and not str(limpio["url"]).startswith(("http://", "https://")):
         raise ValueError("con el destino habilitado, la URL debe empezar con http:// o https://")
     limpio["lote"] = max(1, min(int(limpio["lote"]), 5000))
+    limpio["intervalo_seg"] = max(0, min(int(limpio["intervalo_seg"]), 86400))  # 0..24h
     with psycopg.connect(config.postgres_dsn) as conn:
         conn.execute(
             "INSERT INTO control (clave, valor) VALUES (%s, %s)"

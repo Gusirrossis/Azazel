@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -190,6 +191,47 @@ def enviar_a_destino(
             conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
     log.info("envio_aeb_completo")
     return r
+
+
+# --------------------------------------------------- envío AUTOMÁTICO (daemon)
+_HILO: threading.Thread | None = None
+_PARAR = threading.Event()
+
+
+def _pasada(config: Config) -> int:
+    """Una iteración del bucle: si el destino está habilitado con intervalo>0, envía lo pendiente.
+    Devuelve los segundos a esperar hasta la próxima vuelta (15 si el automático está inactivo)."""
+    destino = leer_destino(config)
+    intervalo = int(destino.get("intervalo_seg") or 0)
+    if destino.get("habilitado") and intervalo > 0:
+        r = enviar_a_destino(config)
+        if r.entidades:
+            log.info("envio_auto", entidades=r.entidades, creadas=r.creadas, fallidas=r.fallidas)
+        return intervalo
+    return 15  # inactivo: re-checa la config pronto (toma efecto sin reiniciar)
+
+
+def _bucle(config: Config) -> None:
+    while not _PARAR.is_set():
+        try:
+            espera = _pasada(config)
+        except Exception as exc:  # nunca tumbar el hilo: registra y reintenta
+            log.warning("bucle_envio_error", error=str(exc)[:200])
+            espera = 30
+        _PARAR.wait(max(espera, 5))
+
+
+def iniciar_bucle(config: Config) -> None:
+    """Arranca (una sola vez) el hilo de envío automático. Daemon: muere con el proceso.
+    El intervalo y el on/off se leen de la config en cada vuelta, así que cambiarlos en la UI
+    toma efecto sin reiniciar."""
+    global _HILO
+    if _HILO is not None and _HILO.is_alive():
+        return
+    _PARAR.clear()
+    _HILO = threading.Thread(target=_bucle, args=(config,), daemon=True, name="envio-aeb")
+    _HILO.start()
+    log.info("bucle_envio_iniciado")
 
 
 def estado_envio(config: Config) -> dict[str, Any]:

@@ -237,6 +237,7 @@ class SolicitudDestino(BaseModel):
     auth_token: str = Field(default="", max_length=500)
     receta: str = Field(default="fz1_bundle", max_length=80)
     lote: int = Field(default=500, ge=1, le=5000)
+    intervalo_seg: int = Field(default=0, ge=0, le=86400)  # 0 = solo manual; >0 = envío automático
 
 
 # ------------------------------------------------------------------- tablero

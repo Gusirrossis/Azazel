@@ -72,6 +72,12 @@ def crear_app(config: Config) -> FastAPI:
     aplicacion.state.cliente = None
     aplicacion.state.almacen = None
 
+    # Envío automático al AEB: hilo daemon que manda lo nuevo/cambiado cada N segundos
+    # (intervalo configurable en la pestaña Destino; 0 = solo manual). Arranca con el sistema.
+    from normalizacion.entidades.envio import iniciar_bucle
+
+    iniciar_bucle(config)
+
     def _cliente(request: Request) -> Any:
         if request.app.state.cliente is None:
             from normalizacion.core.indexador.opensearch import crear_cliente

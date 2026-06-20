@@ -143,6 +143,7 @@ export function guardarAtributos(atributos: AtributoDeclarado[]): Promise<Atribu
 export interface DestinoEntidades {
   habilitado: boolean; modo: "push" | "webhook"; url: string;
   auth_header: string; auth_token: string; receta: string; lote: number;
+  intervalo_seg: number;
 }
 
 // Destino al que Azazel manda las entidades resueltas (el backend central AEB).

@@ -502,7 +502,15 @@ function GestionDestino() {
             <input value={d.receta} placeholder="fz1_bundle" onChange={(e) => set({ receta: e.target.value })} /></div>
           <div className="campo-destino"><span>Lote</span>
             <input type="number" min={1} max={5000} value={d.lote} onChange={(e) => set({ lote: +e.target.value })} /></div>
+          <div className="campo-destino"><span>Envío automático cada (seg)</span>
+            <input type="number" min={0} max={86400} value={d.intervalo_seg} placeholder="0 = manual"
+              onChange={(e) => set({ intervalo_seg: +e.target.value })} /></div>
         </div>
+        <p className="panel-nota">
+          <b>Automático:</b> pon un número de segundos (p. ej. <code>300</code> = cada 5 min) y guarda;
+          el sistema enviará lo nuevo o cambiado solo, sin reiniciar. <b>0 = manual</b> (usa el botón
+          «Enviar ahora»). Requiere «Habilitar envío» activado.
+        </p>
         <div className="explorador-campos">
           <div className="campo-destino"><span>Header de auth</span>
             <input value={d.auth_header} placeholder="X-API-Key" onChange={(e) => set({ auth_header: e.target.value })} /></div>

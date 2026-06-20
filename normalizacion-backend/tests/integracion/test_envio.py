@@ -27,10 +27,11 @@ def config(dsn: str, conexion: Any) -> Config:
     return Config(_env_file=None, postgres_dsn=dsn)
 
 
-def _habilitar(config: Config, lote: int = 2) -> None:
+def _habilitar(config: Config, lote: int = 2, intervalo_seg: int = 0) -> None:
     guardar_destino(config, {
         "habilitado": True, "modo": "push", "url": "http://aeb.local",
         "auth_header": "X-API-Key", "auth_token": "secreto", "receta": "fz1_bundle", "lote": lote,
+        "intervalo_seg": intervalo_seg,
     })
 
 
@@ -107,6 +108,28 @@ def test_entidad_modificada_se_reenvia(config: Config, monkeypatch: Any) -> None
     monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
     r = enviar_a_destino(config)
     assert r.entidades == 1
+
+
+def test_pasada_automatica_envia_y_devuelve_intervalo(config: Config, monkeypatch: Any) -> None:
+    from normalizacion.entidades.envio import _pasada
+
+    _habilitar(config, intervalo_seg=30)
+    _sembrar(config, 1)
+    fake = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
+    espera = _pasada(config)
+    assert espera == 30 and fake.lotes  # envió y pide esperar el intervalo configurado
+
+
+def test_pasada_manual_no_envia(config: Config, monkeypatch: Any) -> None:
+    from normalizacion.entidades.envio import _pasada
+
+    _habilitar(config, intervalo_seg=0)  # 0 = solo manual
+    _sembrar(config, 1)
+    fake = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
+    espera = _pasada(config)
+    assert espera == 15 and not fake.lotes  # no envía en automático; re-checa pronto
 
 
 def test_estado_envio_cuenta_pendientes(config: Config, monkeypatch: Any) -> None:
