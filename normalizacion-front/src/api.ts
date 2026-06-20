@@ -162,7 +162,7 @@ export interface UltimoEnvio {
 }
 export interface EstadoEnvio {
   habilitado: boolean; url: string | null; cursor: string | null; pendientes: number;
-  intervalo_seg: number; ultimo: UltimoEnvio | null;
+  intervalo_seg: number; ultimo: UltimoEnvio | null; disponible?: boolean;
 }
 export interface ResumenEnvio {
   lotes: number; entidades: number; creadas: number; actualizadas: number;

@@ -187,19 +187,20 @@ class TestDestinoEnvio:
         from normalizacion.entidades.destino import guardar_destino, leer_destino
 
         d = leer_destino(config)
-        assert d["habilitado"] is False and d["modo"] == "push" and d["receta"] == "fz1_bundle"
-        guardar_destino(config, {**d, "habilitado": True, "url": "https://aeb.vps/v1/ingest"})
+        # Shape simplificado: solo a dónde y cada cuánto (sin modo/receta; eso lo hace el AEB).
+        assert d["habilitado"] is False and d["lote"] == 500 and d["intervalo_seg"] == 0
+        assert "modo" not in d and "receta" not in d and "auth_header" not in d
+        guardar_destino(config, {**d, "habilitado": True, "url": "https://aeb.vps",
+                                 "intervalo_seg": 300})
         guardado = leer_destino(config)
-        assert guardado["habilitado"] is True
-        assert guardado["url"] == "https://aeb.vps/v1/ingest"
+        assert guardado["habilitado"] is True and guardado["url"] == "https://aeb.vps"
+        assert guardado["intervalo_seg"] == 300
 
     def test_habilitado_exige_url_valida(self, config: Config) -> None:
         from normalizacion.entidades.destino import guardar_destino
 
         with pytest.raises(ValueError):
             guardar_destino(config, {"habilitado": True, "url": "no-es-una-url"})
-        with pytest.raises(ValueError):
-            guardar_destino(config, {"modo": "ftp"})  # modo inválido
 
 
 class TestConstruirEntidad:

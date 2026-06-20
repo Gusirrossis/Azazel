@@ -22,6 +22,12 @@ def _curp(prefijo17: str) -> str:
     return prefijo17 + N.digito_verificador_curp(prefijo17)
 
 
+@pytest.fixture(autouse=True)
+def _sin_margen(monkeypatch: Any) -> None:
+    # Los tests siembran entidades y envían al instante; sin margen (el de prod es 120 s).
+    monkeypatch.setattr("normalizacion.entidades.envio._MARGEN_SEG", 0)
+
+
 @pytest.fixture()
 def config(dsn: str, conexion: Any) -> Config:
     return Config(_env_file=None, postgres_dsn=dsn)
@@ -58,6 +64,16 @@ def _sembrar(config: Config, cuantas: int) -> None:
 def test_deshabilitado_no_envia(config: Config) -> None:
     r = enviar_a_destino(config)
     assert r.detuvo_en == "destino deshabilitado" and r.entidades == 0
+
+
+def test_margen_no_envia_entidades_muy_recientes(config: Config, monkeypatch: Any) -> None:
+    monkeypatch.setattr("normalizacion.entidades.envio._MARGEN_SEG", 3600)  # margen de 1 h
+    _habilitar(config)
+    _sembrar(config, 2)  # recién creadas (actualizado_en ~ ahora) → dentro del margen
+    fake = _FakeAEB()
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", fake)
+    r = enviar_a_destino(config)
+    assert r.entidades == 0 and not fake.lotes  # no se envían hasta que pase el margen
 
 
 def test_envia_en_lotes_con_cable_correcto(config: Config, monkeypatch: Any) -> None:

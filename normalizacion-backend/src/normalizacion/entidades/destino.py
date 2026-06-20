@@ -28,7 +28,7 @@ _DEFAULT: dict[str, Any] = {
 
 def leer_destino(config: Config) -> dict[str, Any]:
     """Config actual del destino (solo claves conocidas, mezclada con los valores por defecto)."""
-    with psycopg.connect(config.postgres_dsn) as conn:
+    with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
         f = conn.execute("SELECT valor FROM control WHERE clave = %s", (_CLAVE,)).fetchone()
     guardado: dict[str, Any] = json.loads(f[0]) if f else {}
     return {**_DEFAULT, **{k: v for k, v in guardado.items() if k in _DEFAULT}}
@@ -41,7 +41,7 @@ def guardar_destino(config: Config, valor: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("con el destino habilitado, la URL debe empezar con http:// o https://")
     limpio["lote"] = max(1, min(int(limpio["lote"]), 5000))
     limpio["intervalo_seg"] = max(0, min(int(limpio["intervalo_seg"]), 86400))  # 0..24h
-    with psycopg.connect(config.postgres_dsn) as conn:
+    with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
         conn.execute(
             "INSERT INTO control (clave, valor) VALUES (%s, %s)"
             " ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_en = now()",

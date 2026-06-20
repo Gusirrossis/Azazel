@@ -31,6 +31,11 @@ log = obtener_logger("entidades.envio")
 
 _CLAVE_CURSOR = "envio_aeb_cursor"
 _CLAVE_ULTIMO = "envio_aeb_ultimo"  # resumen del último intento (para vigilar el automático)
+# Margen anti-salto del cursor (seg): no se envían cambios más recientes que esto, para dejar
+# commitear transacciones largas (backfill) cuyo `actualizado_en` quedó con el tiempo de inicio.
+# Debe superar la duración del lote-tx más largo del backfill. La idempotencia del AEB cubre el
+# reenvío de la ventana. (Solución definitiva futura: columna monótona por orden de cambio.)
+_MARGEN_SEG = 120
 _LOCK_ID = 0x4145_4256  # "AEBV" — advisory lock del envío
 _RUTA_INGESTA = "/v1/ingest/entidades"
 # Mapa identificador Azazel (en `campos`) → clave LookupKey del AEB.
@@ -81,6 +86,16 @@ def _item_aeb(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+class _SinRedireccion(urllib.request.HTTPRedirectHandler):
+    """No seguir redirecciones: evita reenviar el header X-API-Key (el secreto) a otro host."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_SinRedireccion)
+
+
 def _post_json(
     url: str, headers: dict[str, str], cuerpo: dict[str, Any]
 ) -> tuple[int, dict[str, Any]]:
@@ -91,26 +106,26 @@ def _post_json(
         headers={"Content-Type": "application/json", **headers},
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read() or b"{}")
-    except urllib.error.HTTPError as exc:  # el orquestador respondió, pero con error (4xx/5xx)
-        crudo = exc.read()
-        try:
-            detalle = json.loads(crudo)
-        except Exception:
-            detalle = {"detail": crudo.decode("utf-8", "replace")[:300]}
-        return exc.code, detalle
+        with _OPENER.open(req, timeout=30) as resp:
+            cuerpo_resp = json.loads(resp.read() or b"{}")
+            if not isinstance(cuerpo_resp, dict):  # el contrato es objeto JSON; si no, se envuelve
+                cuerpo_resp = {"detail": "respuesta inesperada del orquestador"}
+            return resp.status, cuerpo_resp
+    except urllib.error.HTTPError as exc:  # el orquestador respondió, pero con error (3xx/4xx/5xx)
+        return exc.code, {"detail": f"HTTP {exc.code}"}
     except urllib.error.URLError as exc:  # NO se pudo conectar (red/DNS/TLS/timeout)
         return 0, {"detail": f"no se pudo conectar: {exc.reason}"}
     except Exception as exc:  # cualquier otro fallo del envío (no tumbar el worker)
-        return 0, {"detail": f"error de envío: {type(exc).__name__}: {str(exc)[:200]}"}
+        return 0, {"detail": f"error de envío: {type(exc).__name__}"}
 
 
 def _motivo(status: int, resp: dict[str, Any]) -> str:
-    """Traduce el resultado del POST a un mensaje claro para la UI (por qué no lo recibió bien)."""
-    detalle = str(resp.get("detail") or resp.get("title") or resp)[:300]
+    """Mensaje claro por tipo de fallo. NO incluye el cuerpo crudo del orquestador (podría
+    contener PII/eco del payload en un 422); el detalle exacto está en los logs del orquestador."""
     if status == 0:
-        return f"No se pudo conectar al orquestador ({detalle})."
+        return f"No se pudo conectar al orquestador ({resp.get('detail')})."
+    if status in (301, 302, 303, 307, 308):
+        return f"El destino redirige (HTTP {status}): usa la URL final directa."
     if status in (401, 403):
         return "El orquestador rechazó la clave de ingesta (401/403): revisa el Token."
     if status == 411:
@@ -118,12 +133,12 @@ def _motivo(status: int, resp: dict[str, Any]) -> str:
     if status == 413:
         return "Lote o payload demasiado grande (413): baja el valor de Lote."
     if status == 422:
-        return f"El orquestador rechazó el lote (422): {detalle}"
+        return "El orquestador rechazó el lote (422): revisa el formato; detalle en sus logs."
     if status == 429:
         return "Límite de tasa del orquestador (429): reintenta en un momento."
     if status == 503:
         return "El orquestador no está listo (503): sin claves cargadas o Postgres caído."
-    return f"HTTP {status}: {detalle}"
+    return f"HTTP {status} del orquestador."
 
 
 def _leer_cursor(conn: psycopg.Connection[Any]) -> tuple[str, str] | None:
@@ -147,14 +162,20 @@ def _leer_lote(
 ) -> list[tuple[Any, ...]]:
     cols = ("entidad_id, tipo, ancla_tipo, ancla_valor, campos, confianza,"
             " version_receta, version_resolucion, actualizado_en")
+    # MARGEN: no enviar cambios de los últimos N s. `actualizado_en` se fija con now() (= inicio de
+    # transacción); el backfill envuelve un lote entero en UNA tx larga, así que sus filas quedan
+    # con un timestamp "viejo" pero se hacen visibles tarde. Sin margen, el cursor podría avanzar
+    # por encima de ellas y SALTARLAS para siempre. Esperar el margen deja commitear esas tx antes
+    # de barrer su rango de tiempo (debe superar la duración del lote-tx más largo del backfill).
+    margen = "actualizado_en <= now() - make_interval(secs => %s)"
     if cursor is None:
-        sql = (f"SELECT {cols} FROM entidades WHERE activo = true"
+        sql = (f"SELECT {cols} FROM entidades WHERE activo = true AND {margen}"
                " ORDER BY actualizado_en, entidad_id LIMIT %s")
-        return list(conn.execute(sql, (lote,)).fetchall())
-    sql = (f"SELECT {cols} FROM entidades WHERE activo = true"
+        return list(conn.execute(sql, (_MARGEN_SEG, lote)).fetchall())
+    sql = (f"SELECT {cols} FROM entidades WHERE activo = true AND {margen}"
            " AND (actualizado_en, entidad_id) > (%s::timestamptz, %s)"
            " ORDER BY actualizado_en, entidad_id LIMIT %s")
-    return list(conn.execute(sql, (cursor[0], cursor[1], lote)).fetchall())
+    return list(conn.execute(sql, (_MARGEN_SEG, cursor[0], cursor[1], lote)).fetchall())
 
 
 def enviar_a_destino(
@@ -179,7 +200,7 @@ def enviar_a_destino(
     lote = max(1, min(int(destino.get("lote") or 500), 5000))
 
     try:
-        with psycopg.connect(config.postgres_dsn) as conn:
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
             got = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,)).fetchone()
             if not got or not got[0]:
                 r.detuvo_en = "otro envío en curso"
@@ -247,7 +268,7 @@ def _guardar_ultimo(config: Config, r: ResumenEnvio) -> None:
         "errores": r.errores[:5],
     }
     try:
-        with psycopg.connect(config.postgres_dsn) as conn:
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
             conn.execute(
                 "INSERT INTO control (clave, valor) VALUES (%s, %s)"
                 " ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_en = now()",
@@ -317,27 +338,34 @@ def iniciar_bucle(config: Config) -> None:
 
 
 def estado_envio(config: Config) -> dict[str, Any]:
-    """Estado del envío para la UI: si está habilitado, el cursor y cuántas faltan por enviar."""
-    destino = leer_destino(config)
-    with psycopg.connect(config.postgres_dsn) as conn:
-        cursor = _leer_cursor(conn)
-        if cursor is None:
-            pendientes = conn.execute(
-                "SELECT count(*) FROM entidades WHERE activo = true"
+    """Estado del envío para la UI: si está habilitado, el cursor y cuántas faltan por enviar.
+    Degrada con gracia (no tira 500) si la BD parpadea: devuelve `disponible=false`."""
+    try:
+        destino = leer_destino(config)
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
+            cursor = _leer_cursor(conn)
+            if cursor is None:
+                pendientes = conn.execute(
+                    "SELECT count(*) FROM entidades WHERE activo = true"
+                ).fetchone()
+            else:
+                pendientes = conn.execute(
+                    "SELECT count(*) FROM entidades WHERE activo = true"
+                    " AND (actualizado_en, entidad_id) > (%s::timestamptz, %s)",
+                    (cursor[0], cursor[1]),
+                ).fetchone()
+            fu = conn.execute(
+                "SELECT valor FROM control WHERE clave = %s", (_CLAVE_ULTIMO,)
             ).fetchone()
-        else:
-            pendientes = conn.execute(
-                "SELECT count(*) FROM entidades WHERE activo = true"
-                " AND (actualizado_en, entidad_id) > (%s::timestamptz, %s)",
-                (cursor[0], cursor[1]),
-            ).fetchone()
-        fu = conn.execute("SELECT valor FROM control WHERE clave = %s", (_CLAVE_ULTIMO,)).fetchone()
-    ultimo = json.loads(fu[0]) if fu else None
+    except psycopg.Error:
+        return {"habilitado": False, "url": None, "cursor": None, "pendientes": 0,
+                "intervalo_seg": 0, "ultimo": None, "disponible": False}
     return {
         "habilitado": bool(destino.get("habilitado")),
         "url": destino.get("url"),
         "cursor": f"{cursor[0]}|{cursor[1]}" if cursor else None,
         "pendientes": int(pendientes[0]) if pendientes else 0,
         "intervalo_seg": int(destino.get("intervalo_seg") or 0),
-        "ultimo": ultimo,
+        "ultimo": json.loads(fu[0]) if fu else None,
+        "disponible": True,
     }
