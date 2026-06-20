@@ -29,9 +29,8 @@ def config(dsn: str, conexion: Any) -> Config:
 
 def _habilitar(config: Config, lote: int = 2, intervalo_seg: int = 0) -> None:
     guardar_destino(config, {
-        "habilitado": True, "modo": "push", "url": "http://aeb.local",
-        "auth_header": "X-API-Key", "auth_token": "secreto", "receta": "fz1_bundle", "lote": lote,
-        "intervalo_seg": intervalo_seg,
+        "habilitado": True, "url": "http://aeb.local", "auth_token": "secreto",
+        "lote": lote, "intervalo_seg": intervalo_seg,
     })
 
 

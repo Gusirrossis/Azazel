@@ -226,16 +226,14 @@ class SolicitudAtributos(BaseModel):
 
 
 class SolicitudDestino(BaseModel):
-    """Destino de envío de entidades al backend central (AEB): endpoint/webhook + auth."""
+    """Destino de envío al orquestador (AEB): a dónde y cada cuánto. Azazel manda el canónico
+    completo; el orquestador proyecta por formato. Por eso aquí no hay receta ni modo."""
 
     model_config = ConfigDict(extra="forbid")
 
     habilitado: bool = False
-    modo: Literal["push", "webhook"] = "push"
     url: str = Field(default="", max_length=500)
-    auth_header: str = Field(default="X-API-Key", max_length=80)
     auth_token: str = Field(default="", max_length=500)
-    receta: str = Field(default="fz1_bundle", max_length=80)
     lote: int = Field(default=500, ge=1, le=5000)
     intervalo_seg: int = Field(default=0, ge=0, le=86400)  # 0 = solo manual; >0 = envío automático
 

@@ -475,11 +475,12 @@ function GestionDestino() {
   if (!d) return <div className="config-atributos"><p className="panel-nota">{error ?? "cargando…"}</p></div>;
   return (
     <div className="config-atributos">
-      <h3>Destino de envío (backend central)</h3>
+      <h3>Destino de envío (orquestador)</h3>
       <p className="panel-nota">
-        A qué <b>endpoint</b> del backend central (AEB) Azazel empuja las entidades resueltas. Configura
-        aquí el destino y dispara el envío con <b>Enviar ahora</b>: el worker manda solo lo nuevo o
-        cambiado (incremental y reanudable), en formato canónico.
+        Aquí solo decides <b>a dónde</b> manda Azazel las entidades resueltas y <b>cada cuánto</b>.
+        Se envía la entidad <b>completa, en formato canónico</b> (tal como la resuelve Azazel); el
+        orquestador es quien la proyecta a la forma de cada sistema. El envío es incremental
+        (solo lo nuevo o cambiado) y reanudable.
       </p>
       {error && <div className="banner-error">{error}</div>}
       {aviso && <div className="banner-aviso">{aviso}</div>}
@@ -489,18 +490,15 @@ function GestionDestino() {
           Habilitar envío de entidades
         </label>
         <div className="campo-destino">
-          <span>Endpoint (URL del AEB)</span>
-          <input value={d.url} placeholder="https://aeb.tu-vps/v1/ingest" onChange={(e) => set({ url: e.target.value })} />
+          <span>Endpoint (URL del orquestador)</span>
+          <input value={d.url} placeholder="https://orquestador.tu-vps" onChange={(e) => set({ url: e.target.value })} />
+        </div>
+        <div className="campo-destino">
+          <span>Token / clave de ingesta (secreto)</span>
+          <input type="password" value={d.auth_token} placeholder="(la clave de ingesta)" onChange={(e) => set({ auth_token: e.target.value })} />
         </div>
         <div className="explorador-campos">
-          <div className="campo-destino"><span>Modo</span>
-            <select className="select-receta" value={d.modo} onChange={(e) => set({ modo: e.target.value as "push" | "webhook" })}>
-              <option value="push">push (lotes)</option>
-              <option value="webhook">webhook (por cambio)</option>
-            </select></div>
-          <div className="campo-destino"><span>Receta de salida</span>
-            <input value={d.receta} placeholder="fz1_bundle" onChange={(e) => set({ receta: e.target.value })} /></div>
-          <div className="campo-destino"><span>Lote</span>
+          <div className="campo-destino"><span>Lote (entidades por tanda)</span>
             <input type="number" min={1} max={5000} value={d.lote} onChange={(e) => set({ lote: +e.target.value })} /></div>
           <div className="campo-destino"><span>Envío automático cada (seg)</span>
             <input type="number" min={0} max={86400} value={d.intervalo_seg} placeholder="0 = manual"
@@ -511,12 +509,6 @@ function GestionDestino() {
           el sistema enviará lo nuevo o cambiado solo, sin reiniciar. <b>0 = manual</b> (usa el botón
           «Enviar ahora»). Requiere «Habilitar envío» activado.
         </p>
-        <div className="explorador-campos">
-          <div className="campo-destino"><span>Header de auth</span>
-            <input value={d.auth_header} placeholder="X-API-Key" onChange={(e) => set({ auth_header: e.target.value })} /></div>
-          <div className="campo-destino"><span>Token / API key (secreto)</span>
-            <input type="password" value={d.auth_token} placeholder="(secreto)" onChange={(e) => set({ auth_token: e.target.value })} /></div>
-        </div>
         <div className="filtro-acciones">
           <button className="primario" disabled={guardando} onClick={guardar}>Guardar destino</button>
         </div>

@@ -145,7 +145,8 @@ def enviar_a_destino(
         r.detuvo_en = "URL de destino inválida"
         return r
     endpoint = url + _RUTA_INGESTA
-    headers = {str(destino.get("auth_header") or "X-API-Key"): str(destino.get("auth_token") or "")}
+    # El orquestador siempre espera la clave en el header X-API-Key.
+    headers = {"X-API-Key": str(destino.get("auth_token") or "")}
     lote = max(1, min(int(destino.get("lote") or 500), 5000))
 
     with psycopg.connect(config.postgres_dsn) as conn:
