@@ -523,10 +523,15 @@ function GestionDestino() {
             </p>
           )}
           {resultado && (
-            <div className={resultado.detuvo_en ? "banner-error" : "banner-aviso"}>
+            <div className={resultado.detuvo_en || resultado.fallidas ? "banner-error" : "banner-aviso"}>
               {resultado.detuvo_en
-                ? <>Detenido: {resultado.detuvo_en}{resultado.errores[0] ? ` — ${resultado.errores[0]}` : ""}</>
-                : <>Enviadas {resultado.entidades} · creadas {resultado.creadas} · actualizadas {resultado.actualizadas} · fallidas {resultado.fallidas} ({resultado.lotes} lote(s)).</>}
+                ? <>⚠️ <b>No se completó:</b> {resultado.detuvo_en}</>
+                : <>Enviadas {resultado.entidades} · creadas {resultado.creadas} · actualizadas {resultado.actualizadas} · <b>fallidas {resultado.fallidas}</b> ({resultado.lotes} lote(s)).</>}
+              {resultado.errores?.length > 0 && (
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {resultado.errores.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              )}
             </div>
           )}
           <div className="filtro-acciones">

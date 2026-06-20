@@ -91,13 +91,37 @@ def _post_json(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
-    except urllib.error.HTTPError as exc:
+    except urllib.error.HTTPError as exc:  # el orquestador respondió, pero con error (4xx/5xx)
         crudo = exc.read()
         try:
             detalle = json.loads(crudo)
         except Exception:
             detalle = {"detail": crudo.decode("utf-8", "replace")[:300]}
         return exc.code, detalle
+    except urllib.error.URLError as exc:  # NO se pudo conectar (red/DNS/TLS/timeout)
+        return 0, {"detail": f"no se pudo conectar: {exc.reason}"}
+    except Exception as exc:  # cualquier otro fallo del envío (no tumbar el worker)
+        return 0, {"detail": f"error de envío: {type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def _motivo(status: int, resp: dict[str, Any]) -> str:
+    """Traduce el resultado del POST a un mensaje claro para la UI (por qué no lo recibió bien)."""
+    detalle = str(resp.get("detail") or resp.get("title") or resp)[:300]
+    if status == 0:
+        return f"No se pudo conectar al orquestador ({detalle})."
+    if status in (401, 403):
+        return "El orquestador rechazó la clave de ingesta (401/403): revisa el Token."
+    if status == 411:
+        return "Falta Content-Length (411): problema de proxy/red."
+    if status == 413:
+        return "Lote o payload demasiado grande (413): baja el valor de Lote."
+    if status == 422:
+        return f"El orquestador rechazó el lote (422): {detalle}"
+    if status == 429:
+        return "Límite de tasa del orquestador (429): reintenta en un momento."
+    if status == 503:
+        return "El orquestador no está listo (503): sin claves cargadas o Postgres caído."
+    return f"HTTP {status}: {detalle}"
 
 
 def _leer_cursor(conn: psycopg.Connection[Any]) -> tuple[str, str] | None:
@@ -145,53 +169,80 @@ def enviar_a_destino(
         r.detuvo_en = "URL de destino inválida"
         return r
     endpoint = url + _RUTA_INGESTA
+    if not str(destino.get("auth_token") or "").strip():
+        r.detuvo_en = "falta la clave de ingesta (Token) en la pestaña Destino"
+        return r
     # El orquestador siempre espera la clave en el header X-API-Key.
     headers = {"X-API-Key": str(destino.get("auth_token") or "")}
     lote = max(1, min(int(destino.get("lote") or 500), 5000))
 
-    with psycopg.connect(config.postgres_dsn) as conn:
-        got = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,)).fetchone()
-        if not got or not got[0]:
-            r.detuvo_en = "otro envío en curso"
-            return r
-        try:
-            if reiniciar:
-                conn.execute("DELETE FROM control WHERE clave = %s", (_CLAVE_CURSOR,))
-                conn.commit()
-            cursor = _leer_cursor(conn)
-            while max_lotes is None or r.lotes < max_lotes:
-                filas = _leer_lote(conn, cursor, lote)
-                if not filas:
-                    break
-                cuerpo = {
-                    "version_cable": "1", "productor": "azazel",
-                    "fuente": "azazel_resolucion",
-                    # Azazel es el resolvedor autoritativo: el AEB toma su valor como verdad
-                    # (last-write-wins) para que los cambios re-resueltos SÍ se propaguen.
-                    "modo_merge": "reemplazar",
-                    "entidades": [_item_aeb(f) for f in filas],
-                }
-                status, resp = _post_json(endpoint, headers, cuerpo)
-                if status not in (200, 207):
-                    r.detuvo_en = f"HTTP {status}"
-                    r.errores.append(str(resp.get("detail") or resp)[:200])
-                    break
-                r.lotes += 1
-                r.entidades += int(resp.get("recibidas", len(filas)))
-                r.creadas += int(resp.get("creadas", 0))
-                r.actualizadas += int(resp.get("actualizadas", 0))
-                r.sin_cambio += int(resp.get("sin_cambio", 0))
-                r.fallidas += int(resp.get("fallidas", 0))
-                ult = filas[-1]
-                ts_iso, eid = ult[8].isoformat(), str(ult[0])
-                cursor = (ts_iso, eid)
-                _guardar_cursor(conn, ts_iso, eid)
-                conn.commit()
-                r.cursor = f"{ts_iso}|{eid}"
-        finally:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
-    log.info("envio_aeb_completo")
+    try:
+        with psycopg.connect(config.postgres_dsn) as conn:
+            got = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,)).fetchone()
+            if not got or not got[0]:
+                r.detuvo_en = "otro envío en curso"
+                return r
+            try:
+                if reiniciar:
+                    conn.execute("DELETE FROM control WHERE clave = %s", (_CLAVE_CURSOR,))
+                    conn.commit()
+                cursor = _leer_cursor(conn)
+                while max_lotes is None or r.lotes < max_lotes:
+                    filas = _leer_lote(conn, cursor, lote)
+                    if not filas:
+                        break
+                    cuerpo = {
+                        "version_cable": "1", "productor": "azazel",
+                        "fuente": "azazel_resolucion",
+                        # Azazel es el resolvedor autoritativo: el AEB toma su valor como verdad
+                        # (last-write-wins) para que los cambios re-resueltos SÍ se propaguen.
+                        "modo_merge": "reemplazar",
+                        "entidades": [_item_aeb(f) for f in filas],
+                    }
+                    status, resp = _post_json(endpoint, headers, cuerpo)
+                    if status not in (200, 207):
+                        r.detuvo_en = _motivo(status, resp)
+                        r.errores.append(r.detuvo_en)
+                        log.warning("envio_rechazado", status=status, motivo=r.detuvo_en)
+                        break
+                    r.lotes += 1
+                    r.entidades += int(resp.get("recibidas", len(filas)))
+                    r.creadas += int(resp.get("creadas", 0))
+                    r.actualizadas += int(resp.get("actualizadas", 0))
+                    r.sin_cambio += int(resp.get("sin_cambio", 0))
+                    fallidas_lote = int(resp.get("fallidas", 0))
+                    r.fallidas += fallidas_lote
+                    if fallidas_lote:
+                        _anotar_fallos(r, resp, fallidas_lote)
+                    ult = filas[-1]
+                    ts_iso, eid = ult[8].isoformat(), str(ult[0])
+                    cursor = (ts_iso, eid)
+                    _guardar_cursor(conn, ts_iso, eid)
+                    conn.commit()
+                    r.cursor = f"{ts_iso}|{eid}"
+            finally:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
+    except psycopg.Error as exc:  # falla la BD de Azazel (no el orquestador)
+        r.detuvo_en = f"error de la base de datos de Azazel ({type(exc).__name__})"
+        r.errores.append(r.detuvo_en)
+        log.warning("envio_db_error", error=str(exc)[:200])
+        return r
+    log.info("envio_aeb_completo", entidades=r.entidades, creadas=r.creadas, fallidas=r.fallidas)
     return r
+
+
+def _anotar_fallos(r: ResumenEnvio, resp: dict[str, Any], fallidas: int) -> None:
+    """Anota los códigos de error por-ítem que devolvió el orquestador (sin PII)."""
+    codigos = sorted({
+        str(x.get("codigo")) for x in resp.get("resultados", [])
+        if x.get("estado") == "error" and x.get("codigo")
+    })
+    nota = f"{fallidas} entidad(es) rechazada(s) por el orquestador"
+    if codigos:
+        nota += f": {', '.join(codigos)}"
+    if nota not in r.errores:
+        r.errores.append(nota)
+    log.warning("envio_items_fallidos", fallidas=fallidas, codigos=codigos)
 
 
 # --------------------------------------------------- envío AUTOMÁTICO (daemon)
@@ -206,8 +257,11 @@ def _pasada(config: Config) -> int:
     intervalo = int(destino.get("intervalo_seg") or 0)
     if destino.get("habilitado") and intervalo > 0:
         r = enviar_a_destino(config)
-        if r.entidades:
-            log.info("envio_auto", entidades=r.entidades, creadas=r.creadas, fallidas=r.fallidas)
+        if r.detuvo_en and r.detuvo_en != "otro envío en curso":
+            log.warning("envio_auto_detenido", motivo=r.detuvo_en, errores=r.errores[:3])
+        elif r.entidades or r.fallidas:
+            log.info("envio_auto", entidades=r.entidades, creadas=r.creadas,
+                     fallidas=r.fallidas, errores=r.errores[:3])
         return intervalo
     return 15  # inactivo: re-checa la config pronto (toma efecto sin reiniciar)
 

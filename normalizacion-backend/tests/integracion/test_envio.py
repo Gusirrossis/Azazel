@@ -109,6 +109,56 @@ def test_entidad_modificada_se_reenvia(config: Config, monkeypatch: Any) -> None
     assert r.entidades == 1
 
 
+def test_falla_de_red_da_mensaje_claro(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 1)
+    monkeypatch.setattr(
+        "normalizacion.entidades.envio._post_json",
+        lambda u, h, c: (0, {"detail": "no se pudo conectar: [Errno 111] Connection refused"}),
+    )
+    r = enviar_a_destino(config)
+    assert r.lotes == 0 and r.detuvo_en and "No se pudo conectar" in r.detuvo_en
+    assert r.errores
+
+
+def test_rechazo_de_clave_da_mensaje_claro(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 1)
+    monkeypatch.setattr(
+        "normalizacion.entidades.envio._post_json",
+        lambda u, h, c: (401, {"detail": "X-API-Key inválida"}),
+    )
+    r = enviar_a_destino(config)
+    assert "clave de ingesta" in (r.detuvo_en or "")
+
+
+def test_sin_token_no_intenta_enviar(config: Config) -> None:
+    guardar_destino(config, {"habilitado": True, "url": "http://aeb.local",
+                             "auth_token": "", "lote": 2, "intervalo_seg": 0})
+    r = enviar_a_destino(config)
+    assert r.lotes == 0 and "clave de ingesta" in (r.detuvo_en or "")
+
+
+def test_fallos_por_item_se_anotan_con_codigos(config: Config, monkeypatch: Any) -> None:
+    _habilitar(config)
+    _sembrar(config, 2)
+
+    def _con_fallos(url: Any, headers: Any, cuerpo: dict[str, Any]) -> Any:
+        n = len(cuerpo["entidades"])
+        return 207, {
+            "recibidas": n, "creadas": n - 1, "actualizadas": 0, "sin_cambio": 0, "fallidas": 1,
+            "resultados": [
+                {"estado": "creada"},
+                {"estado": "error", "codigo": "tipo_relacion_invalido"},
+            ],
+        }
+
+    monkeypatch.setattr("normalizacion.entidades.envio._post_json", _con_fallos)
+    r = enviar_a_destino(config)
+    assert r.fallidas == 1
+    assert any("tipo_relacion_invalido" in e for e in r.errores)
+
+
 def test_pasada_automatica_envia_y_devuelve_intervalo(config: Config, monkeypatch: Any) -> None:
     from normalizacion.entidades.envio import _pasada
 
