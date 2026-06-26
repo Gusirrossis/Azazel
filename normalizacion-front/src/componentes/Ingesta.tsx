@@ -8,6 +8,7 @@ import {
 } from "../api";
 import type { EstadoPipeline } from "../tipos";
 import VistaCorrida, { NOMBRES_FASE } from "./corridas/VistaCorrida";
+import Recursos from "./Recursos";
 
 function SelectorCarpeta({
   ambito,
@@ -368,6 +369,7 @@ export default function Ingesta({
 
       {desplegado && estado && (
         <div className="ingesta-detalle">
+          <Recursos />
           {estado.en_curso ? (
             <VistaCorrida corrida={estado.en_curso} progreso={estado.progreso} />
           ) : (

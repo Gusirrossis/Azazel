@@ -22,7 +22,7 @@ from typing import IO
 
 import psycopg
 
-from normalizacion.core import cola
+from normalizacion.core import cola, recursos
 from normalizacion.core.almacen import Almacen, crear_almacen
 from normalizacion.core.config import Config
 from normalizacion.core.indexador import Sink, SinkNulo
@@ -159,6 +159,12 @@ def procesar_hot(
             if cola.sistema_pausado(conn):  # norm pausar: drena el lote y se detiene
                 log.warning("sistema_pausado", etapa="worker")
                 break
+            # Throttle adaptativo (K15): si la RAM está bajo presión —otro sistema
+            # arrancó, las entidades pesan— este worker NO reclama más archivos hasta
+            # que se recupere. Reduce la concurrencia efectiva sin matar procesos.
+            recursos.esperar_si_presion(
+                config, etiqueta=worker_id, seguir=lambda: not cola.sistema_pausado(conn)
+            )
             filas = cola.claim(
                 conn,
                 worker_id=worker_id,

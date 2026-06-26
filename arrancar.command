@@ -18,6 +18,19 @@ LOGS="$HOME/azazel-logs"; mkdir -p "$LOGS"
 echo "▶ Azazel — arrancando…"
 echo
 
+# 0) Acotar el HEAP de OpenSearch (JVM) ANTES de arrancarlo. Sin tope, OpenSearch
+#    reclama hasta la mitad de la RAM y compite con Python → la Mac se satura y se
+#    cae el panel. Dejamos un heap modesto (≈1/8 de la RAM, entre 1 y 4 GB) vía un
+#    drop-in en jvm.options.d (lo respeta en cada reinicio del servicio).
+OS_CONF="$(brew --prefix 2>/dev/null)/etc/opensearch"
+if [ -d "$OS_CONF" ]; then
+  RAM_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8589934592) / 1048576 ))
+  HEAP_MB=$(( RAM_MB / 8 ));  [ "$HEAP_MB" -lt 1024 ] && HEAP_MB=1024;  [ "$HEAP_MB" -gt 4096 ] && HEAP_MB=4096
+  mkdir -p "$OS_CONF/jvm.options.d"
+  printf -- "-Xms%sm\n-Xmx%sm\n" "$HEAP_MB" "$HEAP_MB" > "$OS_CONF/jvm.options.d/azazel-heap.options"
+  echo "• OpenSearch heap acotado a ${HEAP_MB} MB (de ${RAM_MB} MB de RAM)"
+fi
+
 # 1) Bases como servicios de Homebrew (idempotente: si ya viven, no hace nada).
 echo "• Bases de datos (Postgres + OpenSearch)…"
 brew services start postgresql@16 >/dev/null 2>&1 || true
@@ -44,8 +57,10 @@ else
   echo "• API → http://localhost:8000   (log: $LOGS/api.log)"
 fi
 
-# 5) Front.
+# 5) Front. Acotamos el heap de Node (Vite dev) — no necesita más y así no compite
+#    por RAM con la ingesta y OpenSearch en la misma Mac.
 cd "$ROOT/normalizacion-front"
+export NODE_OPTIONS="--max-old-space-size=512"
 [ -d node_modules ] || npm install >/dev/null 2>&1
 if curl -fs http://localhost:5173 >/dev/null 2>&1; then
   echo "• Front ya estaba arriba → http://localhost:5173"

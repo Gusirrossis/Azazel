@@ -145,7 +145,31 @@ Toda la conducta del sistema se cambia por config tipada y versionada
 K1 kill-rules · K2 bytes T1 · K3 lista blanca · K4 guards T3 · K5 head T2 ·
 K6 umbrales de entropía · K7 pesos del puntaje · K8 umbrales HOT/COLD ·
 K9 ML por tipo · K10 claim/lease · K11 límites de extractores · K12 chequeos de
-calidad · K13 triggers de flush · K14 reintentos.
+calidad · K13 triggers de flush · K14 reintentos · **K15 gobernador de recursos**.
+
+### K15 — gobernador de recursos (memoria adaptativa)
+
+La misma Mac puede tener **otro sistema corriendo**, y la resolución de entidades
+pesa al mismo tiempo que la ingesta. Un `núcleos − 2` estático ignora la RAM real y
+la satura — macOS detecta presión de memoria y mata al proceso Python (se cae hasta
+el panel). El gobernador (`core/recursos.py`) mide la **RAM libre en tiempo real** y:
+
+- **Dimensiona los workers por presupuesto de memoria**, no solo por núcleos: en modo
+  `adaptativo` (default) `min(núcleos−2, RAM_utilizable / mem_por_worker)`; lo pedido
+  en la UI es un **techo**, no una orden.
+- **Throttling cooperativo entre lotes**: workers, backfill y envío **pausan** la toma
+  de más trabajo mientras la RAM esté bajo la reserva (sin matar procesos), con tope
+  para no colgar nunca un lote.
+- **Protege el proceso de la API**: el backfill ya **no corre dentro de la petición**
+  HTTP (engordaba la API y tumbaba el panel) — se lanza en segundo plano gobernado y
+  el front consulta el avance; el envío automático se pospone bajo presión.
+- **Política configurable sin reiniciar** (UI → tabla `config_overrides`, sección
+  `recursos`): `conservador` (reserva ~40 % de RAM, default), `balanceado` (~30 %),
+  `máximo` (~20 %). Modo `fijo` recupera el comportamiento anterior (RAM dedicada).
+
+Complemento fuera de Python: el arranque nativo (`arrancar.command`) **acota el heap
+de OpenSearch** (≈1/8 de la RAM, 1–4 GB) y el de Node (Vite), que antes competían sin
+tope por la memoria. En Docker (Windows/pruebas) ya estaban acotados en el compose.
 
 ---
 

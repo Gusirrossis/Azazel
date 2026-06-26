@@ -19,9 +19,10 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from normalizacion.core.config import Config, PerillasFiltro
+from normalizacion.core.config import Config, PerillasFiltro, PerillasRecursos
 
 SECCION_FILTRO = "filtro"
+SECCION_RECURSOS = "recursos"
 
 # Perillas que la UI puede tocar. Todo lo demás (guards K4, pesos K7, kill-rules…)
 # sigue siendo territorio de .env/código — ampliar esta lista es una decisión.
@@ -42,6 +43,17 @@ CAMPOS_EDITABLES = frozenset(
     }
 )
 
+# K15 — perillas del gobernador editables desde la UI (la política de recursos sin
+# tocar .env ni reiniciar). El resto (intervalos, pisos) sigue siendo de config.
+CAMPOS_EDITABLES_RECURSOS = frozenset(
+    {"modo", "politica", "reserva_ram_pct", "mem_por_worker_mb", "workers_max"}
+)
+
+_EDITABLES_POR_SECCION = {
+    SECCION_FILTRO: CAMPOS_EDITABLES,
+    SECCION_RECURSOS: CAMPOS_EDITABLES_RECURSOS,
+}
+
 
 def leer_overrides(
     conn: psycopg.Connection[Any], seccion: str = SECCION_FILTRO
@@ -55,7 +67,8 @@ def leer_overrides(
 def guardar_overrides(
     conn: psycopg.Connection[Any], valores: dict[str, Any], seccion: str = SECCION_FILTRO
 ) -> None:
-    desconocidos = set(valores) - CAMPOS_EDITABLES
+    editables = _EDITABLES_POR_SECCION.get(seccion, CAMPOS_EDITABLES)
+    desconocidos = set(valores) - editables
     if desconocidos:
         raise ValueError(f"perillas no editables: {sorted(desconocidos)}")
     conn.execute(
@@ -87,14 +100,35 @@ def filtro_efectivo(config: Config, overrides: dict[str, Any]) -> PerillasFiltro
     return PerillasFiltro.model_validate({**config.filtro.model_dump(), **overrides})
 
 
+def recursos_efectivo(config: Config, overrides: dict[str, Any]) -> PerillasRecursos:
+    """Mergea y RE-VALIDA las perillas del gobernador (rangos incluidos)."""
+    if not overrides:
+        return config.recursos
+    return PerillasRecursos.model_validate({**config.recursos.model_dump(), **overrides})
+
+
 def aplicar_overrides(config: Config) -> Config:
     """Config con los overrides guardados aplicados (para la corrida que arranca).
 
-    Sin fila de overrides → la config vuelve intacta. Overrides inválidos (p. ej.
-    guardados con una versión anterior del modelo) → ValueError, la API lo mapea a 400.
-    """
+    Mergea filtro (lista blanca, umbrales…) Y recursos (política del gobernador) para
+    que el dimensionado de workers de ESTA corrida use la política vigente. Sin filas
+    de overrides → la config vuelve intacta. Overrides inválidos → ValueError (400)."""
     with psycopg.connect(config.postgres_dsn) as conn:
-        overrides = leer_overrides(conn)
-    if not overrides:
+        ov_filtro = leer_overrides(conn, SECCION_FILTRO)
+        ov_recursos = leer_overrides(conn, SECCION_RECURSOS)
+    actualizaciones: dict[str, Any] = {}
+    if ov_filtro:
+        actualizaciones["filtro"] = filtro_efectivo(config, ov_filtro)
+    if ov_recursos:
+        actualizaciones["recursos"] = recursos_efectivo(config, ov_recursos)
+    return config.model_copy(update=actualizaciones) if actualizaciones else config
+
+
+def aplicar_recursos(config: Config) -> Config:
+    """Config con SOLO los overrides de recursos aplicados (para el arranque de la
+    API: que los daemons —envío— y el gobernador usen la política persistida)."""
+    with psycopg.connect(config.postgres_dsn) as conn:
+        ov = leer_overrides(conn, SECCION_RECURSOS)
+    if not ov:
         return config
-    return config.model_copy(update={"filtro": filtro_efectivo(config, overrides)})
+    return config.model_copy(update={"recursos": recursos_efectivo(config, ov)})

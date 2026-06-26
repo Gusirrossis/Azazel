@@ -23,6 +23,7 @@ from typing import Any
 
 import psycopg
 
+from normalizacion.core import recursos
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 from normalizacion.entidades.destino import leer_destino
@@ -211,6 +212,9 @@ def enviar_a_destino(
                     conn.commit()
                 cursor = _leer_cursor(conn)
                 while max_lotes is None or r.lotes < max_lotes:
+                    # Throttle adaptativo (K15): no construir el siguiente lote (en RAM,
+                    # ya serializado a JSON) mientras la memoria esté bajo presión.
+                    recursos.esperar_si_presion(config, etiqueta="envio_aeb")
                     filas = _leer_lote(conn, cursor, lote)
                     if not filas:
                         break
@@ -304,6 +308,9 @@ def _pasada(config: Config) -> int:
     destino = leer_destino(config)
     intervalo = int(destino.get("intervalo_seg") or 0)
     if destino.get("habilitado") and intervalo > 0:
+        if not recursos.cabe_tarea(config):  # bajo presión: pospón, no engordes la API
+            log.info("envio_auto_pospuesto", motivo="memoria")
+            return min(intervalo, 30)
         r = enviar_a_destino(config)
         if r.detuvo_en and r.detuvo_en != "otro envío en curso":
             log.warning("envio_auto_detenido", motivo=r.detuvo_en, errores=r.errores[:3])

@@ -33,6 +33,7 @@ from normalizacion.api.esquemas import (
     SolicitudProponerMapeo,
     SolicitudProyectar,
     SolicitudReceta,
+    SolicitudRecursos,
     ResumenPanel,
     RespuestaBusqueda,
     RespuestaCarpetas,
@@ -67,6 +68,16 @@ def crear_app(config: Config) -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "X-API-Key"],
     )
+    # Política de recursos persistida (K15): se mergea al arrancar para que el
+    # gobernador y los daemons (envío) usen lo que el operador dejó configurado en la
+    # UI, sin reiniciar. Best-effort: si la BD aún no responde, se usa la base.
+    try:
+        from normalizacion.core.config_overrides import aplicar_recursos
+
+        config = aplicar_recursos(config)
+    except Exception:  # noqa: BLE001 — el arranque no debe morir por overrides
+        pass
+
     aplicacion.state.config = config
     aplicacion.state.limitador = LimitadorPorMinuto(config.api_solicitudes_por_minuto)
     aplicacion.state.cliente = None
@@ -291,6 +302,44 @@ def crear_app(config: Config) -> FastAPI:
             destino_eligible=_destino_eligible(cfg),
             workers_auto=resolver_workers(cfg, None),
         )
+
+    @aplicacion.get("/sistema/recursos")
+    def get_recursos(_: Autorizado, request: Request) -> dict[str, Any]:
+        """Estado del gobernador (K15): política activa, RAM libre, presión y cuántos
+        workers sugiere AHORA. Da visibilidad de 'cuándo el sistema puede o no'."""
+        from normalizacion.core import recursos
+
+        return recursos.estado(request.app.state.config)
+
+    @aplicacion.put("/sistema/recursos")
+    def put_recursos(
+        solicitud: SolicitudRecursos, _: Autorizado, request: Request
+    ) -> dict[str, Any]:
+        """Cambia la política de recursos (modo/política) sin reiniciar. Persiste el
+        override y lo aplica EN VIVO al config compartido (daemons incluidos)."""
+        import psycopg
+
+        from normalizacion.core import recursos
+        from normalizacion.core.config_overrides import (
+            SECCION_RECURSOS,
+            guardar_overrides,
+            leer_overrides,
+            recursos_efectivo,
+        )
+
+        cfg: Config = request.app.state.config
+        cambios = solicitud.model_dump(exclude_none=True)
+        try:
+            with psycopg.connect(cfg.postgres_dsn) as conn:
+                guardar_overrides(conn, cambios, SECCION_RECURSOS)
+                conn.commit()
+                overrides = leer_overrides(conn, SECCION_RECURSOS)
+            # Aplica EN VIVO: el config raíz es el mismo objeto que comparten los
+            # daemons (envío), así que reasignar .recursos los actualiza sin reiniciar.
+            cfg.recursos = recursos_efectivo(cfg, overrides)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return recursos.estado(cfg)
 
     @aplicacion.get("/pipeline/preservados", response_model=RespuestaPreservados)
     def get_preservados(_: Autorizado, request: Request) -> RespuestaPreservados:
@@ -653,14 +702,22 @@ def crear_app(config: Config) -> FastAPI:
         reiniciar: bool = False,
     ) -> dict[str, Any]:
         """E4 (1er paso): resuelve entidades de los registros YA INDEXADOS que traen
-        CURP/RFC. Acotado por max_docs para no bloquear la API; reanudable (el cursor
-        de avance vive en `control`, así que re-llamar continúa donde quedó)."""
-        from normalizacion.entidades.backfill import backfill_desde_indice
+        CURP/RFC. Se lanza en SEGUNDO PLANO (gobernado por K15) y vuelve de inmediato
+        —correrlo dentro de la petición engordaba la API y tumbaba el panel—. El
+        avance se consulta en GET /entidades/backfill/estado. Reanudable por cursor."""
+        from normalizacion.entidades.backfill import lanzar_en_fondo
 
-        r = backfill_desde_indice(
+        return lanzar_en_fondo(
             request.app.state.config, lote=lote, max_docs=max_docs, reiniciar=reiniciar,
         )
-        return r.como_dict()
+
+    @aplicacion.get("/entidades/backfill/estado")
+    def get_backfill_estado(_: Autorizado, request: Request) -> dict[str, Any]:
+        """Avance del backfill en curso (o el último resumen): para que la UI muestre
+        progreso sin bloquear."""
+        from normalizacion.entidades.backfill import estado_backfill
+
+        return estado_backfill(request.app.state.config)
 
     # --------------------------------------------------------- filtro editable
 

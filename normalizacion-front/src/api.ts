@@ -111,10 +111,23 @@ export interface ResumenBackfill {
   cursor: string | null;
 }
 
-// E4 (1er paso): resuelve entidades de los registros YA INDEXADOS (con CURP/RFC).
-// Acotado por lote; reanudable (re-llamar continúa donde quedó).
-export function backfillEntidades(maxDocs = 2000): Promise<ResumenBackfill> {
-  return pedir<ResumenBackfill>(`/entidades/backfill?max_docs=${maxDocs}`, { method: "POST" });
+// E4 (1er paso): lanza la resolución de los registros YA INDEXADOS (con CURP/RFC)
+// en SEGUNDO PLANO (gobernada por K15: no satura ni tumba el panel). Reanudable.
+export function backfillEntidades(maxDocs = 2000): Promise<{ lanzado: boolean; motivo: string }> {
+  return pedir<{ lanzado: boolean; motivo: string }>(
+    `/entidades/backfill?max_docs=${maxDocs}`, { method: "POST" },
+  );
+}
+
+export interface EstadoBackfill {
+  ejecutando: boolean;
+  disponible: boolean;
+  ultimo: (ResumenBackfill & { ts: string; ejecutando: boolean; error: string | null }) | null;
+}
+
+// Avance del backfill en curso (o el último resumen) — para mostrar progreso sin bloquear.
+export function estadoBackfill(): Promise<EstadoBackfill> {
+  return pedir<EstadoBackfill>("/entidades/backfill/estado");
 }
 
 export interface AtributoDeclarado { nombre: string; normalizador: string }
@@ -298,6 +311,42 @@ export function guardarFiltro(cambios: SolicitudFiltro): Promise<RespuestaFiltro
 
 export function restablecerFiltro(): Promise<RespuestaFiltro> {
   return pedir<RespuestaFiltro>("/filtro", { method: "DELETE" });
+}
+
+// ----- gobernador de recursos (K15) -----
+
+export interface EstadoRecursos {
+  modo: "adaptativo" | "fijo";
+  politica: "conservador" | "balanceado" | "maximo";
+  reserva_pct: number;
+  nucleos_tope: number;
+  workers_sugeridos: number;
+  psutil: boolean;
+  total_mb?: number;
+  disponible_mb?: number;
+  reserva_mb?: number;
+  porcentaje_usado?: number;
+  bajo_presion?: boolean;
+}
+
+export interface CambioRecursos {
+  modo?: "adaptativo" | "fijo";
+  politica?: "conservador" | "balanceado" | "maximo";
+  mem_por_worker_mb?: number;
+  workers_max?: number;
+}
+
+// Estado del gobernador: RAM libre, presión, política y workers sugeridos AHORA.
+export function recursosEstado(): Promise<EstadoRecursos> {
+  return pedir<EstadoRecursos>("/sistema/recursos");
+}
+
+// Cambia la política de recursos sin reiniciar (se aplica en vivo a los daemons).
+export function guardarRecursos(cambios: CambioRecursos): Promise<EstadoRecursos> {
+  return pedir<EstadoRecursos>("/sistema/recursos", {
+    method: "PUT",
+    body: JSON.stringify(cambios),
+  });
 }
 
 export function urlContenido(archivoId: string): string {

@@ -227,6 +227,57 @@ class PerillasWorker(BaseModel):
     bloque_lectura_bytes: int = 1024 * 1024  # streaming: nunca el archivo entero en RAM
 
 
+class PerillasRecursos(BaseModel):
+    """⚙ K15 — gobernador de recursos (memoria). El sistema decide cuánto trabajar
+    según la RAM LIBRE en TIEMPO REAL, no por un número fijo de núcleos.
+
+    Razón de ser: la misma Mac puede tener OTRO sistema corriendo, y la resolución
+    de entidades pesa al mismo tiempo que la ingesta. Un `núcleos − 2` estático
+    ignora todo eso y satura la RAM (macOS mata al proceso → se cae el panel). En
+    modo "adaptativo" (default) los workers y las entidades se dimensionan contra
+    un PRESUPUESTO de memoria y se pausan solos cuando la RAM aprieta.
+    """
+
+    # "adaptativo": dimensiona y throttlea por RAM libre. "fijo": respeta núcleos/perilla
+    # sin mirar la memoria (comportamiento anterior; para entornos con RAM dedicada).
+    modo: str = "adaptativo"
+
+    # Política → cuánta RAM se RESERVA siempre para el SO y otros programas:
+    #   conservador 40 % · balanceado 30 % · maximo 20 %. (decisión del usuario
+    #   2026-06-24: conservador por defecto, la Mac comparte con otro sistema).
+    politica: str = "conservador"
+    # Override explícito del % de reserva; si es None se deriva de `politica`.
+    reserva_ram_pct: float | None = Field(default=None, ge=0.05, le=0.9)
+    # Piso ABSOLUTO de RAM libre (MiB): nunca dejar al SO con menos que esto, sin
+    # importar el %. Protege equipos chicos donde el % daría un número minúsculo.
+    ram_minima_libre_mb: int = Field(default=1536, ge=256)
+
+    # Working-set ESTIMADO por proceso worker (MiB): cubre el buffer del sink
+    # (flush_bytes), el pico de extracción de un archivo y el intérprete. De aquí
+    # sale cuántos workers caben en el presupuesto. Subir si se ven OOM; bajar si
+    # sobra RAM y se quiere más paralelismo.
+    mem_por_worker_mb: int = Field(default=700, ge=128)
+    # Costo estimado de una pasada de resolución de entidades (backfill/envío) que
+    # corre DENTRO de la API: si no cabe en el presupuesto, se pospone.
+    mem_entidades_mb: int = Field(default=512, ge=64)
+
+    # Tope explícito de workers (0 = sin tope: manda el presupuesto y los núcleos).
+    workers_max: int = Field(default=0, ge=0, le=64)
+    # Cada cuánto se vuelve a muestrear la memoria (s) — barato, pero no en bucle apretado.
+    intervalo_muestreo_s: float = Field(default=2.0, ge=0.2)
+    # Tope de espera cuando hay presión (s): pasado esto se sigue igual, para JAMÁS
+    # colgar un lote por memoria (la presión se registra; el trabajo no se pierde).
+    espera_max_presion_s: float = Field(default=120.0, ge=0.0)
+
+    _RESERVA_POR_POLITICA = {"conservador": 0.40, "balanceado": 0.30, "maximo": 0.20}
+
+    def fraccion_reserva(self) -> float:
+        """% de RAM que se mantiene libre. Override explícito > política > conservador."""
+        if self.reserva_ram_pct is not None:
+            return self.reserva_ram_pct
+        return self._RESERVA_POR_POLITICA.get(self.politica, 0.40)
+
+
 class PerillasIndexador(BaseModel):
     """Perillas del sink a OpenSearch (Fase 2)."""
 
@@ -289,6 +340,7 @@ class Config(BaseSettings):
     filtro: PerillasFiltro = Field(default_factory=PerillasFiltro)
     worker: PerillasWorker = Field(default_factory=PerillasWorker)
     indexador: PerillasIndexador = Field(default_factory=PerillasIndexador)
+    recursos: PerillasRecursos = Field(default_factory=PerillasRecursos)
 
 
 def cargar_config() -> Config:

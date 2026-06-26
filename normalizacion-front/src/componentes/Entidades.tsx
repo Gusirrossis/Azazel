@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   atributosDeclarados as pedirAtributos, backfillEntidades, borrarReceta,
   destinoEntidades as pedirDestino, entidadActivo, entidadProyectar,
-  entidades as pedirEntidades, entidadesStats, enviarEntidades, estadoEnvio,
+  entidades as pedirEntidades, entidadesStats, enviarEntidades, estadoBackfill, estadoEnvio,
   exportarEntidades, guardarAtributos,
   guardarDestino, guardarReceta, nucleoEntidad, recetas as pedirRecetas,
 } from "../api";
@@ -590,18 +590,17 @@ export default function Entidades() {
   const colecciones = recetasDisp.filter((r) => r.definicion && "coleccion" in r.definicion);
   const recetasPersona = recetasDisp.filter((r) => !(r.definicion && "coleccion" in r.definicion));
 
+  // El backfill corre en SEGUNDO PLANO (gobernado por K15): se lanza y se sondea el
+  // avance, en vez de bloquear la petición HTTP (que engordaba la API y tumbaba el panel).
   const procesarIndexados = async () => {
     setBackfilling(true); setBackfillMsg(null);
     try {
       const r = await backfillEntidades(2000);
-      setBackfillMsg(
-        `Lote: ${r.docs} docs revisados · ${r.con_persona} con persona · ` +
-        `${r.entidades_nuevas} nuevas, ${r.entidades_fusionadas} fusionadas. ` +
-        (r.docs >= 2000 ? "Hay más: vuelve a pulsar para seguir." : "Índice al día."),
-      );
-      cargar(); entidadesStats().then(setStats).catch(() => {});
-    } catch (e) { setBackfillMsg(`error: ${e}`); }
-    finally { setBackfilling(false); }
+      if (!r.lanzado) {
+        setBackfillMsg(r.motivo); setBackfilling(false); return;
+      }
+      setBackfillMsg("procesando en segundo plano…");
+    } catch (e) { setBackfillMsg(`error: ${e}`); setBackfilling(false); }
   };
 
   const descargar = async () => {
@@ -629,6 +628,30 @@ export default function Entidades() {
 
   useEffect(() => { entidadesStats().then(setStats).catch(() => setStats(null)); }, [lista]);
   useEffect(() => { pedirRecetas("proyeccion").then(setRecetasDisp).catch(() => setRecetasDisp([])); }, []);
+
+  // Sondeo del avance mientras el backfill (en segundo plano) esté corriendo.
+  useEffect(() => {
+    if (!backfilling) return;
+    const tick = () => {
+      estadoBackfill().then((e) => {
+        const u = e.ultimo;
+        if (u) {
+          setBackfillMsg(
+            `${u.docs.toLocaleString()} docs revisados · ${u.con_persona} con persona · ` +
+            `${u.entidades_nuevas} nuevas, ${u.entidades_fusionadas} fusionadas` +
+            (u.error ? ` — error: ${u.error}` : e.ejecutando ? " (en curso…)" : ". Índice al día."),
+          );
+        }
+        if (!e.ejecutando) {
+          setBackfilling(false);
+          cargar(); entidadesStats().then(setStats).catch(() => {});
+        }
+      }).catch(() => {});
+    };
+    tick();
+    const t = window.setInterval(tick, 2000);
+    return () => window.clearInterval(t);
+  }, [backfilling, cargar]);
   useEffect(() => { if (modo !== "personas") return; const t = window.setTimeout(() => cargar(), 250); return () => window.clearTimeout(t); }, [cargar, modo]);
 
   return (

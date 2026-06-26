@@ -24,13 +24,17 @@ indexado o enganchar la resolución al pipeline de ingesta (el resto de E4).
 
 from __future__ import annotations
 
+import json
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
 
+from normalizacion.core import recursos
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 
@@ -47,6 +51,7 @@ _SCAN_CURP = re.compile(r"(?<![0-9A-ZÑ])[A-ZÑ]{4}\d{6}[HM][A-ZÑ]{5}[0-9A-ZÑ]
 _SCAN_RFC = re.compile(r"(?<![0-9A-ZÑ&])[A-ZÑ&]{4}\d{6}[0-9A-ZÑ]{3}(?![0-9A-ZÑ])")
 
 _CURSOR_CLAVE = "backfill_entidades_cursor"
+_ESTADO_CLAVE = "backfill_entidades_estado"  # progreso/último resumen para la UI
 _LOCK_ID = 0x42_4143_4B46  # advisory lock para serializar el backfill (un proceso a la vez)
 _VERSION_RES = "backfill-anclas-v1"
 # Solo el ancla: asignacion fila→campo mínima (nombre/email/tel del texto = E8).
@@ -89,29 +94,31 @@ def _aplanar(v: Any) -> Any:
             yield from _aplanar(x)
 
 
-def _texto_de_doc(doc: dict[str, Any]) -> str:
-    """Concatena los campos del doc donde puede aparecer una CURP/RFC (en MAYÚSCULAS).
+def _anclas_de_doc(doc: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(curps_validas, rfcs_validas) únicas, en orden de aparición.
 
-    Aplana recursivamente campos_extraidos (listas/dicts anidados) para no ocultar
-    anclas dentro de estructuras."""
-    partes: list[str] = []
-    for clave in _FUENTES:
-        partes.extend(_aplanar(doc.get(clave)))
-    return " ".join(partes).upper()
-
-
-def _anclas_validas(texto: str) -> tuple[list[str], list[str]]:
-    """Devuelve (curps_validas, rfcs_validas) únicas, en orden de aparición."""
+    MEMORIA (K15): escanea campo por campo —cada escalar en MAYÚSCULAS por sí solo—
+    en vez de armar un único texto gigante con `" ".join(...).upper()`. Para un
+    `texto_indexable` de ~100 KB ese patrón mantenía TRES copias del texto vivas a
+    la vez (la lista de partes, el join y su versión upper); por cientos de docs/lote
+    eso disparaba la RAM. Aquí solo vive un campo a la vez."""
     curps: list[str] = []
-    for m in _SCAN_CURP.finditer(texto):
-        n = N.validar_curp(m.group())
-        if n.valido and n.valor and n.valor not in curps:
-            curps.append(n.valor)
     rfcs: list[str] = []
-    for m in _SCAN_RFC.finditer(texto):
-        n = N.validar_rfc(m.group())
-        if n.valido and n.valor and n.valor not in rfcs:
-            rfcs.append(n.valor)
+    vistos_c: set[str] = set()
+    vistos_r: set[str] = set()
+    for clave in _FUENTES:
+        for escalar in _aplanar(doc.get(clave)):
+            texto = escalar.upper()
+            for m in _SCAN_CURP.finditer(texto):
+                n = N.validar_curp(m.group())
+                if n.valido and n.valor and n.valor not in vistos_c:
+                    vistos_c.add(n.valor)
+                    curps.append(n.valor)
+            for m in _SCAN_RFC.finditer(texto):
+                n = N.validar_rfc(m.group())
+                if n.valido and n.valor and n.valor not in vistos_r:
+                    vistos_r.add(n.valor)
+                    rfcs.append(n.valor)
     return curps, rfcs
 
 
@@ -125,7 +132,7 @@ def personas_de_doc(doc: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str
       · cualquier RFC que no se haya asociado a una CURP ancla su propia persona (no
         se descarta).
     """
-    curps, rfcs = _anclas_validas(_texto_de_doc(doc))
+    curps, rfcs = _anclas_de_doc(doc)
     filas: list[dict[str, str]] = []
     asociados: set[str] = set()
     for c in curps:
@@ -238,6 +245,10 @@ def backfill_desde_indice(
                 log.warning("backfill_sin_indice", alias=config.indice_alias)
                 return resumen
             while True:
+                # Throttle adaptativo (K15): el backfill recorre el índice trayendo el
+                # texto completo de cada doc; bajo presión de memoria espera a que la RAM
+                # se recupere antes de pedir el siguiente lote (no satura junto a la ingesta).
+                recursos.esperar_si_presion(config, etiqueta="backfill")
                 hits = _buscar_lote(cliente, config.indice_alias, cursor, lote)
                 if not hits:
                     break
@@ -270,3 +281,83 @@ def backfill_desde_indice(
             conn.commit()
     log.info("backfill_completo", **resumen.como_dict())
     return resumen
+
+
+# ---------------------------------------------- ejecución en SEGUNDO PLANO (UI)
+# El backfill recorre el índice y resuelve entidades: trabajo pesado que NO debe
+# correr dentro del hilo de la petición HTTP —bloquearía y engordaría el proceso de
+# la API, justo lo que tumba el panel—. Se lanza en un hilo daemon gobernado por K15
+# y el front consulta el avance por `estado_backfill` (patrón del pipeline).
+
+_HILO: threading.Thread | None = None
+_PARAR = threading.Event()
+
+
+def _guardar_estado(config: Config, *, ejecutando: bool, resumen: ResumenBackfill,
+                    error: str | None = None) -> None:
+    """Persiste el avance/último resumen (best-effort: si la BD parpadea, no rompe)."""
+    valor = {
+        "ts": datetime.now(UTC).isoformat(),
+        "ejecutando": ejecutando,
+        "error": error,
+        **resumen.como_dict(),
+    }
+    try:
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
+            conn.execute(
+                "INSERT INTO control (clave, valor) VALUES (%s, %s)"
+                " ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_en = now()",
+                (_ESTADO_CLAVE, json.dumps(valor, ensure_ascii=False)),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def estado_backfill(config: Config) -> dict[str, Any]:
+    """Estado del backfill para la UI: si está corriendo y el último resumen."""
+    corriendo = _HILO is not None and _HILO.is_alive()
+    try:
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
+            fila = conn.execute(
+                "SELECT valor FROM control WHERE clave = %s", (_ESTADO_CLAVE,)
+            ).fetchone()
+    except psycopg.Error:
+        return {"ejecutando": corriendo, "disponible": False, "ultimo": None}
+    ultimo = json.loads(fila[0]) if fila else None
+    return {"ejecutando": corriendo, "disponible": True, "ultimo": ultimo}
+
+
+def lanzar_en_fondo(
+    config: Config, *, lote: int = 500, max_docs: int | None = None, reiniciar: bool = False,
+) -> dict[str, Any]:
+    """Arranca el backfill en un hilo daemon (uno a la vez) y vuelve de inmediato.
+
+    Devuelve {lanzado, motivo}. No arranca si ya hay uno corriendo, o si el
+    gobernador (K15) ve que la RAM no da para una pasada (mejor posponer que tumbar
+    el panel: la UI reintenta)."""
+    global _HILO
+    if _HILO is not None and _HILO.is_alive():
+        return {"lanzado": False, "motivo": "ya hay un backfill en curso"}
+    if not recursos.cabe_tarea(config):
+        return {"lanzado": False, "motivo": "memoria insuficiente ahora mismo; reintenta en un momento"}
+
+    def _correr() -> None:
+        resumen_inicial = ResumenBackfill()
+        _guardar_estado(config, ejecutando=True, resumen=resumen_inicial)
+        try:
+            r = backfill_desde_indice(
+                config, lote=lote, max_docs=max_docs, reiniciar=reiniciar,
+                on_progress=lambda parcial: _guardar_estado(
+                    config, ejecutando=True, resumen=parcial
+                ),
+            )
+            _guardar_estado(config, ejecutando=False, resumen=r)
+        except Exception as exc:  # nunca tumbar el hilo: registra el motivo para la UI
+            log.warning("backfill_fondo_error", error=str(exc)[:200])
+            _guardar_estado(config, ejecutando=False, resumen=resumen_inicial, error=str(exc)[:200])
+
+    _PARAR.clear()
+    _HILO = threading.Thread(target=_correr, name="backfill-entidades", daemon=True)
+    _HILO.start()
+    return {"lanzado": True, "motivo": "backfill iniciado en segundo plano"}

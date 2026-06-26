@@ -96,9 +96,15 @@ def workers_auto() -> int:
 
 
 def resolver_workers(config: Config, solicitado: int | None) -> int:
-    """Prioridad: lo pedido en la corrida (front) > perilla NORM_WORKER__PROCESOS > auto."""
-    n = solicitado or config.worker.procesos or workers_auto()
-    return max(1, min(n, 64))
+    """Cuántos procesos worker correr. El gobernador (K15) decide:
+
+    · modo "adaptativo" (default): dimensiona por la RAM LIBRE en tiempo real —lo
+      pedido en el front es un TECHO, no una orden— para no saturar la Mac.
+    · modo "fijo": lo pedido (front) > perilla NORM_WORKER__PROCESOS > núcleos−2.
+    """
+    from normalizacion.core import recursos
+
+    return recursos.presupuesto_workers(config, solicitado)
 
 
 def _worker_en_proceso(

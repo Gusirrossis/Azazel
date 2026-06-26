@@ -1226,6 +1226,43 @@ button.chip-estado.activo .chip-clave {
   font-size: 14px;
 }
 
+/* ===== gobernador de recursos (K15): estado de RAM + política ===== */
+.recursos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  border: 0.5px solid rgba(142, 147, 155, 0.28);
+  border-radius: 4px;
+  background: rgba(142, 147, 155, 0.06);
+}
+.recursos-estado {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.recursos-metrica {
+  font-size: 12px;
+  color: var(--silver);
+}
+.recursos-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.recursos-politicas {
+  display: inline-flex;
+  gap: 6px;
+}
+.recursos-politicas button {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
 /* ===== señales del filtro (entropía como barra con umbrales) ===== */
 .senales {
   display: flex;

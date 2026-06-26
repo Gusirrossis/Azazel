@@ -238,6 +238,21 @@ class SolicitudDestino(BaseModel):
     intervalo_seg: int = Field(default=0, ge=0, le=86400)  # 0 = solo manual; >0 = envío automático
 
 
+class SolicitudRecursos(BaseModel):
+    """PUT /sistema/recursos — política del gobernador K15 (sin reiniciar).
+
+    Todo opcional: se manda solo lo que cambia. `modo` adaptativo dimensiona por RAM
+    libre en tiempo real; `politica` decide cuánta RAM se reserva para el SO/otros."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    modo: Literal["adaptativo", "fijo"] | None = None
+    politica: Literal["conservador", "balanceado", "maximo"] | None = None
+    reserva_ram_pct: float | None = Field(default=None, ge=0.05, le=0.9)
+    mem_por_worker_mb: int | None = Field(default=None, ge=128)
+    workers_max: int | None = Field(default=None, ge=0, le=64)
+
+
 # ------------------------------------------------------------------- tablero
 
 
