@@ -1120,6 +1120,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "prometheus-client" },
+    { name = "psutil" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1172,6 +1173,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'workers'", specifier = ">=10.3" },
     { name = "polars", marker = "extra == 'workers'", specifier = ">=1.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "psutil", specifier = ">=5.9" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
     { name = "py7zr", marker = "extra == 'workers'", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.7" },

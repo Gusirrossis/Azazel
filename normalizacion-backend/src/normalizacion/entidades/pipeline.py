@@ -21,10 +21,30 @@ from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 
 from . import normalizadores as N
-from .modelo import AnclaTipo, ORDEN_ANCLAS, calcular_entidad_id
+from .modelo import AnclaTipo, calcular_entidad_id
 from .receta import Receta
 
 log = obtener_logger("entidades")
+
+# Normalizador del campo-ancla → AnclaTipo del AEB. La selección de ancla es DATA-DRIVEN
+# (lee los campos `es_ancla` de la receta, en orden de declaración), no cableada a persona.
+_NORMALIZADOR_A_ANCLA: dict[str, AnclaTipo] = {
+    "curp": AnclaTipo.CURP, "rfc": AnclaTipo.RFC,
+    "email": AnclaTipo.EMAIL, "telefono": AnclaTipo.TELEFONO,
+}
+
+
+def _elegir_ancla(receta: Receta, val: Any) -> tuple[AnclaTipo, str] | None:
+    """Primer campo `es_ancla` con valor válido, en el orden en que la receta los declara.
+    Para persona reproduce CURP > RFC > email > teléfono; para acceso da email."""
+    for c in receta.campos:
+        if c.es_ancla:
+            v = val(c.nombre)
+            if v:
+                at = _NORMALIZADOR_A_ANCLA.get(c.normalizador)
+                if at is not None:
+                    return at, v
+    return None
 
 
 @dataclass
@@ -80,6 +100,16 @@ def construir_entidad(
         n = norm.get(campo)
         return n.valor if n and n.valido else None
 
+    # Tipos NO-persona (acceso, …): campos PLANOS directos desde la receta (data-driven).
+    # La forma anidada/derivaciones de abajo es exclusiva de persona (las manifests del AEB
+    # dependen de ella). Añadir otro tipo = otra receta, sin tocar esta rama.
+    if receta.tipo != "persona":
+        campos_g = {c.nombre: val(c.nombre) for c in receta.campos}
+        ancla_g = _elegir_ancla(receta, val)
+        if ancla_g is None:
+            return None
+        return {"campos": campos_g, "ancla_tipo": ancla_g[0], "ancla_valor": ancla_g[1]}
+
     # 3) derivaciones desde la CURP (sexo, dob, estado) — el ancla de oro
     deriv = norm["curp"].derivados if norm.get("curp") and norm["curp"].valido else None
     dob = (deriv or {}).get("dob") or (
@@ -133,15 +163,11 @@ def construir_entidad(
     if atributos:
         campos["atributos"] = atributos
 
-    # 4) elegir el ancla fuerte (CURP > RFC > email > teléfono)
-    valores_ancla = {
-        AnclaTipo.CURP: val("curp"), AnclaTipo.RFC: val("rfc"),
-        AnclaTipo.EMAIL: val("email"), AnclaTipo.TELEFONO: val("telefono"),
-    }
-    for ancla in ORDEN_ANCLAS:
-        if valores_ancla[ancla]:
-            return {"campos": campos, "ancla_tipo": ancla, "ancla_valor": valores_ancla[ancla]}
-    return None
+    # 4) elegir el ancla fuerte (data-driven: CURP > RFC > email > teléfono para persona)
+    ancla = _elegir_ancla(receta, val)
+    if ancla is None:
+        return None
+    return {"campos": campos, "ancla_tipo": ancla[0], "ancla_valor": ancla[1]}
 
 
 def _clave_procedencia(p: Any) -> str:

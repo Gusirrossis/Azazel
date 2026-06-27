@@ -26,6 +26,8 @@ class Receta:
     tipo: str
     version: str
     campos: tuple[CampoReceta, ...]
+    # `kind` del AEB al que mapea este tipo (vocabulario del orquestador: person, acceso, …).
+    kind: str = "unknown"
 
     def por_nombre(self, nombre: str) -> CampoReceta | None:
         return next((c for c in self.campos if c.nombre == nombre), None)
@@ -35,6 +37,7 @@ class Receta:
 PERSONA_FZ1 = Receta(
     tipo="persona",
     version="fz1-v1",
+    kind="person",
     campos=(
         CampoReceta("curp", "curp", es_ancla=True, sinonimos=("curp", "clave curp", "clave unica")),
         CampoReceta("rfc", "rfc", es_ancla=True, sinonimos=("rfc", "registro federal")),
@@ -67,7 +70,29 @@ PERSONA_FZ1 = Receta(
     ),
 )
 
-RECETAS: dict[str, Receta] = {PERSONA_FZ1.tipo: PERSONA_FZ1}
+# Acceso — credencial filtrada (combolists, breaches): usuario/correo/contraseña + origen.
+# Ancla por EMAIL (el correo): todos los accesos de un mismo correo resuelven a la misma entidad.
+# Limitación v1: la fusión conserva el primer dato no vacío, así que una sola contraseña por correo
+# (múltiples credenciales del mismo correo se consolidan; el historial completo es trabajo futuro).
+ACCESO = Receta(
+    tipo="acceso",
+    version="acceso-v1",
+    kind="acceso",
+    campos=(
+        CampoReceta("email", "email", es_ancla=True,
+                    sinonimos=("email", "correo", "correo electronico", "e mail", "mail", "usuario correo")),
+        CampoReceta("usuario", "texto",
+                    sinonimos=("usuario", "username", "user", "cuenta", "login", "nick", "handle")),
+        CampoReceta("contrasena", "texto",
+                    sinonimos=("contrasena", "contraseña", "password", "pass", "clave", "pwd")),
+        CampoReceta("dominio", "texto", sinonimos=("dominio", "domain", "sitio", "site", "host")),
+        CampoReceta("url", "texto", sinonimos=("url", "enlace", "link", "direccion url")),
+        CampoReceta("fuente", "texto",
+                    sinonimos=("fuente", "breach", "origen", "leak", "base", "filtracion", "combo")),
+    ),
+)
+
+RECETAS: dict[str, Receta] = {PERSONA_FZ1.tipo: PERSONA_FZ1, ACCESO.tipo: ACCESO}
 
 
 def obtener_receta(tipo: str) -> Receta:

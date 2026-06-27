@@ -27,6 +27,7 @@ from normalizacion.core import recursos
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 from normalizacion.entidades.destino import leer_destino
+from normalizacion.entidades.receta import RECETAS
 
 log = obtener_logger("entidades.envio")
 
@@ -74,9 +75,12 @@ def _item_aeb(row: tuple[Any, ...]) -> dict[str, Any]:
     placa = (campos.get("atributos") or {}).get("placa")
     if isinstance(placa, str) and placa.strip():
         ids["placas"] = placa.strip()
+    # `kind` del AEB según la receta del tipo (persona→person, acceso→acceso, …).
+    receta = RECETAS.get(tipo)
+    kind = receta.kind if receta else "unknown"
     return {
         "external_id": eid,
-        "kind": "person" if tipo == "persona" else "unknown",
+        "kind": kind,
         "confianza": float(confianza) if confianza is not None else 1.0,
         "version": (f"{vr or ''}/{vres or ''}")[:120],
         "ancla": {"tipo": ancla_tipo, "valor": ancla_valor},
