@@ -118,18 +118,15 @@ function SelectorCarpeta({
 }
 
 const CLAVE_DESTINO = "norm_destino_elegido";
-const CLAVE_WORKERS = "norm_workers_elegidos";
 
 function ModalIndexar({
   destinoEligible,
-  workersAuto,
   origenInicial,
   destinoInicial,
   onLanzar,
   onCerrar,
 }: {
   destinoEligible: boolean;
-  workersAuto: number;
   // De la última corrida (Postgres): precargan el modal para no re-elegir todo.
   origenInicial?: string | null;
   destinoInicial?: string | null;
@@ -145,10 +142,6 @@ function ModalIndexar({
   const [usarDestino, setUsarDestino] = useState<boolean>(() =>
     Boolean(destinoInicial ?? localStorage.getItem(CLAVE_DESTINO)),
   );
-  const [workers, setWorkers] = useState<number | null>(() => {
-    const guardado = Number(localStorage.getItem(CLAVE_WORKERS));
-    return guardado >= 1 ? guardado : null; // null = automático
-  });
   const [navegando, setNavegando] = useState<"origen" | "destino" | null>(null);
 
   if (navegando === "origen") {
@@ -188,9 +181,8 @@ function ModalIndexar({
     const elegido = usarDestino && destino ? destino : null;
     if (elegido) localStorage.setItem(CLAVE_DESTINO, elegido);
     else localStorage.removeItem(CLAVE_DESTINO);
-    if (workers) localStorage.setItem(CLAVE_WORKERS, String(workers));
-    else localStorage.removeItem(CLAVE_WORKERS);
-    onLanzar(origen, elegido, workers);
+    // Workers en automático: el gobernador de RAM (K15) los dimensiona; no se elige a mano.
+    onLanzar(origen, elegido, null);
   };
 
   return (
@@ -241,33 +233,6 @@ function ModalIndexar({
               </span>
             </div>
           )}
-        </div>
-
-        <div className="campo-carpeta">
-          <span className="campo-etiqueta">Workers en paralelo (procesos)</span>
-          <label className="opcion-destino">
-            <input type="radio" checked={workers === null} onChange={() => setWorkers(null)} />
-            Automático ({workersAuto} — según los núcleos del servidor)
-          </label>
-          <label className="opcion-destino">
-            <input
-              type="radio"
-              checked={workers !== null}
-              onChange={() => setWorkers(workers ?? workersAuto)}
-            />
-            Fijo:
-            <input
-              type="number"
-              min={1}
-              max={64}
-              className="numero-workers"
-              value={workers ?? workersAuto}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                if (n >= 1 && n <= 64) setWorkers(n);
-              }}
-            />
-          </label>
         </div>
 
         <div className="modal-acciones">
@@ -384,7 +349,6 @@ export default function Ingesta({
       {selectorAbierto && (
         <ModalIndexar
           destinoEligible={estado?.destino_eligible ?? false}
-          workersAuto={estado?.workers_auto ?? 1}
           origenInicial={ultima?.ruta}
           destinoInicial={ultima?.destino}
           onLanzar={lanzar}
