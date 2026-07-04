@@ -17,15 +17,19 @@ plaso (path specs serializables, BFS vía la cola).
 
 from __future__ import annotations
 
+import atexit
 import bz2
 import gzip
 import lzma
+import os
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import zipfile
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -401,6 +405,97 @@ def explorar(perillas: PerillasFiltro, fuente: Path | IO[bytes], tipo: str) -> R
         return ResultadoExploracion(False, "contenedor_corrupto", (), tipo)
 
 
+# ------------------------------------------------------------------ caché de extracción 7z
+#
+# Un 7z "sólido" (default de 7-Zip con miles de archivos chicos) descomprime el
+# BLOQUE ENTERO para sacar UNA sola entrada. Extraer entrada-por-entrada es O(N²):
+# con 19 652 PDFs en un bloque de 458 MB, cada lectura re-descomprime los 458 MB
+# → el pipeline nunca avanza. La cura: extraer el archivo COMPLETO una única vez a
+# un temporal y servir cada entrada como una lectura de disco (O(N)). La caché es
+# por PROCESO (los workers son procesos separados; cada uno extrae una vez) y tiene
+# un tope de disco con evicción LRU. Se limpia al salir el proceso.
+
+_CACHE_7Z_LOCK = threading.Lock()
+_CACHE_7Z: OrderedDict[tuple[str, int, int], tuple[Path, int]] = OrderedDict()
+_CACHE_7Z_BYTES = 0
+_CACHE_7Z_MAX_BYTES = int(os.environ.get("NORM_T3_CACHE_DISCO_BYTES", str(5 * 1024**3)))
+
+
+def _limpiar_cache_7z() -> None:
+    with _CACHE_7Z_LOCK:
+        for destino, _ in _CACHE_7Z.values():
+            shutil.rmtree(destino, ignore_errors=True)
+        _CACHE_7Z.clear()
+
+
+atexit.register(_limpiar_cache_7z)
+
+
+def _tam_arbol(raiz: Path) -> int:
+    total = 0
+    for base, _, archivos in os.walk(raiz):
+        for nombre in archivos:
+            try:
+                total += (Path(base) / nombre).stat().st_size
+            except OSError:  # pragma: no cover - carrera con limpieza
+                pass
+    return total
+
+
+def _abrir_lectura_arbol(raiz: Path) -> None:
+    """py7zr respeta los permisos guardados en el 7z; las entradas creadas en
+    Windows llegan sin modo Unix → 0o000 e ilegibles. El árbol es nuestro (temporal):
+    forzamos lectura propia sobre todo él."""
+    for base, dirs, archivos in os.walk(raiz):
+        for d in dirs:
+            try:
+                (Path(base) / d).chmod(0o700)
+            except OSError:  # pragma: no cover
+                pass
+        for nombre in archivos:
+            try:
+                (Path(base) / nombre).chmod(0o600)
+            except OSError:  # pragma: no cover
+                pass
+
+
+def _dir_7z_extraido(ruta_fs: Path) -> Path:
+    """Extrae el 7z COMPLETO una sola vez (cacheado por proceso) y devuelve el
+    directorio temporal. Todas las entradas se sirven de ahí — O(N), no O(N²)."""
+    import py7zr
+
+    st = ruta_fs.stat()
+    clave = (str(ruta_fs.resolve()), st.st_size, st.st_mtime_ns)
+    global _CACHE_7Z_BYTES
+    with _CACHE_7Z_LOCK:
+        cacheado = _CACHE_7Z.get(clave)
+        if cacheado is not None and cacheado[0].is_dir():
+            _CACHE_7Z.move_to_end(clave)
+            return cacheado[0]
+
+        destino = Path(tempfile.mkdtemp(prefix="norm7z_"))
+        try:
+            with py7zr.SevenZipFile(ruta_fs, mode="r") as sz:
+                sz.extractall(path=destino)
+        except Exception:
+            shutil.rmtree(destino, ignore_errors=True)
+            raise
+        _abrir_lectura_arbol(destino)
+
+        tam = _tam_arbol(destino)
+        _CACHE_7Z[clave] = (destino, tam)
+        _CACHE_7Z_BYTES += tam
+        # Evicción LRU por presupuesto de disco (jamás desaloja el recién creado)
+        while _CACHE_7Z_BYTES > _CACHE_7Z_MAX_BYTES and len(_CACHE_7Z) > 1:
+            vieja_clave, (viejo_dir, viejo_tam) = next(iter(_CACHE_7Z.items()))
+            if vieja_clave == clave:
+                break
+            _CACHE_7Z.popitem(last=False)
+            _CACHE_7Z_BYTES -= viejo_tam
+            shutil.rmtree(viejo_dir, ignore_errors=True)
+        return destino
+
+
 # ------------------------------------------------------------------ abrir entradas
 
 
@@ -427,9 +522,37 @@ def _paso_zip(fobj: IO[bytes], entrada: str, umbral: int, limite: int) -> IO[byt
     return spool
 
 
-def _paso_7z(fobj: IO[bytes], entrada: str, umbral: int, limite: int) -> IO[bytes]:
-    # py7zr ≥1.0 ya no tiene read(): se extrae SOLO esa entrada a un directorio
-    # temporal (el pre-check de tamaño va ANTES de descomprimir nada)
+def _servir_desde_arbol(origen_fs: Path, entrada: str, umbral: int, limite: int) -> IO[bytes]:
+    """Copia una entrada ya extraída (en disco) a un spool con tope duro."""
+    if origen_fs.stat().st_size > limite:
+        raise ContenedorInseguro(f"entrada '{entrada}' excede el límite ({limite} B)")
+    spool: IO[bytes] = SpooledTemporaryFile(max_size=umbral)  # noqa: SIM115
+    try:
+        with origen_fs.open("rb") as f:
+            _copiar_con_limite(f, spool, limite, entrada)
+    except ContenedorInseguro:
+        spool.close()
+        raise
+    spool.seek(0)
+    return spool
+
+
+def _paso_7z(
+    fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None = None
+) -> IO[bytes]:
+    # 7z SÓLIDO: sacar una entrada descomprime el bloque entero. Si el 7z es un
+    # archivo del filesystem, se extrae COMPLETO una vez (cacheado) y la entrada se
+    # sirve como lectura de disco → O(N) en lugar de O(N²) (ver _dir_7z_extraido).
+    if ruta_fs is not None:
+        dir_ex = _dir_7z_extraido(ruta_fs)
+        origen_fs = dir_ex / entrada
+        if not origen_fs.is_file():
+            raise OSError(f"entrada no encontrada en 7z: {entrada}")
+        return _servir_desde_arbol(origen_fs, entrada, umbral, limite)
+
+    # 7z ANIDADO dentro de otro contenedor (stream, sin ruta en disco): fallback
+    # por-entrada. py7zr ≥1.0 ya no tiene read(): se extrae SOLO esa entrada a un
+    # directorio temporal (el pre-check de tamaño va ANTES de descomprimir nada).
     import py7zr
 
     fobj.seek(0)
@@ -550,7 +673,9 @@ def abrir_entrada(
             if cab.startswith(b"PK\x03\x04"):
                 siguiente = _paso_zip(fobj, entrada, umbral_memoria, limite_bytes)
             elif cab.startswith(_MAGIA_7Z):
-                siguiente = _paso_7z(fobj, entrada, umbral_memoria, limite_bytes)
+                siguiente = _paso_7z(
+                    fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
+                )
             elif cab.startswith(_MAGIA_RAR):
                 siguiente = _paso_rar(
                     fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual

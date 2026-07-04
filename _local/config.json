@@ -1,0 +1,245 @@
+{
+  "consumidores": [
+    {
+      "clave": "flux",
+      "nombre": "FLUX",
+      "tipo": "flux",
+      "activo": true,
+      "descripcion": "Grafo OSINT 3D. Recibe nodos planos + aristas; upsert por external_id.",
+      "config": {
+        "contrato": "inject + universe"
+      },
+      "campos_permitidos": [
+        "nombre",
+        "nombre_completo",
+        "alias",
+        "direccion",
+        "edad",
+        "curp",
+        "phone"
+      ]
+    },
+    {
+      "clave": "gotham",
+      "nombre": "Gotham",
+      "tipo": "gotham",
+      "activo": true,
+      "descripcion": "Plataforma OSINT (FastAPI/ReactFlow). Monta el AEB como registry.",
+      "config": {
+        "contrato": "registry/GenericRecord",
+        "tiempo_real": "websocket"
+      },
+      "campos_permitidos": [
+        "nombre_completo",
+        "sexo",
+        "edad",
+        "direccion",
+        "curp",
+        "rfc"
+      ]
+    },
+    {
+      "clave": "fz1",
+      "nombre": "Fz1",
+      "tipo": "fz1",
+      "activo": true,
+      "descripcion": "Nexus API :3001. Búsqueda por filtros/identificador, streaming SSE.",
+      "config": {
+        "contrato": "/api/search + filtros",
+        "tiempo_real": "sse"
+      },
+      "campos_permitidos": [
+        "nombre",
+        "nombre_completo",
+        "sexo",
+        "direccion",
+        "curp",
+        "phone"
+      ]
+    }
+  ],
+  "manifests": [
+    {
+      "clave": "flux",
+      "sistema": "flux",
+      "version": "v1",
+      "definicion": {
+        "salida": [
+          {
+            "path": "id_externo",
+            "de": "id"
+          },
+          {
+            "path": "nombre.nombre1",
+            "de": "campos.nombre.nombre1"
+          },
+          {
+            "path": "nombre.nombre2",
+            "de": "campos.nombre.nombre2"
+          },
+          {
+            "path": "nombre.apellido1",
+            "de": "campos.nombre.apellido1"
+          },
+          {
+            "path": "nombre.apellido2",
+            "de": "campos.nombre.apellido2"
+          },
+          {
+            "path": "alias",
+            "de": "campos.alias"
+          },
+          {
+            "path": "curp",
+            "de": "identificadores.curp"
+          },
+          {
+            "path": "fecha_nacimiento",
+            "de": "campos.normalizados.normalized_dob"
+          },
+          {
+            "path": "email",
+            "de": "identificadores.email"
+          },
+          {
+            "path": "telefono",
+            "de": "identificadores.phone"
+          },
+          {
+            "path": "direccion.calle",
+            "de": "campos.direccion.calle"
+          },
+          {
+            "path": "direccion.numero_exterior",
+            "de": "campos.direccion.numero_exterior"
+          },
+          {
+            "path": "direccion.colonia",
+            "de": "campos.direccion.colonia"
+          },
+          {
+            "path": "direccion.municipio",
+            "de": "campos.direccion.municipio"
+          },
+          {
+            "path": "direccion.codigo_postal",
+            "de": "identificadores.cp"
+          },
+          {
+            "path": "direccion.estado",
+            "de": "campos.direccion.estado"
+          },
+          {
+            "path": "direccion.pais",
+            "de": "campos.direccion.pais"
+          }
+        ]
+      }
+    },
+    {
+      "clave": "gotham",
+      "sistema": "gotham",
+      "version": "v1",
+      "definicion": {
+        "salida": [
+          {
+            "path": "record_id",
+            "de": "id"
+          },
+          {
+            "path": "kind",
+            "de": "kind"
+          },
+          {
+            "path": "nombre_completo",
+            "de": "campos.nombre_completo"
+          },
+          {
+            "path": "sexo",
+            "de": "campos.sexo"
+          },
+          {
+            "path": "edad",
+            "de": "campos.edad"
+          },
+          {
+            "path": "estado",
+            "de": "campos.direccion.estado"
+          },
+          {
+            "path": "municipio",
+            "de": "campos.direccion.municipio"
+          },
+          {
+            "path": "curp",
+            "de": "identificadores.curp"
+          },
+          {
+            "path": "rfc",
+            "de": "identificadores.rfc"
+          },
+          {
+            "path": "email",
+            "de": "identificadores.email"
+          },
+          {
+            "path": "telefono",
+            "de": "identificadores.phone"
+          },
+          {
+            "path": "cp",
+            "de": "identificadores.cp"
+          }
+        ]
+      }
+    },
+    {
+      "clave": "fz1",
+      "sistema": "fz1",
+      "version": "v1",
+      "definicion": {
+        "salida": [
+          {
+            "path": "nombre",
+            "de": "campos.nombre.nombre1"
+          },
+          {
+            "path": "paterno",
+            "de": "campos.nombre.apellido1"
+          },
+          {
+            "path": "materno",
+            "de": "campos.nombre.apellido2"
+          },
+          {
+            "path": "nombre_completo",
+            "de": "campos.nombre_completo"
+          },
+          {
+            "path": "curp",
+            "de": "identificadores.curp"
+          },
+          {
+            "path": "sexo",
+            "de": "campos.sexo"
+          },
+          {
+            "path": "telefono",
+            "de": "identificadores.phone"
+          },
+          {
+            "path": "estado",
+            "de": "campos.direccion.estado"
+          },
+          {
+            "path": "cp",
+            "de": "identificadores.cp"
+          }
+        ]
+      }
+    }
+  ],
+  "ajustes": {
+    "ventana_logs": 200
+  }
+}

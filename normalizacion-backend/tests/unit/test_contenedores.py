@@ -115,6 +115,42 @@ class TestSieteZip:
             assert f.read() == contenido
         del io
 
+    def test_multiples_entradas_extraen_el_7z_una_sola_vez(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El fix del 7z sólido: leer N entradas debe extraer el archivo UNA vez
+        (O(N)), no re-extraerlo por entrada (O(N²) que congelaba el pipeline)."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        entradas = {f"docs/f{i}.txt": f"contenido-{i}".encode() for i in range(5)}
+        self._crear_7z(tmp_path / "muchos.7z", entradas)
+
+        C._limpiar_cache_7z()
+        extracciones = {"n": 0}
+        original = C._dir_7z_extraido
+
+        def _contando(ruta_fs: Path) -> Path:
+            # cuenta solo los MISS reales (extracción); los HIT no re-extraen
+            antes = str(ruta_fs.resolve()), ruta_fs.stat().st_size, ruta_fs.stat().st_mtime_ns
+            hit = antes in C._CACHE_7Z
+            resultado = original(ruta_fs)
+            if not hit:
+                extracciones["n"] += 1
+            return resultado
+
+        monkeypatch.setattr(C, "_dir_7z_extraido", _contando)
+        try:
+            for i in range(5):
+                with abrir_entrada(
+                    tmp_path, ["muchos.7z", f"docs/f{i}.txt"],
+                    umbral_memoria=65_536, limite_bytes=1_000_000,
+                ) as f:
+                    assert f.read() == f"contenido-{i}".encode()
+            assert extracciones["n"] == 1  # UNA extracción para las 5 entradas
+            assert len(C._CACHE_7Z) == 1
+        finally:
+            C._limpiar_cache_7z()
+
     def test_entrada_7z_que_excede_limite(self, tmp_path: Path) -> None:
         import pytest as pt
 
