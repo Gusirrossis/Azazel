@@ -148,22 +148,33 @@ def procesar_hot(
     barrido_final = False
     w = config.worker
 
-    with psycopg.connect(config.postgres_dsn) as conn:
+    # Dos conexiones a propósito: `conn` para los DATOS (transaccional) y `conn_ctl` en
+    # AUTOCOMMIT solo para las lecturas de control (pausa/montajes) y el sondeo del throttle.
+    # Clave: el throttle de memoria (esperar_si_presion) BLOQUEA hasta minutos; si se esperara
+    # con una transacción abierta en `conn`, esa conexión quedaría `idle in transaction` y
+    # congelaría el xmin horizon → autovacuum no podría reclamar tuplas muertas y `archivos`
+    # (tabla-cola con UPDATE masivo) se infla sin control. Con las lecturas de control en
+    # autocommit, durante la espera NINGUNA conexión sostiene snapshot.
+    with (
+        psycopg.connect(config.postgres_dsn) as conn,
+        psycopg.connect(config.postgres_dsn, autocommit=True) as conn_ctl,
+    ):
         huerfanos = cola.recuperar_huerfanos(conn)
         conn.commit()
         if huerfanos:
             log.warning("huerfanos_rescatados", cuantos=huerfanos)
-        montajes = cola.montajes(conn)
+        montajes = cola.montajes(conn_ctl)
 
         while True:
-            if cola.sistema_pausado(conn):  # norm pausar: drena el lote y se detiene
+            if cola.sistema_pausado(conn_ctl):  # norm pausar: drena el lote y se detiene
                 log.warning("sistema_pausado", etapa="worker")
                 break
             # Throttle adaptativo (K15): si la RAM está bajo presión —otro sistema
             # arrancó, las entidades pesan— este worker NO reclama más archivos hasta
             # que se recupere. Reduce la concurrencia efectiva sin matar procesos.
+            # El sondeo va por `conn_ctl` (autocommit): esperar NO deja tx abierta.
             recursos.esperar_si_presion(
-                config, etiqueta=worker_id, seguir=lambda: not cola.sistema_pausado(conn)
+                config, etiqueta=worker_id, seguir=lambda: not cola.sistema_pausado(conn_ctl)
             )
             filas = cola.claim(
                 conn,
