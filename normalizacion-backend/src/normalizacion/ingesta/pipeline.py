@@ -11,6 +11,7 @@ genera trabajo. Es el modo "continuo + ráfagas" del diseño.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -651,13 +652,44 @@ def listar_archivos_cola(
     }
 
 
+# El tablero agrega la tabla `archivos` (millones de filas): recomputarlo cuesta
+# segundos y en cada poll competía con la ingesta. Servimos un SNAPSHOT reciente
+# con TTL corto y single-flight (un solo hilo recalcula; el resto reusa). El sello
+# `generado_en` del payload deja la antigüedad a la vista.
+_TABLERO_TTL_S = 15.0
+_tablero_lock = threading.Lock()
+_tablero_cache: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
+
+
 def tablero(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, Any]:
-    """Para GET /panel: TODOS los agregados del tablero de Inicio en una llamada.
+    """Para GET /panel: agregados del tablero, cacheados por TTL corto (single-flight).
+
+    Devuelve un snapshot de como mucho `_TABLERO_TTL_S` segundos. Bajo el lock, si el
+    snapshot está fresco se reutiliza al instante; si expiró, UN solo hilo lo recalcula
+    y los concurrentes esperan ese resultado en vez de disparar N escaneos en paralelo
+    contra `archivos`. Los umbrales forman parte de la clave (cambian la franja gris)."""
+    clave = (umbral_cold, umbral_hot)
+    with _tablero_lock:
+        entrada = _tablero_cache.get(clave)
+        if entrada is not None and time.monotonic() - entrada[0] < _TABLERO_TTL_S:
+            return entrada[1]
+        datos = _tablero_calcular(config, umbral_cold=umbral_cold, umbral_hot=umbral_hot)
+        _tablero_cache[clave] = (time.monotonic(), datos)
+        return datos
+
+
+def _tablero_calcular(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, Any]:
+    """Calcula TODOS los agregados del tablero de Inicio en una llamada.
 
     El tablero debe responder de un vistazo: ¿cuánto hay y en qué estado?, ¿qué
     proporción se va a frío y POR QUÉ?, ¿qué falló y de qué familia?, ¿dónde
     duda el filtro (histograma de puntajes vs umbrales)?, ¿cuánto ahorra el
-    dedup?, ¿qué discos hay y cómo van? Una sola conexión, varios GROUP BY.
+    dedup?, ¿qué discos hay y cómo van?
+
+    Rendimiento: estados, decisión, tipo, histograma, discos y franja gris se
+    obtienen en UNA sola pasada de `archivos` con GROUPING SETS (antes eran 5-6
+    escaneos independientes de millones de filas). Solo dedup (COUNT DISTINCT) y
+    las causas COLD/ERROR —baratas por índice— van aparte.
 
     Los umbrales llegan ya EFECTIVOS (config base + overrides de la UI) para que
     la franja gris del tablero coincida con lo que el filtro hará en la próxima
@@ -667,23 +699,66 @@ def tablero(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, A
         return [{"clave": f[0], "archivos": int(f[1]), "bytes": int(f[2])} for f in filas]
 
     with psycopg.connect(config.postgres_dsn) as conn:
-        estados_decision = conn.execute(
+        # UNA pasada: estado, decisión, tipo, disco y cubeta de puntaje como GROUPING
+        # SETS distintos; la franja gris y los totales salen del set gran-total (()).
+        # `cubeta` se precalcula en la subconsulta para poder agruparla.
+        combinado = conn.execute(
             """
-            SELECT CASE WHEN GROUPING(estado) = 0 THEN 'estado' ELSE 'decision' END AS dim,
-                   COALESCE(estado, ruta_decision, 'SIN_DECIDIR') AS clave,
-                   COUNT(*), COALESCE(SUM(tamano), 0)
-              FROM archivos GROUP BY GROUPING SETS ((estado), (ruta_decision))
-            """
+            SELECT GROUPING(estado)        AS g_estado,
+                   GROUPING(ruta_decision) AS g_decision,
+                   GROUPING(tipo_real)     AS g_tipo,
+                   GROUPING(disco_id)      AS g_disco,
+                   GROUPING(cubeta)        AS g_hist,
+                   estado, ruta_decision, tipo_real, disco_id, cubeta,
+                   COUNT(*)                 AS archivos,
+                   COALESCE(SUM(tamano), 0) AS bytes,
+                   COUNT(*) FILTER (WHERE estado = 'HECHO') AS hechos,
+                   COUNT(*) FILTER (WHERE estado = 'ERROR') AS errores,
+                   COUNT(*) FILTER (WHERE puntaje BETWEEN %s AND %s) AS franja
+              FROM (
+                  SELECT estado, ruta_decision, tipo_real, disco_id, tamano, puntaje,
+                         CASE WHEN puntaje IS NOT NULL THEN (LEAST(puntaje, 99) / 10) * 10 END AS cubeta
+                    FROM archivos
+              ) a
+             GROUP BY GROUPING SETS ((estado), (ruta_decision), (tipo_real), (disco_id), (cubeta), ())
+            """,
+            (umbral_cold, umbral_hot - 1),
         ).fetchall()
-        por_estado = grupos([f[1:] for f in estados_decision if f[0] == "estado"])
-        por_decision = grupos([f[1:] for f in estados_decision if f[0] == "decision"])
 
-        por_tipo = grupos(
-            conn.execute(
-                "SELECT tipo_real, COUNT(*), COALESCE(SUM(tamano), 0) FROM archivos"
-                " WHERE tipo_real IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT 10"
-            ).fetchall()
-        )
+        por_estado: list[dict[str, Any]] = []
+        por_decision: list[dict[str, Any]] = []
+        tipos_raw: list[dict[str, Any]] = []
+        histograma_raw: list[dict[str, Any]] = []
+        discos_raw: list[dict[str, Any]] = []
+        franja_gris = 0
+        for f in combinado:
+            archivos, bytes_ = int(f[10]), int(f[11])
+            if f[0] == 0:  # set (estado)
+                por_estado.append(
+                    {"clave": f[5] if f[5] is not None else "SIN_DECIDIR", "archivos": archivos, "bytes": bytes_}
+                )
+            elif f[1] == 0:  # set (ruta_decision)
+                por_decision.append(
+                    {"clave": f[6] if f[6] is not None else "SIN_DECIDIR", "archivos": archivos, "bytes": bytes_}
+                )
+            elif f[2] == 0:  # set (tipo_real) — descartamos el grupo NULL (WHERE tipo_real IS NOT NULL)
+                if f[7] is not None:
+                    tipos_raw.append({"clave": f[7], "archivos": archivos, "bytes": bytes_})
+            elif f[3] == 0:  # set (disco_id)
+                discos_raw.append(
+                    {"disco_id": f[8], "archivos": archivos, "bytes": bytes_, "hechos": int(f[12]), "errores": int(f[13])}
+                )
+            elif f[4] == 0:  # set (cubeta) — descartamos el grupo NULL (WHERE puntaje IS NOT NULL)
+                if f[9] is not None:
+                    histograma_raw.append({"desde": int(f[9]), "archivos": archivos})
+            else:  # set gran-total () — franja gris y totales
+                franja_gris = int(f[14])
+
+        # Orden/límite en Python (equivalen a los ORDER BY / LIMIT originales).
+        por_tipo = sorted(tipos_raw, key=lambda g: g["bytes"], reverse=True)[:10]
+        histograma = sorted(histograma_raw, key=lambda h: h["desde"])
+        discos = sorted(discos_raw, key=lambda d: d["archivos"], reverse=True)[:12]
+
         causas_cold = grupos(
             conn.execute(
                 "SELECT split_part(COALESCE(motivo, 'sin_motivo'), ':', 1), COUNT(*),"
@@ -699,42 +774,12 @@ def tablero(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, A
             ).fetchall()
         )
 
-        # Histograma de puntajes en cubetas de 10 (LEAST: el 100 cae en 90-100).
-        # Contra los umbrales pinta DÓNDE está decidiendo el filtro — calibración.
-        histograma = [
-            {"desde": int(f[0]), "archivos": int(f[1])}
-            for f in conn.execute(
-                "SELECT (LEAST(puntaje, 99) / 10) * 10 AS cubeta, COUNT(*)"
-                " FROM archivos WHERE puntaje IS NOT NULL GROUP BY 1 ORDER BY 1"
-            ).fetchall()
-        ]
-        franja_gris = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM archivos WHERE puntaje BETWEEN %s AND %s",
-                (umbral_cold, umbral_hot - 1),
-            ).fetchone()[0]  # type: ignore[index]
-        )
-
-        # Dedup real: filas con blob vs blobs únicos (lo que el almacén ahorró)
+        # Dedup real: filas con blob vs blobs únicos (lo que el almacén ahorró).
+        # COUNT(DISTINCT) no se fusiona con los GROUPING SETS: pasada propia.
         con_hash, hash_unicos = conn.execute(
             "SELECT COUNT(hash_contenido), COUNT(DISTINCT hash_contenido) FROM archivos"
         ).fetchone()  # type: ignore[misc]
 
-        discos = [
-            {
-                "disco_id": f[0],
-                "archivos": int(f[1]),
-                "bytes": int(f[2]),
-                "hechos": int(f[3]),
-                "errores": int(f[4]),
-            }
-            for f in conn.execute(
-                "SELECT disco_id, COUNT(*), COALESCE(SUM(tamano), 0),"
-                " COUNT(*) FILTER (WHERE estado = 'HECHO'),"
-                " COUNT(*) FILTER (WHERE estado = 'ERROR')"
-                " FROM archivos GROUP BY 1 ORDER BY 2 DESC LIMIT 12"
-            ).fetchall()
-        ]
         corridas = [
             {
                 "id": int(f[0]),
