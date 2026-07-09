@@ -137,8 +137,20 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
     )
     try:
         cliente.transport.perform_request("PUT", "/_plugins/_ism/policies/archivos", body=politica)
-    except Exception as exc:  # 409 = ya existe; otros: dev sin plugin ISM
-        log.warning("ism_no_aplicada", detalle=str(exc)[:200])
+    except Exception as exc:
+        codigo = getattr(exc, "status_code", None)
+        detalle = str(exc)[:200]
+        if codigo == 409:
+            # Idempotente: la política ya existía. No es un problema.
+            log.info("ism_ya_existe")
+        elif codigo == 400 and "no handler found" in detalle:
+            # OpenSearch SIN el plugin ISM (p. ej. el build de Homebrew en la Mac
+            # de dev): la rotación por ciclo de vida no aplica, pero el índice
+            # funciona igual. Esperado → info, no un warning que asuste.
+            log.info("ism_plugin_ausente", detalle=detalle)
+        else:
+            # Cualquier otro fallo sí merece atención.
+            log.warning("ism_no_aplicada", codigo=codigo, detalle=detalle)
 
     indice = indice_escritura(config)
     if not cliente.indices.exists(index=indice):

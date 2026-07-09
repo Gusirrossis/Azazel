@@ -37,6 +37,10 @@ def psutil_falso(monkeypatch: pytest.MonkeyPatch):
 
     modulo = SimpleNamespace(virtual_memory=vm)
     monkeypatch.setitem(sys.modules, "psutil", modulo)
+    # El fixture SIMULA la máquina: neutraliza también la lectura específica de
+    # macOS para que los tests controlen la RAM solo con `available` (el override
+    # de kern.memorystatus_level se prueba aparte en TestNivelDarwin).
+    monkeypatch.setattr(recursos, "_nivel_libre_darwin", lambda: None)
 
     def fijar(total_mb: int, disponible_mb: int) -> None:
         estado["total"] = total_mb
@@ -92,6 +96,33 @@ class TestPresupuestoWorkers:
         monkeypatch.setitem(sys.modules, "psutil", None)
         cfg = _config(modo="adaptativo")
         assert recursos.presupuesto_workers(cfg) >= 1
+
+
+class TestNivelDarwin:
+    """En macOS el nivel real del kernel manda sobre el `available` de psutil,
+    que subestima la RAM reclamable y provocaría frenar de más."""
+
+    def test_nivel_darwin_manda_sobre_psutil(self, psutil_falso, monkeypatch) -> None:
+        # psutil ve solo ~24% disponible (subestima), pero el kernel reporta 48%.
+        psutil_falso(65536, 16000)
+        monkeypatch.setattr(recursos, "_nivel_libre_darwin", lambda: 48.0)
+        mem = recursos.medir(_config(politica="conservador"))
+        assert mem is not None
+        # 48% de 64 GB ≈ 31.5 GB → por encima de la reserva (40% = 25.6 GB).
+        assert mem.disponible_mb == pytest.approx(65536 * 0.48, rel=0.01)
+        assert mem.bajo_presion is False
+
+    def test_nivel_darwin_none_cae_a_psutil(self, psutil_falso, monkeypatch) -> None:
+        psutil_falso(65536, 16000)
+        monkeypatch.setattr(recursos, "_nivel_libre_darwin", lambda: None)
+        mem = recursos.medir(_config())
+        assert mem is not None
+        assert mem.disponible_mb == pytest.approx(16000, rel=0.01)
+
+    def test_nivel_darwin_none_fuera_de_macos(self, monkeypatch) -> None:
+        # Fuera de Darwin el helper NO intenta leer nada del kernel.
+        monkeypatch.setattr(recursos.sys, "platform", "linux")
+        assert recursos._nivel_libre_darwin() is None
 
 
 class TestPresion:

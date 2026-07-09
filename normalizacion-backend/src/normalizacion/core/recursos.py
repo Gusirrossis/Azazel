@@ -21,7 +21,9 @@ comportamiento anterior (núcleos − 2) sin tirar nada.
 
 from __future__ import annotations
 
+import ctypes
 import os
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -59,6 +61,34 @@ def _nucleos_default() -> int:
     return max(1, (os.cpu_count() or 4) - 2)
 
 
+def _nivel_libre_darwin() -> float | None:
+    """% de RAM «libre» según el kernel de macOS (`kern.memorystatus_level`).
+
+    Por qué: en macOS `psutil.virtual_memory().available` (≈ libre + inactiva)
+    IGNORA la caché file-backed y las páginas purgables que el SO reclama al
+    instante bajo presión, así que SUBESTIMA la RAM utilizable —reporta ~24 %
+    cuando el sistema realmente tiene ~48 % libre—. Con esa lectura baja, el
+    gobernador cree que hay presión permanente y estrangula workers y entidades.
+    Usamos el MISMO indicador que `memory_pressure` y el subsistema jetsam del
+    kernel, leído vía `sysctlbyname` (sin spawnear proceso: se sondea cada pocos
+    segundos). Devuelve None fuera de macOS o si la lectura falla (degradación)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        libc = ctypes.CDLL("libc.dylib", use_errno=True)
+        val = ctypes.c_int(0)
+        tam = ctypes.c_size_t(ctypes.sizeof(val))
+        rc = libc.sysctlbyname(
+            b"kern.memorystatus_level", ctypes.byref(val), ctypes.byref(tam), None, 0
+        )
+        if rc != 0:
+            return None
+        nivel = float(val.value)
+    except Exception:  # sin libc/sysctl → caemos a psutil sin tirar nada
+        return None
+    return nivel if 0.0 <= nivel <= 100.0 else None
+
+
 def medir(config: Config) -> Memoria | None:
     """Foto de la memoria. None si psutil no está disponible (degradación elegante)."""
     try:
@@ -72,10 +102,14 @@ def medir(config: Config) -> Memoria | None:
         return None
     p = config.recursos
     total_mb = vm.total / _MIB
+    # En macOS `available` subestima la RAM reclamable; si el kernel nos da su
+    # nivel real de memoria libre, mandamos por él (evita frenar de más).
+    nivel_darwin = _nivel_libre_darwin()
+    disponible_mb = total_mb * (nivel_darwin / 100.0) if nivel_darwin is not None else vm.available / _MIB
     reserva_mb = max(p.ram_minima_libre_mb, total_mb * p.fraccion_reserva())
     return Memoria(
         total_mb=total_mb,
-        disponible_mb=vm.available / _MIB,
+        disponible_mb=disponible_mb,
         reserva_mb=reserva_mb,
         porcentaje_usado=float(vm.percent),
     )
