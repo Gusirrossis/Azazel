@@ -9,8 +9,10 @@ import Corridas from "./componentes/Corridas";
 import ExploradorCola from "./componentes/ExploradorCola";
 import Filtro from "./componentes/Filtro";
 import Entidades from "./componentes/Entidades";
+import ClavesBusqueda from "./componentes/ClavesBusqueda";
 
-type Pestana = "inicio" | "busqueda" | "entidades" | "corridas" | "archivos" | "errores" | "filtro";
+type Pestana =
+  | "inicio" | "busqueda" | "entidades" | "corridas" | "archivos" | "errores" | "filtro" | "acceso";
 
 const PESTANAS: { clave: Pestana; etiqueta: string }[] = [
   { clave: "inicio", etiqueta: "Inicio" },
@@ -20,6 +22,7 @@ const PESTANAS: { clave: Pestana; etiqueta: string }[] = [
   { clave: "archivos", etiqueta: "Archivos" },
   { clave: "errores", etiqueta: "Errores" },
   { clave: "filtro", etiqueta: "Filtro" },
+  { clave: "acceso", etiqueta: "Acceso" },
 ];
 
 export default function App() {
@@ -63,6 +66,7 @@ export default function App() {
       {pestana === "archivos" && <ExploradorCola modo="todos" />}
       {pestana === "errores" && <ExploradorCola modo="errores" />}
       {pestana === "filtro" && <Filtro />}
+      {pestana === "acceso" && <ClavesBusqueda />}
     </div>
   );
 }

@@ -18,6 +18,8 @@ import type {
   RespuestaEntidades,
   EstadisticasEntidades,
   Receta,
+  ClaveBusqueda,
+  RespuestaClaveGenerada,
 } from "./tipos";
 
 const BASE = "/api";
@@ -351,6 +353,27 @@ export function guardarRecursos(cambios: CambioRecursos): Promise<EstadoRecursos
 
 export function urlContenido(archivoId: string): string {
   return `${BASE}/archivo/${encodeURIComponent(archivoId)}/contenido`;
+}
+
+// ---- Claves de acceso al buscador (con nombre) ----
+export function listarClavesBusqueda(): Promise<ClaveBusqueda[]> {
+  return pedir<ClaveBusqueda[]>("/seguridad/claves-busqueda");
+}
+
+export async function generarClaveBusqueda(nombre: string): Promise<RespuestaClaveGenerada> {
+  const r = await pedir<RespuestaClaveGenerada>("/seguridad/claves-busqueda", {
+    method: "POST",
+    body: JSON.stringify({ nombre }),
+  });
+  // Guarda la clave localmente para que ESTE panel siga funcionando al activarse la auth.
+  localStorage.setItem("norm_api_key", r.clave);
+  return r;
+}
+
+export function revocarClaveBusqueda(nombre: string): Promise<{ revocada: boolean }> {
+  return pedir<{ revocada: boolean }>(`/seguridad/claves-busqueda/${encodeURIComponent(nombre)}`, {
+    method: "DELETE",
+  });
 }
 
 export function formatearDuracion(segundos: number): string {

@@ -45,6 +45,27 @@ class RespuestaBusqueda(BaseModel):
     pit_id: str | None = None
 
 
+class SolicitudClaveBusqueda(BaseModel):
+    """Alta de una clave de búsqueda CON NOMBRE (una por consumidor, revocable aparte)."""
+
+    model_config = ConfigDict(extra="forbid")
+    nombre: str = Field(min_length=1, max_length=60, description="Consumidor dueño de la clave")
+
+
+class ClaveBusqueda(BaseModel):
+    """Metadatos de una clave (nunca el secreto ni el hash)."""
+
+    nombre: str
+    creada_en: str | None = None
+
+
+class RespuestaClaveGenerada(BaseModel):
+    """El secreto en claro — se muestra UNA sola vez; luego solo queda su hash."""
+
+    nombre: str
+    clave: str
+
+
 class RespuestaAutocompletar(BaseModel):
     sugerencias: list[str]
 

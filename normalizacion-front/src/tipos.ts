@@ -291,3 +291,13 @@ export interface RespuestaPreservados {
   por_motivo: Record<string, number>;
   archivos: ArchivoPreservado[];
 }
+
+export interface ClaveBusqueda {
+  nombre: string;
+  creada_en: string | null;
+}
+
+export interface RespuestaClaveGenerada {
+  nombre: string;
+  clave: string;
+}

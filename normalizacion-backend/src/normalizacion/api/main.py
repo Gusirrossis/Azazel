@@ -14,37 +14,40 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from normalizacion import __version__
-from normalizacion.api import busqueda
+from normalizacion.api import busqueda, claves_busqueda
 from normalizacion.api.esquemas import (
+    ClaveBusqueda,
     Corrida,
+    Entidad,
     Estadisticas,
+    EstadisticasEntidades,
     EstadoPipeline,
     FiltroVisible,
     RespuestaAutocompletar,
-    EstadisticasEntidades,
-    Entidad,
+    RespuestaBusqueda,
+    RespuestaCarpetas,
+    RespuestaClaveGenerada,
     RespuestaColaArchivos,
     RespuestaEntidades,
     RespuestaFiltro,
+    RespuestaPreservados,
     RespuestaReprocesar,
     RespuestaTablero,
+    ResumenPanel,
     SolicitudAtributos,
+    SolicitudBusqueda,
+    SolicitudCarpetaNueva,
+    SolicitudClaveBusqueda,
     SolicitudDestino,
+    SolicitudFiltro,
+    SolicitudPipeline,
     SolicitudProponerMapeo,
     SolicitudProyectar,
     SolicitudReceta,
     SolicitudRecursos,
-    ResumenPanel,
-    RespuestaBusqueda,
-    RespuestaCarpetas,
-    RespuestaPreservados,
-    SolicitudBusqueda,
-    SolicitudCarpetaNueva,
-    SolicitudFiltro,
-    SolicitudPipeline,
     SolicitudReprocesar,
 )
-from normalizacion.api.seguridad import LimitadorPorMinuto, llave_valida
+from normalizacion.api.seguridad import LimitadorPorMinuto
 from normalizacion.core.almacen import Almacen, crear_almacen
 from normalizacion.core.config import Config, PerillasFiltro, cargar_config
 
@@ -107,7 +110,9 @@ def crear_app(config: Config) -> FastAPI:
         x_api_key: Annotated[str | None, Header()] = None,
     ) -> str:
         cfg: Config = request.app.state.config
-        if not llave_valida(cfg.api_keys, x_api_key):
+        # Acepta claves estáticas (config.api_keys) y las dinámicas CON NOMBRE del panel
+        # (por hash). Sin ninguna configurada, el canal queda abierto (solo dev).
+        if not claves_busqueda.autorizada(cfg, x_api_key):
             raise HTTPException(status_code=401, detail="API key inválida o ausente")
         identidad = x_api_key or (request.client.host if request.client else "anonimo")
         if not request.app.state.limitador.permitir(identidad):
@@ -122,6 +127,30 @@ def crear_app(config: Config) -> FastAPI:
     ) -> RespuestaBusqueda:
         """Búsqueda con filtros, facetas y paginación profunda (pasa `cursor` de vuelta)."""
         return busqueda.buscar(_cliente(request), request.app.state.config, solicitud)
+
+    @aplicacion.get("/seguridad/claves-busqueda", response_model=list[ClaveBusqueda])
+    def get_claves_busqueda(_: Autorizado, request: Request) -> list[dict[str, Any]]:
+        """Claves de búsqueda con nombre (solo nombre y fecha; nunca el secreto)."""
+        return claves_busqueda.listar_claves(request.app.state.config)
+
+    @aplicacion.post("/seguridad/claves-busqueda", response_model=RespuestaClaveGenerada)
+    def post_clave_busqueda(
+        solicitud: SolicitudClaveBusqueda, _: Autorizado, request: Request
+    ) -> RespuestaClaveGenerada:
+        """Genera (o rota) la clave de un consumidor. Devuelve el secreto UNA sola vez;
+        el servidor solo guarda su hash. Al crear la primera, el endpoint queda cerrado."""
+        try:
+            clave = claves_busqueda.generar_clave(request.app.state.config, solicitud.nombre)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RespuestaClaveGenerada(nombre=solicitud.nombre.strip(), clave=clave)
+
+    @aplicacion.delete("/seguridad/claves-busqueda/{nombre}")
+    def delete_clave_busqueda(nombre: str, _: Autorizado, request: Request) -> dict[str, Any]:
+        """Revoca la clave de un consumidor (deja de poder consultar; los demás siguen)."""
+        if not claves_busqueda.revocar_clave(request.app.state.config, nombre):
+            raise HTTPException(status_code=404, detail="clave no encontrada")
+        return {"revocada": True, "nombre": nombre}
 
     @aplicacion.get("/autocompletar", response_model=RespuestaAutocompletar)
     def get_autocompletar(
