@@ -162,3 +162,63 @@ class TestLimites:
         )
         assert r2.texto is not None and len(r2.texto) <= 50
         assert "texto_truncado" in r2.flags
+
+
+def _tesseract_disponible() -> bool:
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def _png(texto: str, tamano: tuple[int, int] = (620, 200)) -> bytes:
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", tamano, "white")
+    dibujo = ImageDraw.Draw(img)
+    try:
+        fuente = ImageFont.load_default(size=48)
+    except TypeError:  # Pillow viejo sin `size`
+        fuente = ImageFont.load_default()
+    dibujo.text((20, 70), texto, fill="black", font=fuente)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+class TestImagenOCR:
+    def test_metadata_siempre_y_degrada_sin_tesseract(self) -> None:
+        """Dimensiones/EXIF SIEMPRE; el OCR degrada con flag (nunca rompe)."""
+        r = _extraer(_png("HOLA"), "image/png")
+        assert r.campos["ancho"] == 620 and r.campos["alto"] == 200
+        assert r.campos["formato"] == "PNG"
+        if _tesseract_disponible():
+            assert "ocr_ok" in r.flags or "ocr_vacio" in r.flags
+        else:
+            assert "ocr_no_disponible" in r.flags
+            assert r.texto is None
+
+    def test_imagen_pequena_se_salta(self) -> None:
+        """Íconos/miniaturas (< ocr_min_lado) no gastan OCR."""
+        r = _extraer(_png("x", tamano=(20, 20)), "image/png")
+        assert "ocr_saltado_pequena" in r.flags
+        assert r.texto is None
+
+    def test_imagen_corrupta_no_rompe(self) -> None:
+        """Bytes que no son imagen → flag, jamás excepción (garantía del despacho)."""
+        r = _extraer(b"\x89PNG\r\n\x1a\n basura no-imagen", "image/png")
+        assert any(f.startswith("extraccion_fallida") for f in r.flags)
+
+    def test_ocr_extrae_texto(self) -> None:
+        """Con Tesseract instalado, el texto de la imagen llega a `texto` (→ texto_indexable)."""
+        if not _tesseract_disponible():
+            import pytest
+
+            pytest.skip("tesseract no instalado en este entorno")
+        r = _extraer(_png("FACTURA 12345"), "image/png")
+        assert "ocr_ok" in r.flags
+        assert r.texto is not None
+        assert "12345" in r.texto or "FACTURA" in r.texto.upper()

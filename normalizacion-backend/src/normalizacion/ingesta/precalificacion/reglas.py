@@ -561,6 +561,13 @@ def precalificar_contenido(
         )
 
     tipo = deteccion.tipo
+    if tipo is not None and perillas.ocr_activo and tipo.startswith("image/"):
+        # OCR activo: la imagen va DIRECTO a HOT para extraerle texto (bypass del scoring
+        # de texto, que la mandaría a COLD por no tener señales textuales en el head).
+        senales["ocr"] = True
+        return ResultadoPrecalificacion(
+            perillas.umbral_hot, RutaDecision.HOT, tipo, "imagen_ocr", senales
+        )
     if tipo is not None and not pasa_lista(perillas, tipo):
         return ResultadoPrecalificacion(5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales)
 

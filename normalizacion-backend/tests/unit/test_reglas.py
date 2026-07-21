@@ -189,6 +189,22 @@ class TestPrecalificarArchivo:
         assert r.ruta is RutaDecision.COLD
         assert r.motivo == "fuera_de_lista_blanca"
 
+    def test_imagen_va_a_hot_con_ocr_activo(self, tmp_path: Path) -> None:
+        """Con `ocr_activo`, una imagen se rutea DIRECTO a HOT (para extraerle texto)."""
+        ruta = tmp_path / "escaneo.jpg"
+        ruta.write_bytes(b"\xff\xd8\xff\xe0" + random.Random(1).randbytes(5000))
+        r = precalificar_archivo(
+            PerillasFiltro(ocr_activo=True),
+            ruta,
+            nombre="escaneo.jpg",
+            extension=".jpg",
+            ruta_relativa="fotos/escaneo.jpg",
+            tamano=ruta.stat().st_size,
+        )
+        assert r.ruta is RutaDecision.HOT
+        assert r.motivo == "imagen_ocr"
+        assert r.senales.get("ocr") is True
+
     def test_modo_lista_negra_legado(self, tmp_path: Path) -> None:
         """El modo negro (legacy) sigue disponible por configuración."""
         from normalizacion.core.config import PerillasFiltro

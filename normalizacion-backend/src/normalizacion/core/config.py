@@ -95,6 +95,11 @@ class PerillasFiltro(BaseModel):
         }
     )
 
+    # ⚙ OCR — interruptor único. Con False (default) las imágenes van a COLD como
+    # siempre (comportamiento intacto). Con True, `image/*` se rutea a HOT y el
+    # extractor de imágenes les saca texto por OCR (→ texto_indexable, buscable).
+    ocr_activo: bool = False
+
     # PRIORIDAD a comprimidos (decisión del usuario: la mayoría de lo útil viene
     # dentro). Se procesan PRIMERO y sus entradas internas heredan la urgencia.
     prioridad_contenedores: int = Field(default=90, ge=0, le=100)
@@ -212,6 +217,13 @@ class PerillasWorker(BaseModel):
     extractor_max_embebidos: int = 10
     extractor_max_profundidad_xml: int = 100
     umbral_memoria_bytes: int = 65_536  # < 64 KB en RAM; mayor → archivo temporal
+
+    # ⚙ OCR — parámetros del extractor de imágenes (solo se usan si filtro.ocr_activo).
+    # El binario tesseract y sus idiomas se instalan aparte; si faltan, se degrada con
+    # un flag `ocr_no_disponible` (nunca rompe). El downscale acota RAM/tiempo.
+    ocr_idiomas: str = "spa+eng"        # códigos de idioma de tesseract (spa, eng, …)
+    ocr_max_lado: int = 2600            # px: se reduce la imagen si el lado mayor lo supera
+    ocr_min_lado: int = 64              # px: se saltan íconos/miniaturas (no valen OCR)
 
     # ⚙ K12 — perfil de calidad tabular (chequeos estilo great_expectations sobre polars)
     calidad_chequeos: tuple[str, ...] = (

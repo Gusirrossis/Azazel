@@ -40,6 +40,7 @@ CAMPOS_EDITABLES = frozenset(
         "prioridad_contenedores",
         "prioridad_extensiones",
         "version_filtro",
+        "ocr_activo",
     }
 )
 

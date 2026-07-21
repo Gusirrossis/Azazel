@@ -37,6 +37,13 @@ workers = [
     "openpyxl>=3.1",
     "pillow>=10.3",
 ]
+# OCR de imágenes (Fase 1). Opcional: requiere ADEMÁS el binario del sistema
+# `tesseract` + idiomas (macOS: brew install tesseract tesseract-lang;
+# Debian/Ubuntu: apt install tesseract-ocr tesseract-ocr-spa). Si falta, el
+# extractor degrada con un flag y no rompe la corrida.
+ocr = [
+    "pytesseract>=0.3.10",
+]
 api = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
