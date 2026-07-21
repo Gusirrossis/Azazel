@@ -47,6 +47,9 @@ class ContextoExtraccion:
     tipo_real: str
     tamano: int
     perillas: PerillasWorker
+    # OCR habilitado (fuente única: filtro.ocr_activo, que el worker propaga). Un plugin
+    # de imagen/PDF lo consulta para decidir si intenta OCR. Default False = intacto.
+    ocr_activo: bool = False
 
 
 Extractor = Callable[[ContextoExtraccion], ResultadoExtraccion]
@@ -80,6 +83,7 @@ def extraer(
     tipo_real: str | None,
     nombre: str,
     tamano: int,
+    ocr_activo: bool = False,
 ) -> ResultadoExtraccion:
     """Despacha al plugin con timeout (⚙K11). NUNCA lanza — flags en su lugar."""
     plugin = extractor_para(tipo_real)
@@ -93,6 +97,7 @@ def extraer(
         tipo_real=tipo_real or "",
         tamano=tamano,
         perillas=perillas,
+        ocr_activo=ocr_activo,
     )
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:

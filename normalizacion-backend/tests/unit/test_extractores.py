@@ -19,8 +19,13 @@ PERILLAS = PerillasWorker()
 CSV = b"id,nombre,monto\n1,ana,10.5\n2,luis,\n3,eva,9.99\n"
 
 
-def _extraer(datos: bytes, tipo: str, perillas: PerillasWorker = PERILLAS) -> ResultadoExtraccion:
-    return extraer(perillas, io.BytesIO(datos), tipo_real=tipo, nombre="x", tamano=len(datos))
+def _extraer(
+    datos: bytes, tipo: str, perillas: PerillasWorker = PERILLAS, ocr_activo: bool = False
+) -> ResultadoExtraccion:
+    return extraer(
+        perillas, io.BytesIO(datos), tipo_real=tipo, nombre="x", tamano=len(datos),
+        ocr_activo=ocr_activo,
+    )
 
 
 class TestRegistro:
@@ -189,27 +194,48 @@ def _png(texto: str, tamano: tuple[int, int] = (620, 200)) -> bytes:
     return buf.getvalue()
 
 
+def _png_como_pdf(texto: str) -> bytes:
+    """Un PDF 'escaneado': solo una imagen del texto, SIN capa de texto (como un scan real)."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (1000, 320), "white")
+    dibujo = ImageDraw.Draw(img)
+    try:
+        fuente = ImageFont.load_default(size=64)
+    except TypeError:
+        fuente = ImageFont.load_default()
+    dibujo.text((30, 110), texto, fill="black", font=fuente)
+    buf = io.BytesIO()
+    img.save(buf, "PDF")  # PIL guarda la imagen como PDF de una página, sin texto embebido
+    return buf.getvalue()
+
+
 class TestImagenOCR:
-    def test_metadata_siempre_y_degrada_sin_tesseract(self) -> None:
-        """Dimensiones/EXIF SIEMPRE; el OCR degrada con flag (nunca rompe)."""
+    def test_sin_ocr_activo_solo_metadata(self) -> None:
+        """Default (ocr_activo=False): metadata sí, OCR NO (comportamiento intacto)."""
         r = _extraer(_png("HOLA"), "image/png")
         assert r.campos["ancho"] == 620 and r.campos["alto"] == 200
-        assert r.campos["formato"] == "PNG"
+        assert r.texto is None
+        assert not any(f.startswith("ocr") for f in r.flags)
+
+    def test_con_ocr_activo_extrae_o_degrada(self) -> None:
+        """Con ocr_activo: OCR si hay Tesseract; si no, degrada con flag (nunca rompe)."""
+        r = _extraer(_png("HOLA"), "image/png", ocr_activo=True)
+        assert r.campos["formato"] == "PNG"  # metadata siempre
         if _tesseract_disponible():
             assert "ocr_ok" in r.flags or "ocr_vacio" in r.flags
         else:
-            assert "ocr_no_disponible" in r.flags
-            assert r.texto is None
+            assert "ocr_no_disponible" in r.flags and r.texto is None
 
     def test_imagen_pequena_se_salta(self) -> None:
         """Íconos/miniaturas (< ocr_min_lado) no gastan OCR."""
-        r = _extraer(_png("x", tamano=(20, 20)), "image/png")
+        r = _extraer(_png("x", tamano=(20, 20)), "image/png", ocr_activo=True)
         assert "ocr_saltado_pequena" in r.flags
         assert r.texto is None
 
     def test_imagen_corrupta_no_rompe(self) -> None:
         """Bytes que no son imagen → flag, jamás excepción (garantía del despacho)."""
-        r = _extraer(b"\x89PNG\r\n\x1a\n basura no-imagen", "image/png")
+        r = _extraer(b"\x89PNG\r\n\x1a\n basura no-imagen", "image/png", ocr_activo=True)
         assert any(f.startswith("extraccion_fallida") for f in r.flags)
 
     def test_ocr_extrae_texto(self) -> None:
@@ -218,7 +244,32 @@ class TestImagenOCR:
             import pytest
 
             pytest.skip("tesseract no instalado en este entorno")
-        r = _extraer(_png("FACTURA 12345"), "image/png")
+        r = _extraer(_png("FACTURA 12345"), "image/png", ocr_activo=True)
         assert "ocr_ok" in r.flags
         assert r.texto is not None
         assert "12345" in r.texto or "FACTURA" in r.texto.upper()
+
+
+class TestPdfEscaneadoOCR:
+    def test_pdf_escaneado_sin_ocr_activo_no_ocrea(self) -> None:
+        """Un PDF-imagen sin ocr_activo: texto nativo vacío y NO se hace OCR (intacto)."""
+        r = _extraer(_png_como_pdf("ACTA 999"), "application/pdf")
+        assert "ocr_pdf" not in r.flags
+        assert r.texto is None  # sin capa de texto y sin OCR
+
+    def test_pdf_escaneado_ocr(self) -> None:
+        """Escaneo + ocr_activo → se rasteriza y OCR; el texto llega a `texto`."""
+        try:
+            import pypdfium2  # noqa: F401
+        except Exception:
+            import pytest
+
+            pytest.skip("pypdfium2 no instalado")
+        if not _tesseract_disponible():
+            import pytest
+
+            pytest.skip("tesseract no instalado")
+        r = _extraer(_png_como_pdf("ACTA 999"), "application/pdf", ocr_activo=True)
+        assert "ocr_pdf" in r.flags
+        assert r.texto is not None
+        assert "999" in r.texto or "ACTA" in r.texto.upper()

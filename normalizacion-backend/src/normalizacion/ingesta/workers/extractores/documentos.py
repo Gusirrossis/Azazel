@@ -1,10 +1,52 @@
-"""Plugins de documentos: PDF (pypdf) y DOCX (python-docx). Python puro — sin JVM."""
+"""Plugins de documentos: PDF (pypdf) y DOCX (python-docx). Python puro — sin JVM.
+
+PDF: primero texto NATIVO (pypdf). Si el PDF es un ESCANEO (texto nativo casi vacío) y
+`ctx.ocr_activo`, se rasterizan sus páginas (pypdfium2) y se les hace OCR (Fase 2). Todo
+degrada con flags: sin pypdfium2/tesseract el PDF se indexa igual con lo que haya."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from . import ContextoExtraccion, ResultadoExtraccion, registrar
+from ._ocr import ocr_imagen
+
+
+def _ocr_pdf(ctx: ContextoExtraccion) -> tuple[str | None, list[str]]:
+    """Rasteriza páginas y las pasa por OCR. Solo para escaneos. Nunca lanza."""
+    try:
+        import pypdfium2 as pdfium  # dependencia opcional (extra `ocr`)
+    except Exception:
+        return None, ["ocr_no_disponible"]
+    p = ctx.perillas
+    ctx.fuente.seek(0)
+    try:
+        pdf = pdfium.PdfDocument(ctx.fuente.read())
+    except Exception as exc:  # PDF cifrado/corrupto → flag, no rompe
+        return None, [f"ocr_pdf_fallido:{type(exc).__name__}"]
+    textos: list[str] = []
+    flags: set[str] = set()
+    total = len(pdf)
+    limite = min(total, p.ocr_pdf_max_paginas)
+    try:
+        for i in range(limite):
+            pagina = pdf[i]
+            imagen = pagina.render(scale=p.ocr_pdf_escala).to_pil()
+            texto_pag, flags_pag = ocr_imagen(imagen, p)
+            if texto_pag:
+                textos.append(texto_pag)
+            flags.update(f for f in flags_pag if f != "ocr_ok")
+            if sum(len(t) for t in textos) >= p.extractor_max_chars:
+                flags.add("texto_truncado")
+                break
+    finally:
+        pdf.close()
+    if total > limite:
+        flags.add("ocr_pdf_paginas_limitadas")
+    texto = "\n".join(textos)[: p.extractor_max_chars].strip()
+    if not texto:
+        return None, sorted(flags) or ["ocr_vacio"]
+    return texto, ["ocr_pdf", *sorted(flags)]
 
 
 @registrar("application/pdf")
@@ -32,6 +74,14 @@ def extraer_pdf(ctx: ContextoExtraccion) -> ResultadoExtraccion:
             flags.append("texto_truncado")  # patrón fscrawler: indexed_chars (⚙K11)
             break
     texto = "\n".join(fragmentos)[:maximo].strip()
+
+    # Escaneo (texto nativo casi vacío) + OCR activo → rasterizar y OCR (Fase 2).
+    if ctx.ocr_activo and len(texto) < ctx.perillas.ocr_pdf_umbral_chars:
+        texto_ocr, flags_ocr = _ocr_pdf(ctx)
+        if texto_ocr:
+            return ResultadoExtraccion(campos=campos, texto=texto_ocr, flags=flags_ocr)
+        flags = [*flags, *flags_ocr]
+
     return ResultadoExtraccion(campos=campos, texto=texto or None, flags=flags)
 
 

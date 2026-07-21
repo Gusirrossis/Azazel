@@ -229,6 +229,7 @@ def procesar_hot(
                             tipo_real=fila.tipo_real,
                             nombre=fila.nombre,
                             tamano=fila.tamano,
+                            ocr_activo=config.filtro.ocr_activo,
                         )
                     # entregar DENTRO del try: si serializar el doc falla, no tumba la corrida
                     sink.entregar(_construir_doc(fila, hash_contenido, extraccion))

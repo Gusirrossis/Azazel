@@ -224,6 +224,11 @@ class PerillasWorker(BaseModel):
     ocr_idiomas: str = "spa+eng"        # códigos de idioma de tesseract (spa, eng, …)
     ocr_max_lado: int = 2600            # px: se reduce la imagen si el lado mayor lo supera
     ocr_min_lado: int = 64              # px: se saltan íconos/miniaturas (no valen OCR)
+    # OCR de PDFs ESCANEADOS (Fase 2): si el texto nativo del PDF es menor a
+    # `ocr_pdf_umbral_chars`, se rasterizan sus páginas (pypdfium2) y se les hace OCR.
+    ocr_pdf_umbral_chars: int = 20      # < esto de texto nativo ⇒ se trata como escaneado
+    ocr_pdf_max_paginas: int = 20       # tope de páginas a rasterizar+OCR (acota tiempo)
+    ocr_pdf_escala: float = 3.0  # escala de render pypdfium2 (~216 dpi; ocr_max_lado la topa)
 
     # ⚙ K12 — perfil de calidad tabular (chequeos estilo great_expectations sobre polars)
     calidad_chequeos: tuple[str, ...] = (

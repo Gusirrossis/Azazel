@@ -43,6 +43,7 @@ workers = [
 # extractor degrada con un flag y no rompe la corrida.
 ocr = [
     "pytesseract>=0.3.10",
+    "pypdfium2>=4.30",  # rasteriza PDFs escaneados para OCR (permisivo, sin binario del sistema)
 ]
 api = [
     "fastapi>=0.111",
@@ -85,6 +86,11 @@ strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src"
 files = ["src/normalizacion"]
+
+# Deps OPCIONALES de OCR (extra `ocr`): sin type stubs y puede que ni instaladas.
+[[tool.mypy.overrides]]
+module = ["pytesseract.*", "pypdfium2.*"]
+ignore_missing_imports = true
 
 # ------------------------------------------------------------------ pytest
 [tool.pytest.ini_options]
