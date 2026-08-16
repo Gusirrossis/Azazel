@@ -11,7 +11,7 @@ El scoring difuso (Splink), el clustering y el grafo de relaciones son E4-E5.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg

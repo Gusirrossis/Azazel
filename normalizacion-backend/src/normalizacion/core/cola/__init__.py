@@ -77,6 +77,16 @@ def upsert_disco(conn: psycopg.Connection[Any], disco_id: str, punto_montaje: st
     )
 
 
+def disco_existe(conn: psycopg.Connection[Any], disco_id: str) -> bool:
+    """¿Este disco ya está registrado? Decide si su id puede recibir namespace de
+    nodo (⚙K16): un disco ya catalogado JAMÁS cambia de id — todos sus `archivo_id`
+    dependen de él."""
+    return (
+        conn.execute("SELECT 1 FROM discos WHERE disco_id = %s", (disco_id,)).fetchone()
+        is not None
+    )
+
+
 def insertar_pendientes(conn: psycopg.Connection[Any], filas: list[FilaCatalogo]) -> int:
     """Inserta un lote como PENDIENTE. Idempotente: devuelve cuántas eran NUEVAS."""
     if not filas:

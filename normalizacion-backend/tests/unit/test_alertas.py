@@ -10,16 +10,22 @@ import yaml
 
 RAIZ = Path(__file__).resolve().parents[2]
 
-# Métricas que el Exportador realmente publica (si cambian, cambia aquí Y en deploy/)
-METRICAS_PUBLICADAS = {
-    "norm_backlog",
-    "norm_archivos_por_ruta",
-    "norm_bytes_por_ruta",
-    "norm_errores_por_motivo",
-    "norm_discos_seguros",
-    "norm_discos_pendientes",
-    "norm_pausado",
-}
+def _metricas_publicadas() -> set[str]:
+    """Las que el Exportador publica DE VERDAD, leídas de su registry.
+
+    Antes era una lista a mano con la nota "si cambian, cambia aquí Y en deploy/".
+    Una lista así se desincroniza sola: al añadir `norm_replica_lag_segundos` el
+    test falló por la copia, no por un problema real. Derivarla del código elimina
+    la doble contabilidad y el test sigue haciendo su trabajo — impedir alertas y
+    paneles sobre métricas fantasma, que jamás disparan (operación a ciegas)."""
+    from normalizacion.core.observabilidad.metricas import Exportador
+
+    return {
+        m.name for m in Exportador().registry.collect() if m.name.startswith("norm_")
+    }
+
+
+METRICAS_PUBLICADAS = _metricas_publicadas()
 
 
 def _metricas_norm(texto: str) -> set[str]:

@@ -35,6 +35,35 @@ qué lo retiene: pendientes en flujo (espera/da más workers), COLD sin mover
 (`norm mover-frio`), INDEXADO sin verificar (`norm verificar`) o ERROR (ver el
 runbook de dead-letter). **JAMÁS desechar el disco físico con la puerta roja.**
 
+## ReplicaAtrasada
+
+Sólo aplica en despliegue repartido (⚙K16). **Qué está pasando:** el nodo sigue
+sirviendo, pero con datos viejos — por eso es silencioso y por eso hay alerta.
+
+**1)** `norm doctor` dice de un vistazo el retraso y el papel del nodo (emisor =
+toma snapshot; receptor = restaura). **2)** Ejecuta `norm replicar` a mano y lee el
+motivo si falla. **3)** Causas frecuentes, en orden:
+
+- **El timer no está activo** — `systemctl status norm-replicar.timer`. Si la alerta
+  es `ReplicaNuncaEjecutada`, es esto en el 90 % de los casos.
+- **El repositorio de snapshots no existe** — `norm replicar` lo registra solo
+  (`asegurar_repositorio`); si falla, MinIO no responde o falta el bucket
+  `snapshots`.
+- **La replicación de bucket de MinIO está parada** — el snapshot se toma pero no
+  llega al otro lado. Compruébalo listando el bucket en el nodo receptor: si el
+  snapshot no está ahí, el problema es de MinIO, no de Azazel.
+- **El túnel WireGuard está caído** — sin él, ni buckets ni nada.
+
+**Lo que NO hay que hacer:** borrar índices restaurados para "forzar" un refresco
+sin entender por qué están desactualizados. Un restore no sobrescribe índices
+existentes a propósito (`restaurar_ajenos`); si de verdad hace falta refrescar uno,
+ciérralo o bórralo **conscientemente**, sabiendo que hasta el siguiente restore ese
+trozo del corpus no se puede buscar.
+
+**Consecuencia en la puerta:** en un nodo que no es el archivo maestro, ningún
+origen puede declararse seguro para desechar mientras la réplica esté atrasada —
+es deliberado (`motivo_bloqueo = pendiente_replica_al_maestro`).
+
 ## ExportadorCaido
 
 Sin métricas no hay visibilidad (operación a ciegas). **1)** ¿Proceso vivo?

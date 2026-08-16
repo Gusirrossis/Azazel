@@ -22,8 +22,19 @@ log = obtener_logger("indexador")
 
 
 def indice_escritura(config: Config) -> str:
-    """Índice físico de escritura; el alias de lectura agrupa los rotados (ISM)."""
-    return f"{config.indice_alias}-000001"
+    """Índice físico INICIAL de este nodo. El alias agrupa los rotados (ISM).
+
+    ⚙K16 — por nodo: en híbrido los dos nodos escriben en índices DISJUNTOS
+    (`archivos-mac-01-000001`, `archivos-vps-01-000001`) para que restaurar el
+    snapshot del otro AÑADA índices al alias en vez de sobrescribir el propio. En
+    `local` el nombre es el histórico (`archivos-000001`): cero migración.
+
+    Ojo: esto es sólo el nombre de CREACIÓN. Tras un rollover de ISM el índice de
+    escritura real es otro, y por eso el sink escribe al ALIAS (§`SinkOpenSearch`).
+    """
+    d = config.despliegue
+    base = config.indice_alias if d.es_local() else f"{config.indice_alias}-{d.nodo_id}"
+    return f"{base}-000001"
 
 
 def crear_cliente(config: Config) -> Any:
@@ -40,11 +51,21 @@ def crear_cliente(config: Config) -> Any:
 
 class SinkOpenSearch:
     """Bulk indexer con backpressure natural: el flush es síncrono — si OpenSearch
-    va lento, el worker se frena solo (nada empuja sin límite)."""
+    va lento, el worker se frena solo (nada empuja sin límite).
+
+    Escribe al **ALIAS**, no a un índice fijo. Antes apuntaba a la constante
+    `f"{alias}-000001"`, así que un rollover de ISM creaba el índice nuevo y el sink
+    seguía escribiendo en el viejo para siempre — la rotación por tamaño/edad no
+    servía de nada. Con el alias (que lleva un `is_write_index` designado) el
+    destino se mueve solo al rotar.
+
+    Requisito: el alias debe existir. `aplicar_indice()` lo crea y el pipeline lo
+    invoca antes de cada corrida (`ingesta/pipeline.py`). Ejecutar `norm worker`
+    suelto contra un clúster virgen exige un `norm aplicar-indice` previo."""
 
     def __init__(self, config: Config, cliente: Any | None = None) -> None:
         self._perillas = config.indexador
-        self._indice = indice_escritura(config)
+        self._indice = config.indice_alias
         self._cliente = cliente if cliente is not None else crear_cliente(config)
         self._buffer: list[tuple[str, str]] = []  # (archivo_id, doc_json)
         self._bytes = 0
@@ -130,6 +151,14 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
     cliente = crear_cliente(config)
 
     template = json.loads((ruta_deploy / "mappings" / "archivos.json").read_text(encoding="utf-8"))
+    # `rollover_alias` NO puede vivir en el JSON: el alias es configurable
+    # (`indice_alias`) y los tests usan uno propio. Se inyecta aquí para que los
+    # índices que CREE la ISM al rotar lo hereden — sin él, ISM no sabe sobre qué
+    # alias rotar y la política queda muerta tras la primera rotación.
+    plantilla = template.setdefault("template", {})
+    plantilla.setdefault("settings", {})[
+        "index.plugins.index_state_management.rollover_alias"
+    ] = config.indice_alias
     cliente.indices.put_index_template(name="archivos", body=template)
 
     politica = json.loads(
@@ -154,7 +183,19 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
 
     indice = indice_escritura(config)
     if not cliente.indices.exists(index=indice):
-        cliente.indices.create(index=indice, body={"aliases": {config.indice_alias: {}}})
+        cliente.indices.create(
+            index=indice,
+            body={
+                # `is_write_index` es lo que convierte al alias en destino escribible
+                # y lo que la ISM necesita para poder rotar. Sin él, escribir al
+                # alias falla en cuanto tiene más de un índice — que es exactamente
+                # lo que pasa en híbrido al restaurar el snapshot del otro nodo.
+                "aliases": {config.indice_alias: {"is_write_index": True}},
+                "settings": {
+                    "index.plugins.index_state_management.rollover_alias": config.indice_alias
+                },
+            },
+        )
     log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
 
 

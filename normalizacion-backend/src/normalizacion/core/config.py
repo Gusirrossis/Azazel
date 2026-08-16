@@ -9,6 +9,8 @@ La numeración K# corresponde al árbol de decisiones de PLAN_IMPLEMENTACION.htm
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -295,6 +297,35 @@ class PerillasRecursos(BaseModel):
         return self._RESERVA_POR_POLITICA.get(self.politica, 0.40)
 
 
+class PerillasDespliegue(BaseModel):
+    """⚙ K16 — QUÉ ES este nodo dentro de la topología. NO es una conducta.
+
+    Azazel corre en dos formas: TODO en una máquina (`local`, el default y el
+    comportamiento de siempre) o repartido entre un nodo que ingiere discos físicos
+    y otro que ingiere fuentes de red, resuelve entidades y sirve al público.
+
+    A diferencia de las demás perillas, esta NO es editable en caliente: cambiar la
+    política de RAM entre corridas es coherente, cambiar la topología con procesos
+    vivos no lo es. Por eso vive en .env/entorno y NO en `config_overrides`.
+
+    Los sitios de uso jamás preguntan por `perfil`: preguntan por las CAPACIDADES
+    que `core.despliegue.derivar()` deriva de él. Así, añadir una topología nueva
+    (workers en varias máquinas, Fase 7) es añadir un perfil, no tocar el código.
+    """
+
+    perfil: Literal["local", "hibrido-ingesta", "hibrido-servicio"] = "local"
+
+    # Namespace de este nodo. Entra en el `disco_id` de los discos NUEVOS y en el
+    # nombre del índice de escritura, para que dos nodos no colisionen. "local"
+    # (default) NO prefija nada: los identificadores existentes siguen válidos.
+    nodo_id: str = Field(default="local", min_length=1, max_length=32,
+                         pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+    def es_local(self) -> bool:
+        """True en el despliegue de una sola máquina (sin prefijos ni réplica)."""
+        return self.perfil == "local"
+
+
 class PerillasIndexador(BaseModel):
     """Perillas del sink a OpenSearch (Fase 2)."""
 
@@ -339,6 +370,11 @@ class Config(BaseSettings):
     minio_bucket_frio: str = "frio"
     almacen_frio_local_raiz: str = "./_frio_dev"
 
+    # ⚙K16 — bucket del repositorio de snapshots de OpenSearch. Es el MISMO canal que
+    # replica los blobs (replicación de bucket de MinIO), así que el índice viaja sin
+    # necesidad de un segundo mecanismo que mantener.
+    minio_bucket_snapshots: str = "snapshots"
+
     indice_alias: str = "archivos"
 
     # API de búsqueda (Fase 5). Llaves vacías = auth deshabilitada (solo dev).
@@ -358,6 +394,7 @@ class Config(BaseSettings):
     worker: PerillasWorker = Field(default_factory=PerillasWorker)
     indexador: PerillasIndexador = Field(default_factory=PerillasIndexador)
     recursos: PerillasRecursos = Field(default_factory=PerillasRecursos)
+    despliegue: PerillasDespliegue = Field(default_factory=PerillasDespliegue)
 
 
 def cargar_config() -> Config:

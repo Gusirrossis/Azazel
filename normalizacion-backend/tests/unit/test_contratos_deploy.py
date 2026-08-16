@@ -48,3 +48,63 @@ class TestPoliticaIsm:
         politica = _cargar("deploy/ism/politica_archivos.json")["policy"]
         hot = politica["states"][0]
         assert any("rollover" in accion for accion in hot["actions"])
+
+
+def _compose(nombre: str) -> dict[str, Any]:
+    import yaml
+
+    datos: dict[str, Any] = yaml.safe_load(
+        (RAIZ / "deploy" / nombre).read_text(encoding="utf-8")
+    )
+    return datos
+
+
+class TestComposeProduccion:
+    """El compose `.dev` publica Postgres, OpenSearch (SIN seguridad), MinIO y
+    Grafana a 0.0.0.0 con credenciales `norm/norm`. En una Mac eso es localhost;
+    en un VPS con IP pública es el índice y la base enteros abiertos a internet.
+    Estos tests impiden que ese archivo, o uno parecido, acabe en producción."""
+
+    PUBLICOS_PERMITIDOS = {"caddy"}
+
+    def test_solo_caddy_publica_puertos(self) -> None:
+        servicios = _compose("docker-compose.prod.yml")["services"]
+        publican = {n for n, s in servicios.items() if s.get("ports")}
+        assert publican <= self.PUBLICOS_PERMITIDOS, (
+            f"{publican - self.PUBLICOS_PERMITIDOS} exponen puertos al host;"
+            " en producción la única superficie pública es Caddy"
+        )
+
+    def test_opensearch_conserva_su_seguridad(self) -> None:
+        os_env = _compose("docker-compose.prod.yml")["services"]["opensearch"]["environment"]
+        assert "DISABLE_SECURITY_PLUGIN" not in os_env
+        assert "OPENSEARCH_INITIAL_ADMIN_PASSWORD" in os_env
+
+    def test_sin_credenciales_por_defecto(self) -> None:
+        """Todo secreto viene del entorno y el arranque FALLA si falta (`${VAR:?…}`).
+        Un default como `norm/norm` se queda puesto para siempre."""
+        crudo = (RAIZ / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
+        for secreto in (
+            "NORM_PG_PASSWORD",
+            "NORM_OS_ADMIN_PASSWORD",
+            "NORM_MINIO_ROOT_PASSWORD",
+            "NORM_GRAFANA_PASSWORD",
+        ):
+            assert f"${{{secreto}:?" in crudo, f"{secreto} debe ser obligatorio, sin default"
+        assert "norm-secreto" not in crudo
+        assert "POSTGRES_PASSWORD: norm" not in crudo
+
+    def test_la_api_exige_llaves_y_perfil(self) -> None:
+        """Con `api_keys` vacío la autenticación queda DESHABILITADA (`llave_valida`
+        devuelve True). Y sin perfil, un VPS arrancaría como `local`: archivo
+        maestro y selector de destino, que son justo lo que no debe ser."""
+        crudo = (RAIZ / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
+        assert "${NORM_API_KEYS:?" in crudo
+        assert "${NORM_DESPLIEGUE__PERFIL:?" in crudo
+        assert "${NORM_DESPLIEGUE__NODO_ID:?" in crudo
+
+    def test_el_compose_dev_sigue_siendo_de_dev(self) -> None:
+        """Documenta la diferencia: si alguien 'arregla' el .dev quitándole puertos,
+        este test recuerda que el de producción es otro archivo."""
+        dev = _compose("docker-compose.dev.yml")["services"]
+        assert dev["postgres"].get("ports"), "el .dev publica puertos a propósito (localhost)"

@@ -17,6 +17,19 @@ app = typer.Typer(
 )
 
 
+def _exigir(config: Any, capaz: bool, que: str) -> None:
+    """⚙K16: corta con un motivo claro si este nodo no tiene la capacidad.
+
+    Salir con código 2 (no 1) distingue "este nodo no hace eso" de "falló": un
+    systemd que arranque el comando equivocado en el nodo equivocado se ve en el log
+    como configuración, no como avería."""
+    if not capaz:
+        typer.secho(
+            f"Este nodo tiene perfil '{config.despliegue.perfil}' y no {que}.", fg="red"
+        )
+        raise typer.Exit(code=2)
+
+
 @app.command()
 def version() -> None:
     """Versión del paquete y del filtro de precalificación."""
@@ -61,11 +74,13 @@ def proyectar(
     entidades canónicas resueltas por ancla (CURP/RFC/email). Idempotente."""
     import polars as pl
 
+    from normalizacion.core import despliegue
     from normalizacion.entidades import mapeo as M
     from normalizacion.entidades.pipeline import proyectar as _proyectar
     from normalizacion.entidades.receta import obtener_receta
 
     config = cargar_config()
+    _exigir(config, despliegue.de_config(config).corre_entidades, "resuelve entidades")
     receta = obtener_receta(tipo)
     df = pl.read_csv(csv, infer_schema_length=0)  # todo como texto
     columnas = df.columns
@@ -194,9 +209,15 @@ def verificar() -> None:
 @app.command()
 def puerta(disco_id: str = typer.Argument(help="Identificador del disco")) -> None:
     """La puerta SAGRADA: ¿es seguro desechar este disco? (100% a salvo o NO)."""
-    from normalizacion.ingesta.workers.verificador import evaluar_puerta
+    from normalizacion.ingesta.workers.verificador import DiscoDesconocido, evaluar_puerta
 
-    e = evaluar_puerta(cargar_config(), disco_id)
+    try:
+        e = evaluar_puerta(cargar_config(), disco_id)
+    except DiscoDesconocido as exc:
+        # NO se responde "no seguro": este nodo no vio el disco, así que cualquier
+        # veredicto sería inventado (⚙K16).
+        typer.secho(f"Sin veredicto: {exc}", fg="yellow", bold=True)
+        raise typer.Exit(code=2) from exc
     typer.echo(f"Puerta de integridad — disco '{e.disco_id}'")
     typer.echo(f"  total:        {e.total}")
     typer.echo(f"  HECHO:        {e.hechos}")
@@ -204,6 +225,13 @@ def puerta(disco_id: str = typer.Argument(help="Identificador del disco")) -> No
     typer.echo(f"  pendientes:   {e.pendientes}  (incluye {e.errores} en ERROR)")
     if e.seguro_para_desechar:
         typer.secho("  >>> SEGURO PARA DESECHAR <<<", fg="green", bold=True)
+    elif e.motivo_bloqueo == "pendiente_replica_al_maestro":
+        typer.secho(
+            "  >>> NO desechar: a salvo aquí, pero sus blobs aún no llegaron"
+            " al archivo maestro <<<",
+            fg="red",
+            bold=True,
+        )
     else:
         typer.secho("  >>> NO desechar: hay datos sin poner a salvo <<<", fg="red", bold=True)
 
@@ -232,14 +260,18 @@ def backfill_entidades_cmd(
     Recorre el indice de OpenSearch e idempotentemente crea/fusiona personas por su
     ancla. Reanudable: guarda el avance en `control` y re-ejecutar no duplica. Pensado
     para correr en la Mac sobre el lago ya indexado."""
+    from normalizacion.core import despliegue
     from normalizacion.entidades.backfill import backfill_desde_indice
+
+    config = cargar_config()
+    _exigir(config, despliegue.de_config(config).corre_entidades, "resuelve entidades")
 
     def _tic(r: Any) -> None:
         typer.echo(f"  …{r.docs} docs · {r.con_persona} con persona · "
                    f"{r.entidades_nuevas} nuevas · {r.entidades_fusionadas} fusionadas")
 
     r = backfill_desde_indice(
-        cargar_config(), lote=lote, max_docs=max_docs, reiniciar=reiniciar, on_progress=_tic,
+        config, lote=lote, max_docs=max_docs, reiniciar=reiniciar, on_progress=_tic,
     )
     typer.secho(f"\nBackfill: {r.como_dict()}", fg="green")
 
@@ -350,10 +382,14 @@ def rescore_frio_cmd(
 def estado_disco_cmd(disco_id: str = typer.Argument(help="Identificador del disco")) -> None:
     """Vista del operador: puerta + desglose del disco en un solo comando."""
     from normalizacion.ingesta.precalificacion.precalificador import perfil_disco
-    from normalizacion.ingesta.workers.verificador import evaluar_puerta
+    from normalizacion.ingesta.workers.verificador import DiscoDesconocido, evaluar_puerta
 
     config = cargar_config()
-    e = evaluar_puerta(config, disco_id)
+    try:
+        e = evaluar_puerta(config, disco_id)
+    except DiscoDesconocido as exc:
+        typer.secho(f"Sin veredicto: {exc}", fg="yellow", bold=True)
+        raise typer.Exit(code=2) from exc
     typer.echo(
         f"Disco '{disco_id}': total={e.total} HECHO={e.hechos}"
         f" COLD_movidos={e.cold_movidos} pendientes={e.pendientes} ERROR={e.errores}"
@@ -412,6 +448,64 @@ def pipeline(
         resumen = ", ".join(f"{k}={v}" for k, v in m.items() if isinstance(v, int | bool) and v)
         typer.echo(f"  {f['fase']:<16} {f['duracion_s']:>7.2f}s{extra}  {resumen}")
     typer.secho("Corrida COMPLETADA.", fg="green")
+
+
+@app.command()
+def doctor() -> None:
+    """¿Está bien configurado ESTE nodo? Perfil, stores, seguridad y réplica.
+
+    Los fallos de topología son silenciosos: un nodo con el perfil equivocado
+    arranca perfectamente y hace lo que no le toca. Esto los saca a la luz."""
+    from normalizacion.core.doctor import cabecera, diagnosticar
+
+    config = cargar_config()
+    cab = cabecera(config)
+    activas = [k for k, v in cab["capacidades"].items() if v]
+    inactivas = [k for k, v in cab["capacidades"].items() if not v]
+    typer.secho(
+        f"Perfil: {cab['perfil']}  ·  nodo_id: {cab['nodo_id']}", bold=True
+    )
+    typer.echo(f"  capacidades: {', '.join(activas) or '—'}")
+    if inactivas:
+        typer.echo(f"  sin capacidad: {', '.join(inactivas)}")
+    typer.echo("")
+
+    # Marcas ASCII a propósito: la consola de Windows (cp1252) revienta con ✓/⚠/✗,
+    # y un diagnóstico que se cae al imprimirse no diagnostica nada.
+    marcas = {"ok": ("OK", "green"), "aviso": ("!!", "yellow"), "error": ("XX", "red")}
+    peor = "ok"
+    for c in diagnosticar(config):
+        simbolo, color = marcas[c.nivel]
+        typer.secho(f" [{simbolo}] {c.titulo}", fg=color, nl=not c.detalle)
+        if c.detalle:
+            typer.echo(f" - {c.detalle}")
+        if c.nivel == "error" or (c.nivel == "aviso" and peor == "ok"):
+            peor = c.nivel
+    if peor == "error":
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def replicar() -> None:
+    """⚙K16 — replica lo que le toca a este nodo (snapshot o restore del índice).
+
+    El archivo maestro TOMA snapshot de sus índices; el nodo de servicio RESTAURA
+    los ajenos y los engancha al alias como lectura. Pensado para un timer de
+    systemd/cron: es idempotente y no interfiere con la ingesta."""
+    from normalizacion.core import replicacion
+
+    config = cargar_config()
+    r = replicacion.replicar(config)
+    typer.echo(f"Nodo '{config.despliegue.nodo_id}' — acción: {r.accion}")
+    if r.snapshot:
+        typer.echo(f"  snapshot: {r.snapshot}")
+    if r.indices:
+        typer.echo(f"  índices restaurados: {', '.join(r.indices)}")
+    if r.ok:
+        typer.secho("  replicación OK", fg="green")
+    else:
+        typer.secho(f"  FALLÓ: {r.motivo}", fg="red")
+        raise typer.Exit(code=1)
 
 
 @app.command("generar-disco")

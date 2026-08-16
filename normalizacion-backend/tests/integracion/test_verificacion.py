@@ -132,10 +132,52 @@ class TestPuertaSagrada:
         assert estado.errores == 1
         assert estado.seguro_para_desechar is False
 
-    def test_disco_vacio_no_es_seguro(self, config: Config, conexion: Any) -> None:
+    def test_nodo_que_no_es_maestro_nunca_da_verde(
+        self, config: Config, entorno: dict[str, Any]
+    ) -> None:
+        """⚙K16 — todo a salvo AQUÍ no basta si este nodo no es el archivo maestro.
+
+        Desechar el origen dejaría su única copia en una máquina que no es el
+        archivo (p. ej. un VPS de 1 TB). Fail-closed: mientras la replicación no
+        confirme, la puerta no abre — con motivo explícito, no en silencio."""
+        from normalizacion.core.config import PerillasDespliegue
+
+        verificar_indexados(config, almacen=entorno["almacen"])
+        mover_frio(config, almacen_frio=entorno["frio"])
+        assert evaluar_puerta(config, "disco-test").seguro_para_desechar is True
+
+        vps = config.model_copy(
+            update={
+                "despliegue": PerillasDespliegue(perfil="hibrido-servicio", nodo_id="vps-01")
+            }
+        )
+        estado = evaluar_puerta(vps, "disco-test")
+        assert estado.pendientes == 0  # aquí no falta nada…
+        assert estado.seguro_para_desechar is False  # …pero no es el archivo
+        assert estado.motivo_bloqueo == "pendiente_replica_al_maestro"
+
+    def test_disco_registrado_pero_vacio_no_es_seguro(
+        self, config: Config, conexion: Any
+    ) -> None:
         """0 archivos != verificado: un disco sin catalogar jamás es 'seguro'."""
-        estado = evaluar_puerta(config, "disco-fantasma")
+        from normalizacion.core import cola
+
+        cola.upsert_disco(conexion, "disco-vacio", "/mnt/vacio")
+        conexion.commit()
+        estado = evaluar_puerta(config, "disco-vacio")
         assert estado.seguro_para_desechar is False
+        assert estado.motivo_bloqueo == "sin_catalogar"
+
+    def test_disco_ajeno_no_recibe_veredicto(self, config: Config, conexion: Any) -> None:
+        """⚙K16 — un disco que este nodo nunca registró NO obtiene veredicto.
+
+        Antes devolvía `seguro=False`, que es una AFIRMACIÓN sobre algo que este nodo
+        jamás observó (en híbrido, un disco del otro nodo). "No es seguro" induce a
+        pensar que su procesamiento falló; lo correcto es negarse a responder."""
+        from normalizacion.ingesta.workers.verificador import DiscoDesconocido
+
+        with pytest.raises(DiscoDesconocido):
+            evaluar_puerta(config, "disco-fantasma")
 
     def test_mover_frio_es_idempotente(self, config: Config, entorno: dict[str, Any]) -> None:
         mover_frio(config, almacen_frio=entorno["frio"])

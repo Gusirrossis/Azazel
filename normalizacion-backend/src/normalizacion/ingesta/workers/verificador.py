@@ -223,6 +223,15 @@ def mover_frio(
 # ------------------------------------------------------------------ la puerta
 
 
+class DiscoDesconocido(Exception):
+    """Este nodo nunca registró ese disco: no puede opinar sobre él.
+
+    ⚙K16 — cada nodo tiene SU cola en SU Postgres. Preguntar por un disco ajeno
+    devolvía `total=0` y de ahí `seguro=False`, que es una AFIRMACIÓN sobre algo que
+    este nodo jamás observó. "No es seguro" es tan falso como "es seguro" cuando no
+    se vio el disco: la respuesta correcta es negarse a responder."""
+
+
 @dataclass(frozen=True)
 class EstadoPuerta:
     disco_id: str
@@ -232,6 +241,7 @@ class EstadoPuerta:
     pendientes: int  # TODO lo que no está a salvo: en flujo, COLD sin mover, ERROR
     errores: int
     seguro_para_desechar: bool
+    motivo_bloqueo: str | None = None  # por qué NO es seguro, si no lo es
 
 
 def evaluar_puerta(config: Config, disco_id: str) -> EstadoPuerta:
@@ -239,8 +249,22 @@ def evaluar_puerta(config: Config, disco_id: str) -> EstadoPuerta:
 
         seguro ⟺ total > 0  Y  cada fila está HECHO o (COLD con blob ya en frío)
 
-    Un solo archivo sin verificar, sin mover o en ERROR → el disco NO se toca."""
+    Un solo archivo sin verificar, sin mover o en ERROR → el disco NO se toca.
+
+    ⚙K16 — dos condiciones más en despliegue repartido:
+      · Sobre un disco que este nodo no registró: `DiscoDesconocido` (no un veredicto).
+      · En un nodo que NO es el archivo maestro, además hace falta que los blobs hayan
+        llegado al maestro; si no, desechar el origen dejaría su única copia en una
+        máquina que no es el archivo. Mientras la replicación no esté cableada (H6)
+        esto es fail-closed: nunca verde, con motivo explícito."""
+    from normalizacion.core import despliegue
+
     with psycopg.connect(config.postgres_dsn) as conn:
+        if not cola.disco_existe(conn, disco_id):
+            raise DiscoDesconocido(
+                f"el disco '{disco_id}' no está registrado en este nodo"
+                f" ({config.despliegue.nodo_id}); su puerta la evalúa quien lo catalogó"
+            )
         fila = conn.execute(
             """
             SELECT COUNT(*),
@@ -256,6 +280,14 @@ def evaluar_puerta(config: Config, disco_id: str) -> EstadoPuerta:
         )
         pendientes = total - hechos - cold_movidos
         seguro = total > 0 and pendientes == 0
+        motivo: str | None = None
+        if not seguro:
+            motivo = "sin_catalogar" if total == 0 else "datos_sin_poner_a_salvo"
+        elif not despliegue.de_config(config).es_archivo_maestro:
+            # Todo está a salvo EN ESTE NODO, pero este nodo no es el archivo: sus
+            # blobs deben haber llegado al maestro antes de tocar el origen.
+            seguro = False
+            motivo = "pendiente_replica_al_maestro"
         conn.execute(
             "UPDATE discos SET seguro_para_desechar = %s, actualizado_en = now()"
             " WHERE disco_id = %s",
@@ -263,6 +295,8 @@ def evaluar_puerta(config: Config, disco_id: str) -> EstadoPuerta:
         )
         conn.commit()
 
-    estado = EstadoPuerta(disco_id, total, hechos, cold_movidos, pendientes, errores, seguro)
+    estado = EstadoPuerta(
+        disco_id, total, hechos, cold_movidos, pendientes, errores, seguro, motivo
+    )
     log.info("puerta_evaluada", **estado.__dict__)
     return estado

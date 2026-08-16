@@ -1,0 +1,36 @@
+# Única superficie pública del despliegue. TLS automático (Let's Encrypt).
+#
+# Todo lo demás —Postgres, OpenSearch, MinIO, Prometheus— vive en la red interna
+# de Docker y NO publica puertos: no son alcanzables desde fuera ni con la IP.
+
+{$NORM_DOMINIO} {
+	encode zstd gzip
+
+	# Cabeceras de endurecimiento. HSTS solo tiene sentido con el certificado ya
+	# emitido; Caddy lo hace en el primer arranque.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Rate-limit real. El `LimitadorPorMinuto` de la API es una ventana EN MEMORIA
+	# por proceso (`api/seguridad.py`): con más de una instancia cada una lleva su
+	# propia cuenta, así que el límite efectivo se multiplica. El tope de verdad va
+	# aquí, delante de todas.
+	@api path /buscar* /autocompletar* /entidades* /archivo* /panel* /cola*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	handle_path /grafana/* {
+		reverse_proxy grafana:3000
+	}
+
+	# El front (SPA estática servida por nginx en su contenedor).
+	handle {
+		reverse_proxy front:80
+	}
+}

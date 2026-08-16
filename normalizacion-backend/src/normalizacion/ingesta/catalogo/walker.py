@@ -16,7 +16,7 @@ from pathlib import Path
 
 import psycopg
 
-from normalizacion.core import cola
+from normalizacion.core import cola, despliegue
 from normalizacion.core.config import Config
 from normalizacion.core.modelo import calcular_archivo_id, ruta_canonica, sanear_texto
 from normalizacion.core.observabilidad import obtener_logger
@@ -64,13 +64,27 @@ def catalogar_disco(config: Config, raiz: Path, disco_id: str | None = None) -> 
     raiz = raiz.resolve()
     if not raiz.is_dir():
         raise NotADirectoryError(f"{raiz} no es un directorio montado")
-    id_disco = disco_id or raiz.name
+    if disco_id is None and despliegue.exige_disco_id_explicito(config):
+        # ⚙K16: fuera de `local`, derivarlo del basename hace que dos nodos que
+        # catalogan carpetas homónimas produzcan el MISMO disco_id y sus archivo_id
+        # colisionen. (Dentro de un mismo nodo, además, ya fusiona dos discos
+        # desechables llamados igual en una unidad que no existe físicamente.)
+        raise ValueError(
+            "en modo híbrido el disco_id es obligatorio: derivarlo del nombre de la"
+            f" carpeta ('{raiz.name}') provoca colisiones entre nodos"
+        )
+    id_pedido = disco_id or raiz.name
 
     vistos = nuevos = directorios = errores = 0
     lote: list[cola.FilaCatalogo] = []
     pendientes: deque[Path] = deque([raiz])
 
     with psycopg.connect(config.postgres_dsn) as conn:
+        # Un disco YA registrado conserva su id (incluidos los legados sin prefijo):
+        # cambiarlo mutaría todos sus archivo_id y lo duplicaría entero.
+        id_disco = despliegue.resolver_disco_id(
+            config, id_pedido, ya_existe=lambda d: cola.disco_existe(conn, d)
+        )
         cola.upsert_disco(conn, id_disco, str(raiz))
         conn.commit()
 

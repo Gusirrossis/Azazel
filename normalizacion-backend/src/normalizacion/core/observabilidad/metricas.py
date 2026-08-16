@@ -54,6 +54,28 @@ class Exportador:
         self._pausado = Gauge(
             "norm_pausado", "1 si el operador pausó el sistema", registry=self.registry
         )
+        # ⚙K16 — sin esto, una réplica detenida es invisible: el nodo de servicio
+        # sigue respondiendo búsquedas con datos viejos y nadie se entera hasta que
+        # alguien echa algo de menos. -1 = nunca ha replicado.
+        self._replica_lag = Gauge(
+            "norm_replica_lag_segundos",
+            "Segundos desde la última replicación exitosa (-1 si nunca)",
+            ["nodo_id", "papel"],
+            registry=self.registry,
+        )
+
+    def recolectar_replica(self, config: Config) -> None:
+        """Gauge del retraso de replicación. Sólo tiene sentido fuera de `local`."""
+        from normalizacion.core import despliegue, replicacion
+
+        t = despliegue.de_config(config)
+        if config.despliegue.es_local():
+            return
+        papel = "emisor" if t.es_archivo_maestro else "receptor"
+        lag = replicacion.lag_segundos(config)
+        self._replica_lag.labels(
+            nodo_id=config.despliegue.nodo_id, papel=papel
+        ).set(-1.0 if lag is None else lag)
 
     def recolectar(self, conn: psycopg.Connection[Any]) -> None:
         """Una pasada de agregaciones SQL → gauges (costo ~0, no toca archivos)."""
@@ -106,6 +128,7 @@ def correr_exportador(config: Config, puerto: int, intervalo_s: float = 15.0) ->
         try:
             with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
                 exportador.recolectar(conn)
+            exportador.recolectar_replica(config)
         except psycopg.OperationalError as exc:
             log.warning("exportador_sin_postgres", error=str(exc)[:150])
         time.sleep(intervalo_s)

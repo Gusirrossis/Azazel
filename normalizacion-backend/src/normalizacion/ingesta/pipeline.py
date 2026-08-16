@@ -212,11 +212,24 @@ def iniciar_corrida(
     config: Config, ruta: Path, disco_id: str | None = None, destino: str | None = None
 ) -> tuple[int, str]:
     """Valida y registra la corrida. Una sola a la vez (lock por tabla)."""
+    from normalizacion.core import cola, despliegue
+
     ruta = ruta.expanduser().resolve()
     if not ruta.is_dir():
         raise ValueError(f"no es una carpeta: {ruta}")
-    id_disco = disco_id or ruta.name
+    if disco_id is None and despliegue.exige_disco_id_explicito(config):
+        raise ValueError(
+            "en modo híbrido el disco_id es obligatorio: derivarlo del nombre de la"
+            f" carpeta ('{ruta.name}') provoca colisiones entre nodos"
+        )
+    id_pedido = disco_id or ruta.name
     with psycopg.connect(config.postgres_dsn) as conn:
+        # Se resuelve AQUÍ y se propaga al catálogo, para que `corridas.disco_id` y
+        # `archivos.disco_id` no puedan discrepar (la corrida se registra con el id
+        # definitivo, no con el pedido).
+        id_disco = despliegue.resolver_disco_id(
+            config, id_pedido, ya_existe=lambda d: cola.disco_existe(conn, d)
+        )
         en_curso = conn.execute("SELECT id FROM corridas WHERE estado = 'EN_CURSO'").fetchone()
         if en_curso:
             raise RuntimeError(f"ya hay una corrida en curso (id {en_curso[0]})")

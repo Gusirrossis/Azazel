@@ -78,7 +78,7 @@ def crear_app(config: Config) -> FastAPI:
         from normalizacion.core.config_overrides import aplicar_recursos
 
         config = aplicar_recursos(config)
-    except Exception:  # noqa: BLE001 — el arranque no debe morir por overrides
+    except Exception:
         pass
 
     aplicacion.state.config = config
@@ -86,11 +86,26 @@ def crear_app(config: Config) -> FastAPI:
     aplicacion.state.cliente = None
     aplicacion.state.almacen = None
 
-    # Envío automático al AEB: hilo daemon que manda lo nuevo/cambiado cada N segundos
-    # (intervalo configurable en la pestaña Destino; 0 = solo manual). Arranca con el sistema.
-    from normalizacion.entidades.envio import iniciar_bucle
+    # ⚙K16 — topología de este nodo. Las capacidades se derivan UNA vez al construir
+    # la app; los endpoints preguntan por ellas, nunca por el perfil.
+    from normalizacion.core import despliegue
 
-    iniciar_bucle(config)
+    topologia = despliegue.derivar(config.despliegue)
+    aplicacion.state.topologia = topologia
+
+    # Envío automático al AEB: hilo daemon que manda lo nuevo/cambiado cada N segundos
+    # (intervalo configurable en la pestaña Destino; 0 = solo manual).
+    #
+    # SÓLO en el nodo que resuelve entidades. Antes arrancaba en TODA instancia de la
+    # API; con dos nodos eso son dos procesos empujando al AEB, y como el cable manda
+    # `modo_merge: "reemplazar"` (last-write-wins) cada uno sobrescribiría al otro con
+    # su versión PARCIAL de la misma persona — cada nodo resolvió sobre su trozo del
+    # índice. No corrompe (entidad_id es determinista y el AEB idempotente), pero se
+    # pisan en bucle indefinidamente.
+    if topologia.corre_entidades:
+        from normalizacion.entidades.envio import iniciar_bucle
+
+        iniciar_bucle(config)
 
     def _cliente(request: Request) -> Any:
         if request.app.state.cliente is None:
@@ -216,9 +231,27 @@ def crear_app(config: Config) -> FastAPI:
         return cfg.api_carpeta_destino_raiz if ambito == "destino" else cfg.api_carpeta_raiz
 
     def _destino_eligible(cfg: Config) -> bool:
+        # ⚙K16: el nodo que REPLICA sus blobs al archivo maestro necesita un almacén
+        # único y direccionable. Con el selector, cada corrida puede dejar el almacén
+        # en una carpeta distinta (`config_con_destino` conmuta a backend `local`),
+        # y entonces no hay "el bucket" que replicar.
+        if not topologia.destino_eligible:
+            return False
         # En Docker confinado SIN volumen de destino, elegir carpeta escribiría
         # dentro del contenedor (efímero) → no se ofrece. Dev nativo: siempre.
         return cfg.api_carpeta_destino_raiz is not None or cfg.api_carpeta_raiz is None
+
+    def _exigir(capacidad: bool, mensaje: str) -> None:
+        """409 explícito cuando este nodo no tiene la capacidad. Nunca un resultado
+        inventado: un nodo que no resuelve entidades no debe devolver 'ninguna'."""
+        if not capacidad:
+            raise HTTPException(status_code=409, detail=mensaje)
+
+    _SIN_ENTIDADES = (
+        "este nodo no resuelve entidades (⚙K16: la resolución vive en un solo nodo"
+        " para que dos resolvedores no se pisen en el AEB)"
+    )
+    _SIN_INGESTA = "este nodo no ingiere archivos (⚙K16)"
 
     @aplicacion.get("/sistema/carpetas", response_model=RespuestaCarpetas)
     def get_carpetas(
@@ -277,6 +310,7 @@ def crear_app(config: Config) -> FastAPI:
             validar_dentro_de_raiz,
         )
 
+        _exigir(topologia.corre_ingesta, _SIN_INGESTA)
         cfg: Config = request.app.state.config
         try:
             validar_dentro_de_raiz(RutaFs(solicitud.ruta), cfg.api_carpeta_raiz)
@@ -331,6 +365,26 @@ def crear_app(config: Config) -> FastAPI:
             destino_eligible=_destino_eligible(cfg),
             workers_auto=resolver_workers(cfg, None),
         )
+
+    @aplicacion.get("/sistema/topologia")
+    def get_topologia(_: Autorizado, request: Request) -> dict[str, Any]:
+        """⚙K16 — qué ES este nodo y qué sabe hacer.
+
+        El front lo usa para OCULTAR lo que este nodo no tiene (entidades, discos)
+        en vez de mostrarlo vacío: una sección vacía se lee como "no hay datos",
+        y eso sería mentira — lo que pasa es que esa capacidad vive en otro nodo."""
+        cfg: Config = request.app.state.config
+        return {
+            "perfil": cfg.despliegue.perfil,
+            "nodo_id": cfg.despliegue.nodo_id,
+            "capacidades": {
+                "ingesta": topologia.corre_ingesta,
+                "entidades": topologia.corre_entidades,
+                "publico": topologia.sirve_publico,
+                "archivo_maestro": topologia.es_archivo_maestro,
+                "destino_eligible": topologia.destino_eligible,
+            },
+        }
 
     @aplicacion.get("/sistema/recursos")
     def get_recursos(_: Autorizado, request: Request) -> dict[str, Any]:
@@ -629,6 +683,7 @@ def crear_app(config: Config) -> FastAPI:
     ) -> dict[str, Any]:
         """Empuja al AEB las entidades nuevas/modificadas (formato canónico), en lotes.
         Reanudable por cursor; `reiniciar=true` reenvía todo desde cero."""
+        _exigir(topologia.corre_entidades, _SIN_ENTIDADES)
         from normalizacion.entidades.envio import enviar_a_destino
 
         r = enviar_a_destino(
@@ -715,6 +770,7 @@ def crear_app(config: Config) -> FastAPI:
         """E3: proyecta filas ya mapeadas a entidades (resolución por ancla,
         idempotente). Útil para CLI/integraciones; la proyección desde los blobs
         indexados es el camino a escala (E4)."""
+        _exigir(topologia.corre_entidades, _SIN_ENTIDADES)
         from normalizacion.entidades.pipeline import proyectar
         from normalizacion.entidades.receta import obtener_receta
 
@@ -734,6 +790,7 @@ def crear_app(config: Config) -> FastAPI:
         CURP/RFC. Se lanza en SEGUNDO PLANO (gobernado por K15) y vuelve de inmediato
         —correrlo dentro de la petición engordaba la API y tumbaba el panel—. El
         avance se consulta en GET /entidades/backfill/estado. Reanudable por cursor."""
+        _exigir(topologia.corre_entidades, _SIN_ENTIDADES)
         from normalizacion.entidades.backfill import lanzar_en_fondo
 
         return lanzar_en_fondo(

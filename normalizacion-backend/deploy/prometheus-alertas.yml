@@ -48,3 +48,24 @@ groups:
         annotations:
           resumen: "Sin métricas: el exportador (o su Postgres) está caído"
           runbook: "deploy/RUNBOOKS.md#exportadorcaido"
+
+      # ⚙K16 — sólo dispara en despliegue repartido (en `local` la métrica no se
+      # publica). Una réplica detenida es SILENCIOSA: el nodo de servicio sigue
+      # respondiendo búsquedas, sólo que con datos viejos.
+      - alert: ReplicaAtrasada
+        expr: norm_replica_lag_segundos > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          resumen: "{{ $labels.nodo_id }} ({{ $labels.papel }}) lleva {{ $value | humanizeDuration }} sin replicar"
+          runbook: "deploy/RUNBOOKS.md#replicaatrasada"
+
+      - alert: ReplicaNuncaEjecutada
+        expr: norm_replica_lag_segundos == -1
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          resumen: "{{ $labels.nodo_id }} nunca ha replicado: el timer no está corriendo"
+          runbook: "deploy/RUNBOOKS.md#replicaatrasada"
