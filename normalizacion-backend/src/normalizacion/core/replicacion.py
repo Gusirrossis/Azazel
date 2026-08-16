@@ -121,14 +121,15 @@ def asegurar_repositorio(config: Config, cliente: Any | None = None) -> None:
     from normalizacion.core.indexador.opensearch import crear_cliente
 
     cliente = cliente or crear_cliente(config)
+    # SOLO `bucket` y `client`. El endpoint de MinIO, el protocolo y el
+    # `path_style_access` son settings de CLIENTE (`s3.client.default.*`), no de
+    # repositorio: van en la configuración del nodo de OpenSearch (el compose los
+    # pasa como -E) y las credenciales en su keystore. Ponerlos aquí no configura
+    # nada y hace fallar la verificación con un
+    # "path is not accessible on cluster-manager node" que no dice por qué.
     cuerpo = {
         "type": "s3",
-        "settings": {
-            "bucket": config.minio_bucket_snapshots,
-            "endpoint": config.minio_endpoint,
-            "protocol": "http",
-            "path_style_access": "true",
-        },
+        "settings": {"bucket": config.minio_bucket_snapshots, "client": "default"},
     }
     cliente.transport.perform_request(
         "PUT", f"/_snapshot/{REPOSITORIO}", body=cuerpo

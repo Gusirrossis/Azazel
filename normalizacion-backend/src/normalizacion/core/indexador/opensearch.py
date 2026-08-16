@@ -38,14 +38,25 @@ def indice_escritura(config: Config) -> str:
 
 
 def crear_cliente(config: Config) -> Any:
+    """Cliente de OpenSearch, con o sin plugin de seguridad.
+
+    `use_ssl` se deduce del esquema de la URL en vez de estar fijo: en dev el
+    clúster va sin seguridad (http) y en producción CON ella (https + auth). Antes
+    estaba cableado a False, así que contra un clúster seguro el cliente fallaba
+    entero —búsqueda, sink y backfill— reportando sólo "no responde"."""
     from opensearchpy import OpenSearch
 
+    usa_tls = config.opensearch_url.lower().startswith("https://")
+    extra: dict[str, Any] = {}
+    if config.opensearch_usuario:
+        extra["http_auth"] = (config.opensearch_usuario, config.opensearch_password)
     return OpenSearch(
         hosts=[config.opensearch_url],
-        use_ssl=False,
-        verify_certs=False,
+        use_ssl=usa_tls,
+        verify_certs=config.opensearch_verificar_certs,
         ssl_show_warn=False,
         timeout=30,
+        **extra,
     )
 
 

@@ -1,0 +1,17 @@
+# OpenSearch + `repository-s3`.
+#
+# La imagen oficial NO trae ese plugin, y sin él no hay snapshots hacia MinIO: la
+# replicación del índice entre nodos (⚙K16) simplemente no existe. `norm replicar`
+# lo reporta como `repository type [s3] does not exist`.
+FROM opensearchproject/opensearch:2.19.0
+
+RUN /usr/share/opensearch/bin/opensearch-plugin install --batch repository-s3
+
+# Las credenciales de S3/MinIO SOLO se leen del keystore (no de opensearch.yml ni
+# del entorno), así que hay que sembrarlas al arrancar, desde variables que el
+# compose inyecta. El keystore vive en un volumen: se recrea en cada arranque para
+# que rotar la clave sea reiniciar el contenedor.
+COPY --chmod=755 opensearch-entrypoint.sh /usr/share/opensearch/azazel-entrypoint.sh
+
+ENTRYPOINT ["/usr/share/opensearch/azazel-entrypoint.sh"]
+CMD ["opensearch"]

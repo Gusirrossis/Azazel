@@ -1,13 +1,28 @@
-# Única superficie pública del despliegue. TLS automático (Let's Encrypt).
+# Única superficie pública del despliegue. Todo lo demás —Postgres, OpenSearch,
+# MinIO, Prometheus— vive en la red interna de Docker y NO publica puertos: no son
+# alcanzables desde fuera ni conociendo la IP.
 #
-# Todo lo demás —Postgres, OpenSearch, MinIO, Prometheus— vive en la red interna
-# de Docker y NO publica puertos: no son alcanzables desde fuera ni con la IP.
+# ───────────────────────────────────────────────────────────────────────────────
+# SIN DOMINIO PROPIO (estado actual)
+#
+# Let's Encrypt no emite certificados para IPs, sólo para NOMBRES. Pero sslip.io es
+# un DNS comodín público que resuelve `163-172-149-0.sslip.io` → 163.172.149.0, así
+# que ES un nombre válido y Caddy consigue un certificado REAL: cifrado de verdad,
+# sin avisos del navegador y sin comprar nada.
+#
+#   NORM_DOMINIO=163-172-149-0.sslip.io
+#
+# Se descartó `tls internal` (auto-firmado) porque además de avisar en el navegador
+# no funciona sin SNI, y una IP no manda SNI: el handshake falla con
+# "tlsv1 alert internal error".
+#
+# CUANDO LLEGUE EL DOMINIO PROPIO: registro A → la IP, cambia NORM_DOMINIO en
+# .env.prod, `docker compose up -d caddy`. Este archivo NO se toca.
+# ───────────────────────────────────────────────────────────────────────────────
 
 {$NORM_DOMINIO} {
 	encode zstd gzip
 
-	# Cabeceras de endurecimiento. HSTS solo tiene sentido con el certificado ya
-	# emitido; Caddy lo hace en el primer arranque.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -16,11 +31,10 @@
 		-Server
 	}
 
-	# Rate-limit real. El `LimitadorPorMinuto` de la API es una ventana EN MEMORIA
-	# por proceso (`api/seguridad.py`): con más de una instancia cada una lleva su
-	# propia cuenta, así que el límite efectivo se multiplica. El tope de verdad va
-	# aquí, delante de todas.
-	@api path /buscar* /autocompletar* /entidades* /archivo* /panel* /cola*
+	# El rate-limit de la API (`api/seguridad.py`) es una ventana EN MEMORIA por
+	# proceso: con más de una instancia cada una lleva su propia cuenta y el límite
+	# efectivo se multiplica. El tope de verdad va aquí, delante de todas.
+	@api path /buscar* /autocompletar* /entidades* /archivo* /panel* /cola* /pipeline* /sistema* /seguridad* /filtro* /resumen* /estadisticas* /openapi.json /docs*
 	handle @api {
 		reverse_proxy api:8000
 	}

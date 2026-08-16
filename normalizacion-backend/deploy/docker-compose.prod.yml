@@ -47,10 +47,26 @@ services:
 
   opensearch:
     <<: *comun
-    image: opensearchproject/opensearch:2.19.0
+    # Imagen propia: la oficial no trae `repository-s3` y sin él no hay snapshots
+    # hacia MinIO, es decir, no hay replicación del índice entre nodos (⚙K16).
+    build:
+      context: .
+      dockerfile: Dockerfile.opensearch
+    image: azazel-opensearch:2.19.0
     profiles: ["datos"]
     environment:
       discovery.type: single-node
+      # Credenciales para el keystore de repository-s3 (ver opensearch-entrypoint.sh).
+      NORM_S3_ACCESS_KEY: ${NORM_MINIO_ROOT_USER}
+      NORM_S3_SECRET_KEY: ${NORM_MINIO_ROOT_PASSWORD}
+      # Cliente S3 apuntando a MinIO (no a AWS): estas SÍ van por entorno/yml.
+      s3.client.default.endpoint: minio:9000
+      s3.client.default.protocol: http
+      s3.client.default.path_style_access: "true"
+      # MinIO no tiene regiones, pero el SDK de AWS EXIGE una: sin ella el snapshot
+      # falla con "Unable to load region from any of the providers in the chain",
+      # que el repositorio reporta sólo como "path is not accessible".
+      s3.client.default.region: us-east-1
       # El plugin de seguridad QUEDA ACTIVO (el .dev lo apaga con
       # DISABLE_SECURITY_PLUGIN=true). Sin él, cualquiera con acceso de red al
       # 9200 lee y borra el índice entero sin credencial.
@@ -101,6 +117,10 @@ services:
       NORM_DESPLIEGUE__NODO_ID: ${NORM_DESPLIEGUE__NODO_ID:?falta el nodo_id (p.ej. vps-01)}
       NORM_POSTGRES_DSN: postgresql://${NORM_PG_USER}:${NORM_PG_PASSWORD}@postgres:5432/${NORM_PG_DB:-normalizacion}
       NORM_OPENSEARCH_URL: ${NORM_OPENSEARCH_URL:-https://opensearch:9200}
+      # El plugin de seguridad está ACTIVO: sin credenciales el cliente no autentica
+      # y búsqueda, sink y backfill fallan reportando sólo "no responde".
+      NORM_OPENSEARCH_USUARIO: admin
+      NORM_OPENSEARCH_PASSWORD: ${NORM_OS_ADMIN_PASSWORD}
       NORM_MINIO_ENDPOINT: minio:9000
       NORM_MINIO_ACCESS_KEY: ${NORM_MINIO_ROOT_USER}
       NORM_MINIO_SECRET_KEY: ${NORM_MINIO_ROOT_PASSWORD}
@@ -160,7 +180,10 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      NORM_DOMINIO: ${NORM_DOMINIO:?falta NORM_DOMINIO (Caddy necesita el nombre para emitir el certificado)}
+      # Opcional MIENTRAS NO HAYA DOMINIO: sin él, el Caddyfile sirve en :443 con la
+      # CA interna (auto-firmado). Let's Encrypt no emite para IPs. Al conseguir el
+      # dominio se pone aquí y se cambia el bloque del Caddyfile.
+      NORM_DOMINIO: ${NORM_DOMINIO:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
@@ -185,7 +208,7 @@ services:
     profiles: ["obs"]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${NORM_GRAFANA_PASSWORD:?falta NORM_GRAFANA_PASSWORD}
-      GF_SERVER_ROOT_URL: https://${NORM_DOMINIO}/grafana/
+      GF_SERVER_ROOT_URL: https://${NORM_DOMINIO:-localhost}/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - grafanadata:/var/lib/grafana

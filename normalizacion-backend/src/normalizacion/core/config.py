@@ -355,6 +355,15 @@ class Config(BaseSettings):
     # Conexiones (dev por defecto; prod las inyecta por entorno)
     postgres_dsn: str = "postgresql://norm:norm@localhost:5432/normalizacion"
     opensearch_url: str = "http://localhost:9200"
+    # Credenciales de OpenSearch. Vacías = clúster SIN plugin de seguridad (dev y el
+    # OpenSearch de Homebrew en la Mac). En producción el plugin está ACTIVO: sin
+    # esto el cliente no autentica y todo —búsqueda, sink, backfill— falla en silencio
+    # con "no responde". El esquema (http/https) se deduce de `opensearch_url`.
+    opensearch_usuario: str = ""
+    opensearch_password: str = ""
+    # Certificado auto-firmado del propio clúster: se confía por estar en la red
+    # interna de Docker, no expuesta. Con una CA propia, poner a True.
+    opensearch_verificar_certs: bool = False
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "norm"
     minio_secret_key: str = "norm-secreto"
