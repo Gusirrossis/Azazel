@@ -3,22 +3,86 @@
   "uid": "normalizacion-op",
   "schemaVersion": 39,
   "refresh": "15s",
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "panels": [
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Réplica entre nodos — retraso (⚙K16)",
+      "description": "Segundos desde la última replicación exitosa de cada nodo. -1 = nunca ha replicado (el timer no corre). Sólo aparece en despliegue repartido: en perfil `local` no se publica. Una réplica detenida es SILENCIOSA — el nodo sigue sirviendo búsquedas, pero con datos viejos.",
+      "datasource": null,
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "norm_replica_lag_segundos",
+          "legendFormat": "{{nodo_id}} ({{papel}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 7200
+              },
+              {
+                "color": "red",
+                "value": 21600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
     {
       "id": 1,
       "title": "Backlog por estado",
       "type": "timeseries",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
       "targets": [
-        { "expr": "sum by (estado) (norm_backlog)", "legendFormat": "{{estado}}" }
+        {
+          "expr": "sum by (estado) (norm_backlog)",
+          "legendFormat": "{{estado}}"
+        }
       ]
     },
     {
       "id": 2,
       "title": "Throughput (HECHO, delta 5m)",
       "type": "timeseries",
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
       "targets": [
         {
           "expr": "delta(norm_backlog{estado=\"HECHO\"}[5m])",
@@ -30,7 +94,12 @@
       "id": 3,
       "title": "Decisión del filtro (archivos)",
       "type": "piechart",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
       "targets": [
         {
           "expr": "sum by (ruta_decision) (norm_archivos_por_ruta)",
@@ -42,33 +111,68 @@
       "id": 4,
       "title": "Errores por motivo (dead-letter)",
       "type": "bargauge",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
       "targets": [
-        { "expr": "topk(10, norm_errores_por_motivo)", "legendFormat": "{{motivo}}" }
+        {
+          "expr": "topk(10, norm_errores_por_motivo)",
+          "legendFormat": "{{motivo}}"
+        }
       ]
     },
     {
       "id": 5,
       "title": "Discos: puerta de integridad",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 9 },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
       "targets": [
-        { "expr": "norm_discos_seguros", "legendFormat": "seguros" },
-        { "expr": "norm_discos_pendientes", "legendFormat": "pendientes" }
+        {
+          "expr": "norm_discos_seguros",
+          "legendFormat": "seguros"
+        },
+        {
+          "expr": "norm_discos_pendientes",
+          "legendFormat": "pendientes"
+        }
       ]
     },
     {
       "id": 6,
       "title": "Pausado",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 13 },
-      "targets": [{ "expr": "norm_pausado", "legendFormat": "pausado" }],
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 18
+      },
+      "targets": [
+        {
+          "expr": "norm_pausado",
+          "legendFormat": "pausado"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         }
@@ -78,7 +182,12 @@
       "id": 7,
       "title": "Bytes por decisión",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
       "targets": [
         {
           "expr": "sum by (ruta_decision) (norm_bytes_por_ruta)",

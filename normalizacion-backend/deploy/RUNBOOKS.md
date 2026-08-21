@@ -35,6 +35,58 @@ qué lo retiene: pendientes en flujo (espera/da más workers), COLD sin mover
 (`norm mover-frio`), INDEXADO sin verificar (`norm verificar`) o ERROR (ver el
 runbook de dead-letter). **JAMÁS desechar el disco físico con la puerta roja.**
 
+## Rotar secretos
+
+Todos viven en `.env.prod` (permisos 600, fuera de git). Rotar = cambiar el valor y
+recrear el servicio. **El orden importa y no todos cuestan lo mismo.**
+
+```bash
+cd /srv/azazel/normalizacion-backend
+C="docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod --profile datos --profile app --profile obs"
+```
+
+**API key** — barato, sin interrupción de datos. El caso urgente (una llave que se
+filtró en un chat, un log o una captura):
+
+```bash
+sed -i "s|^NORM_API_KEYS=.*|NORM_API_KEYS=[\"$(openssl rand -hex 24)\"]|" .env.prod
+$C up -d api
+```
+Los clientes con la llave vieja empiezan a recibir 401 de inmediato — eso es lo que
+se quiere. Hay que repartir la nueva. En el front se guarda en `localStorage` bajo
+`norm_api_key`, así que cada navegador tiene que volver a ponerla.
+
+**Contraseña de Grafana** — barato:
+```bash
+sed -i "s|^NORM_GRAFANA_PASSWORD=.*|NORM_GRAFANA_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')|" .env.prod
+$C up -d grafana
+```
+
+**Contraseña de MinIO** — cuidado. La usan TRES sitios: el propio MinIO, el cliente
+del almacén en la API, y el **keystore de OpenSearch** para los snapshots
+(`opensearch-entrypoint.sh` lo siembra al arrancar). Si sólo se recrea MinIO, los
+snapshots empiezan a fallar con 403 y el fallo tarda en notarse:
+```bash
+sed -i "s|^NORM_MINIO_ROOT_PASSWORD=.*|NORM_MINIO_ROOT_PASSWORD=$(openssl rand -base64 30 | tr -d '/+=' | head -c 32)|" .env.prod
+$C up -d --force-recreate minio opensearch api exportador
+$C exec -T api norm replicar    # confirma que el repositorio sigue accesible
+```
+
+**Contraseña de Postgres o del admin de OpenSearch** — NO se rotan cambiando la
+variable. Esas credenciales se fijaron al **inicializar** el volumen de datos;
+cambiar el `.env.prod` sólo cambia lo que los clientes intentan usar, y el servicio
+deja de aceptarlos. Hay que cambiarlas DENTRO del motor y luego en el archivo:
+
+```bash
+# Postgres
+$C exec -T postgres psql -U "$NORM_PG_USER" -d postgres -c "ALTER USER norm WITH PASSWORD 'nueva';"
+sed -i "s|^NORM_PG_PASSWORD=.*|NORM_PG_PASSWORD=nueva|" .env.prod
+$C up -d --force-recreate api exportador
+```
+
+Después de cualquier rotación: `$C exec -T api norm doctor`. Si algo quedó a medias,
+sale ahí y no tres días más tarde.
+
 ## Restaurar un respaldo de Postgres
 
 `deploy/respaldo.sh` vuelca la base a `minio://respaldos/` cada noche (timer
