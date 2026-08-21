@@ -247,6 +247,16 @@ def restaurar_ajenos(config: Config, cliente: Any | None = None) -> ResumenRepli
         _marcar(config, _CLAVE_ULTIMO_RESTORE, {"indices": r.indices})
     if r.indices and despliegue.de_config(config).corre_entidades:
         _invalidar_cursor_backfill(config, r)
+        # Enganche: los docs recién restaurados son EXACTAMENTE lo que el resolvedor
+        # de entidades aún no vio. Con el cursor ya invalidado (rescan completo
+        # idempotente por `entidad_id`), disparar el backfill aquí hace que el mismo
+        # timer de réplica que ya corre gobierne las entidades — sin demonios ni
+        # timers nuevos. El propio `lanzar_en_fondo` es no-op si ya hay uno en curso
+        # o si el gobernador K15 ve poca RAM, así que es seguro llamarlo por ciclo.
+        from normalizacion.entidades import backfill
+
+        resultado = backfill.lanzar_en_fondo(config, reiniciar=True)
+        log.info("backfill_por_replica", **resultado)
     log.info("restore_completo", indices=len(r.indices), ok=r.ok)
     return r
 
