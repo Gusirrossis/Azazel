@@ -26,6 +26,7 @@ después explícitamente como NO-escritura.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -208,11 +209,11 @@ def restaurar_ajenos(config: Config, cliente: Any | None = None) -> ResumenRepli
         log.warning("restore_sin_repositorio", error=r.motivo)
         return r
 
-    existentes = set()
-    try:
+    # Qué índices hay ya. En un clúster virgen el alias aún no existe y la consulta
+    # da 404: eso NO es un fallo, sólo significa que no hay nada que saltarse.
+    existentes: set[str] = set()
+    with contextlib.suppress(Exception):
         existentes = set(cliente.indices.get_alias(index=f"{config.indice_alias}-*").keys())
-    except Exception:
-        pass
 
     for snap in sorted(snapshots, key=lambda s: str(s.get("snapshot", ""))):
         ajenos = [
@@ -244,8 +245,42 @@ def restaurar_ajenos(config: Config, cliente: Any | None = None) -> ResumenRepli
     r.ok = r.motivo is None
     if r.ok:
         _marcar(config, _CLAVE_ULTIMO_RESTORE, {"indices": r.indices})
+    if r.indices and despliegue.de_config(config).corre_entidades:
+        _invalidar_cursor_backfill(config, r)
     log.info("restore_completo", indices=len(r.indices), ok=r.ok)
     return r
+
+
+def _invalidar_cursor_backfill(config: Config, r: ResumenReplica) -> None:
+    """Un restore invalida el cursor del backfill de entidades. Hay que borrarlo.
+
+    El backfill barre el índice ordenado por `archivo_id` con `search_after`, y
+    guarda su avance en `control`. Pero `archivo_id` es un sha256: se distribuye
+    UNIFORME. Los documentos que llegan restaurados caen repartidos por todo el
+    espacio de ids, así que **en promedio la mitad de cada lote replicado aterriza
+    por detrás del cursor** — y `search_after` sólo avanza, nunca vuelve. Esas
+    personas no se resolverían jamás.
+
+    Borrar el cursor hace que la siguiente pasada barra desde cero. Es más caro
+    (un escaneo completo del índice) pero es idempotente —el upsert por
+    `entidad_id` no duplica— y es la única forma correcta con el mapping actual.
+    La solución de fondo, un campo `indexado_en` monótono para barrer por tiempo en
+    vez de por hash, cambia el índice y obliga a reindexar: no está en este plan.
+    """
+    from normalizacion.entidades.backfill import _CURSOR_CLAVE
+
+    try:
+        with psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn:
+            borradas = conn.execute(
+                "DELETE FROM control WHERE clave = %s", (_CURSOR_CLAVE,)
+            ).rowcount
+            conn.commit()
+    except Exception as exc:  # el restore ya ocurrió: no se deshace por esto
+        log.warning("cursor_backfill_no_invalidado", error=str(exc)[:150])
+        r.motivo = (r.motivo or "") + " · cursor del backfill NO invalidado"
+        return
+    if borradas:
+        log.info("cursor_backfill_invalidado", indices_restaurados=len(r.indices))
 
 
 def replicar(config: Config) -> ResumenReplica:

@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alertas.yml
+
+# Diferencia con `prometheus.yml` (dev): allí el exportador puede correr NATIVO en
+# la Mac y se le busca en `host.docker.internal:9108` además de en el contenedor.
+# En producción ese host NO existe —el compose de prod no monta `extra_hosts`— así
+# que el objetivo queda caído para siempre y la alerta `ExportadorCaido`
+# (`up{job="normalizacion"} == 0`) dispara sin parar por algo que no está roto.
+#
+# Una alerta que suena siempre es peor que no tener alerta: enseña a ignorarla, y
+# el día que el exportador se caiga de verdad nadie mirará.
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: normalizacion
+    static_configs:
+      - targets: ["exportador:9108"]

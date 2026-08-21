@@ -10,6 +10,7 @@ Cada comprobación devuelve un `Chequeo` con su nivel; la CLI sólo los pinta.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -99,12 +100,13 @@ def _chequear_opensearch(config: Config) -> list[Chequeo]:
         i for i, meta in alias.items()
         if meta.get("aliases", {}).get(config.indice_alias, {}).get("is_write_index")
     ]
+    # El conteo es informativo: si falla, el diagnóstico sigue — no es la salud.
     total = 0
-    try:
+    with contextlib.suppress(Exception):
         total = int(cliente.count(index=config.indice_alias)["count"])
-    except Exception:
-        pass
-    out.append(_ok("OpenSearch", f"alias '{config.indice_alias}': {len(alias)} índice(s), {total} docs"))
+    out.append(
+        _ok("OpenSearch", f"alias '{config.indice_alias}': {len(alias)} índice(s), {total} docs")
+    )
 
     # Sin `is_write_index` designado, la ISM no puede rotar y escribir al alias falla
     # en cuanto tiene más de un índice — que es justo lo que pasa al restaurar el
@@ -143,9 +145,8 @@ def _chequear_almacen(config: Config) -> list[Chequeo]:
             secret_key=config.minio_secret_key,
             secure=False,
         )
-        faltan = [
-            b for b in (config.minio_bucket, config.minio_bucket_frio) if not cliente.bucket_exists(b)
-        ]
+        buckets = (config.minio_bucket, config.minio_bucket_frio)
+        faltan = [b for b in buckets if not cliente.bucket_exists(b)]
     except Exception as exc:
         return [_error("MinIO inalcanzable", str(exc)[:160])]
     if faltan:

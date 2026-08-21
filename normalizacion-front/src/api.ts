@@ -338,6 +338,26 @@ export interface CambioRecursos {
   workers_max?: number;
 }
 
+// ⚙K16 — qué ES este nodo y qué sabe hacer.
+export interface Topologia {
+  perfil: "local" | "hibrido-ingesta" | "hibrido-servicio";
+  nodo_id: string;
+  capacidades: {
+    ingesta: boolean;
+    entidades: boolean;
+    publico: boolean;
+    archivo_maestro: boolean;
+    destino_eligible: boolean;
+  };
+}
+
+// El front OCULTA lo que este nodo no tiene, en vez de mostrarlo vacío: una
+// sección vacía se lee como "no hay datos", y sería mentira — esa capacidad vive
+// en otro nodo. Sin esto, las acciones responden 409 sin explicar por qué.
+export function topologia(): Promise<Topologia> {
+  return pedir<Topologia>("/sistema/topologia");
+}
+
 // Estado del gobernador: RAM libre, presión, política y workers sugeridos AHORA.
 export function recursosEstado(): Promise<EstadoRecursos> {
   return pedir<EstadoRecursos>("/sistema/recursos");

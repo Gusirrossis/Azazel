@@ -8,6 +8,7 @@ híbrido lo rompe, el build falla aquí antes de llegar a producción.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from normalizacion.core import despliegue
 from normalizacion.core.config import Config, PerillasDespliegue
@@ -60,14 +61,14 @@ class TestDefaults:
         assert not d.es_local()
 
     def test_perfil_desconocido_no_valida(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PerillasDespliegue(perfil="lo-que-sea")  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("malo", ["", "VPS-01", "vps 01", "-vps", "vps_01", "x" * 33])
     def test_nodo_id_invalido_no_valida(self, malo: str) -> None:
         """El nodo_id entra en identificadores PERMANENTES (disco_id, índice): se
         valida en el borde, no cuando ya contaminó la base."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PerillasDespliegue(nodo_id=malo)
 
 
@@ -226,7 +227,12 @@ class TestIndiceDeEscritura:
             (raiz / "deploy" / "mappings" / "archivos.json").read_text(encoding="utf-8")
         )["index_patterns"]
         assert patrones == ["archivos-*"]
-        for c in (_cfg(), _hibrido("hibrido-ingesta", "mac-01"), _hibrido("hibrido-servicio", "vps-01")):
+        configs = (
+            _cfg(),
+            _hibrido("hibrido-ingesta", "mac-01"),
+            _hibrido("hibrido-servicio", "vps-01"),
+        )
+        for c in configs:
             assert indice_escritura(c).startswith("archivos-")
 
     def test_el_sink_escribe_al_alias_no_a_un_indice_fijo(self) -> None:

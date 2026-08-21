@@ -44,10 +44,23 @@ until curl -fs http://localhost:9200 >/dev/null 2>&1; do sleep 2; printf "."; do
 
 # 3) Backend al día — cubre el caso "actualizamos la versión" (todo idempotente).
 cd "$ROOT/normalizacion-backend"
+
+# ⚙K16 — qué nodo es esta máquina. Sale del .env (NORM_DESPLIEGUE__PERFIL); si no
+# está, es `local`, que es el comportamiento de siempre. Se muestra porque un nodo
+# con el perfil equivocado NO falla: arranca perfectamente y hace lo que no le toca
+# (p. ej. resolver entidades que ya resuelve el otro nodo, pisándose en el AEB).
+PERFIL="$( (grep -E '^NORM_DESPLIEGUE__PERFIL=' .env 2>/dev/null || echo '=local') | tail -1 | cut -d= -f2 )"
+NODO="$( (grep -E '^NORM_DESPLIEGUE__NODO_ID=' .env 2>/dev/null || echo '=local') | tail -1 | cut -d= -f2 )"
+echo "• Perfil de despliegue: ${PERFIL:-local}  ·  nodo: ${NODO:-local}"
+
 echo "• Backend (dependencias, esquema, índice)…"
 uv sync --extra workers --extra api >/dev/null 2>&1 || true
 uv run alembic upgrade head >/dev/null 2>&1 || true
 uv run norm aplicar-indice  >/dev/null 2>&1 || true
+
+# Diagnóstico del nodo: stores alcanzables, seguridad, réplica. No aborta el
+# arranque —puede haber avisos legítimos— pero deja el estado a la vista.
+uv run norm doctor 2>&1 | sed 's/^/    /' || true
 
 # 4) API (en segundo plano; sobrevive aunque cierres esta ventana).
 if curl -fs http://localhost:8000/openapi.json >/dev/null 2>&1; then

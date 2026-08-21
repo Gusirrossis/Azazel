@@ -35,6 +35,37 @@ qué lo retiene: pendientes en flujo (espera/da más workers), COLD sin mover
 (`norm mover-frio`), INDEXADO sin verificar (`norm verificar`) o ERROR (ver el
 runbook de dead-letter). **JAMÁS desechar el disco físico con la puerta roja.**
 
+## Restaurar un respaldo de Postgres
+
+`deploy/respaldo.sh` vuelca la base a `minio://respaldos/` cada noche (timer
+`azazel-respaldo`), con 14 días de retención. **Probado**: el procedimiento de abajo
+se ejecutó y recuperó las 9 tablas con el esquema en su revisión.
+
+```bash
+cd /srv/azazel/normalizacion-backend
+set -a; . ./.env.prod; set +a
+C="docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod --profile datos"
+
+# 1) Ver qué hay
+$C exec -T minio sh -c 'mc alias set l http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD >/dev/null && mc ls l/respaldos'
+
+# 2) Restaurar SIEMPRE a una base nueva, nunca encima de la viva
+$C exec -T postgres psql -U "$NORM_PG_USER" -d postgres -c "CREATE DATABASE restore_check;"
+$C exec -T minio sh -c 'mc alias set l http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD >/dev/null && mc cat l/respaldos/ARCHIVO.sql.gz' \
+  | gunzip | $C exec -T postgres psql -U "$NORM_PG_USER" -d restore_check
+
+# 3) Comprobar antes de creerte nada
+$C exec -T postgres psql -U "$NORM_PG_USER" -d restore_check -tAc "SELECT version_num FROM alembic_version;"
+```
+
+**Lo que este respaldo NO es:** point-in-time recovery. Recupera hasta el último
+volcado, no hasta el segundo anterior al incidente. PITR real exige archivar WAL de
+forma continua. Se asume a sabiendas: la cola es idempotente y el catálogo
+incremental, así que perder unas horas significa **re-catalogar**, no perder datos.
+
+**Lo que NO se respalda aquí, a propósito:** el índice (se replica por snapshots y
+es reconstruible desde los blobs) y los blobs (su seguridad es el archivo maestro).
+
 ## ReplicaAtrasada
 
 Sólo aplica en despliegue repartido (⚙K16). **Qué está pasando:** el nodo sigue
