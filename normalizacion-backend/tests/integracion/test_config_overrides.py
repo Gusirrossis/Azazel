@@ -156,6 +156,13 @@ class TestApiTablero:
         cola.marcar_error(conexion, "id-00002", Estado.PENDIENTE, "agotado:almacen")
         conexion.commit()
 
+        # El tablero sirve un snapshot cacheado (TTL 15 s, global de proceso). Un
+        # test anterior en la misma sesión ya lo llenó con la base vacía —cada test
+        # la trunca—, así que sin invalidar se comprobaría ese cero, no lo que
+        # acabamos de escribir.
+        from normalizacion.ingesta.pipeline import invalidar_tablero
+
+        invalidar_tablero()
         cuerpo = cliente_api.get("/panel").json()
         assert cuerpo["totales"]["archivos"] == 4
         assert cuerpo["totales"]["errores"] == 1

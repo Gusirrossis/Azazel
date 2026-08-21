@@ -93,12 +93,26 @@ class TestPrecalificacion:
         assert tipos["inventario.xlsx"].endswith("spreadsheetml.sheet")
 
     def test_prioridad_es_el_puntaje(self, config: Config, disco_catalogado: Any) -> None:
-        """El claim del worker HOT procesará primero lo más útil (prioridad DESC)."""
+        """El claim del worker HOT procesará primero lo más útil (prioridad DESC).
+
+        `prioridad = max(puntaje, perilla_por_extension)`: por defecto es el puntaje,
+        salvo que la extensión tenga un orden propio declarado (decisión del usuario
+        2026-06-11: .txt → .7z → .rar → .zip, con valores >100 para ganarle al
+        puntaje, que va de 0 a 100). Este test exigía `prioridad == puntaje` a secas
+        y se quedó atrás cuando llegó ese orden."""
         precalificar_pendientes(config)
         filas = disco_catalogado.execute(
-            "SELECT puntaje, prioridad FROM archivos WHERE ruta_decision = 'HOT'"
+            "SELECT extension, puntaje, prioridad FROM archivos WHERE ruta_decision = 'HOT'"
         ).fetchall()
-        assert filas and all(p == pr for p, pr in filas)
+        assert filas
+        for extension, puntaje, prioridad in filas:
+            por_extension = config.filtro.prioridad_extensiones.get(
+                (extension or "").lower(), 0
+            )
+            assert prioridad == max(puntaje, por_extension), (
+                f"{extension}: prioridad={prioridad}, puntaje={puntaje},"
+                f" por_extension={por_extension}"
+            )
 
     def test_decision_auditable(self, config: Config, disco_catalogado: Any) -> None:
         """Toda fila decidida guarda puntaje + motivo + versión del filtro + señales."""

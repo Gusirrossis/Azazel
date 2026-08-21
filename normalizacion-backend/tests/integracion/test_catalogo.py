@@ -67,8 +67,15 @@ class TestCatalogo:
                 " WHERE nombre IN ('cajas.zip', 'bomba.zip', 'ventas_2023.csv')"
             ).fetchall()
         )
-        assert filas["cajas.zip"] == config.filtro.prioridad_inicial_contenedores
-        assert filas["bomba.zip"] == config.filtro.prioridad_inicial_contenedores
+        # La perilla POR EXTENSIÓN manda sobre el hint genérico de contenedor
+        # (decisión del usuario 2026-06-11: .txt → .7z → .rar → .zip). Así lo
+        # documenta `prioridad_para_extension`: "perilla por extensión > hint de
+        # contenedor > 0". Este test comprobaba el hint genérico (50) y se quedó
+        # atrás cuando llegó el orden por extensión.
+        prioridad_zip = config.filtro.prioridad_extensiones[".zip"]
+        assert prioridad_zip > config.filtro.prioridad_inicial_contenedores
+        assert filas["cajas.zip"] == prioridad_zip
+        assert filas["bomba.zip"] == prioridad_zip
         assert filas["ventas_2023.csv"] == 0  # los demás esperan su turno
 
     def test_archivo_nuevo_en_rescan_si_entra(

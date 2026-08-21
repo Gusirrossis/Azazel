@@ -674,6 +674,18 @@ _tablero_lock = threading.Lock()
 _tablero_cache: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
 
 
+def invalidar_tablero() -> None:
+    """Descarta el snapshot cacheado del tablero: la próxima lectura recalcula.
+
+    La caché es un global de proceso con TTL de 15 s. En producción eso es lo
+    deseado (el tablero agrega millones de filas y no puede recomputarse en cada
+    poll), pero para quien escribe datos y necesita verlos YA —los tests, o una
+    acción del operador que deba reflejarse al instante— hace falta una salida
+    explícita. Sin ella, un cambio recién hecho parece no haber ocurrido."""
+    with _tablero_lock:
+        _tablero_cache.clear()
+
+
 def tablero(config: Config, *, umbral_cold: int, umbral_hot: int) -> dict[str, Any]:
     """Para GET /panel: agregados del tablero, cacheados por TTL corto (single-flight).
 

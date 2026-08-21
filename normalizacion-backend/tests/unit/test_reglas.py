@@ -106,8 +106,23 @@ class TestDeteccionT1:
         assert detectar_tipo(b"abc\x00def" * 100).tipo == "application/octet-stream"
 
     def test_texto_queda_para_t2(self) -> None:
+        """El texto plano NO se cierra como binario opaco en T1: sigue a T2.
+
+        El resultado exacto depende de si libmagic está instalado —es una capa
+        OPCIONAL de T1— y ambas ramas son correctas:
+          · sin libmagic (Mac de dev): `tipo=None`, detector "texto" → decide T2.
+          · con libmagic (Linux, imagen de producción): lo tipifica como `text/*`,
+            que es mejor información y sigue rutando como texto.
+        Antes se exigía sólo la primera, así que el test pasaba o fallaba según la
+        máquina — medía el entorno, no la conducta."""
+        from normalizacion.ingesta.precalificacion.reglas import _LIBMAGIC
+
         d = detectar_tipo(CSV)
-        assert d.tipo is None and d.detector == "texto"
+        if _LIBMAGIC is None:
+            assert d.tipo is None and d.detector == "texto"
+        else:
+            assert d.tipo is not None and d.tipo.startswith("text/")
+        assert not d.es_contenedor
 
 
 class TestSenalesT2:

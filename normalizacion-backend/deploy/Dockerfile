@@ -2,9 +2,16 @@
 # Incluye libmagic → T1 con su capa extra de detección activa, igual que en producción.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# libmagic → capa extra de T1; unar → backend de rarfile (exploración de RAR)
+# libmagic → capa extra de T1.
+#
+# Los RAR necesitan DOS binarios y sólo estaba uno: se LISTAN con 7-Zip (`7zz`) y
+# se EXTRAEN con `unar` (ver `contenedores.py`). Sin `7zz`, `_7zz_bin()` lanza
+# FileNotFoundError y todo RAR acaba preservado íntegro sin explorar
+# (`formato_no_soportado`): no se pierde nada, pero su contenido nunca se indexa y
+# el motivo real —falta una herramienta— queda enterrado en una bandera.
+# En Debian bookworm el paquete `7zip` provee `7zz`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libmagic1 unar \
+    && apt-get install -y --no-install-recommends libmagic1 unar 7zip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

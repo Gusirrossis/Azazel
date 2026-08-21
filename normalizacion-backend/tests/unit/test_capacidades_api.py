@@ -1,6 +1,6 @@
 """⚙K16 — contrato de capacidades en los bordes de la API.
 
-La tabla perfil × ruta vive como DATO, no como un `if` repetido en cada test: si
+La tabla perfil x ruta vive como DATO, no como un `if` repetido en cada test: si
 mañana se añade un perfil, se añade una fila y el test dice qué falta cablear.
 
 Estos tests construyen la app SIN tocar Postgres ni OpenSearch: sólo comprueban

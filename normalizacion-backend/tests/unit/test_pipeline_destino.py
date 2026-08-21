@@ -32,8 +32,25 @@ class TestResolverWorkers:
         assert resolver_workers(config_perilla, 2) == 2  # el front manda
 
     def test_acotado_a_limites_sanos(self) -> None:
+        """El tope duro (64) sólo se puede observar en modo `fijo`.
+
+        En `adaptativo` —el default desde K15— lo pedido es un TECHO, no una orden:
+        el gobernador acota por núcleos y por RAM libre, así que pedir 999 devuelve
+        `núcleos − 2` en una máquina normal. Este test pedía 999 y exigía 64, y
+        pasaba sólo en un equipo con 66+ núcleos; en cualquier otro medía el
+        hardware del runner, no el tope."""
+        fijo = Config(_env_file=None, recursos={"modo": "fijo"})  # type: ignore[arg-type]
+        assert resolver_workers(fijo, 999) == 64
+        assert resolver_workers(fijo, 1) == 1
+
+    def test_adaptativo_jamas_supera_los_nucleos(self) -> None:
+        """La otra mitad del contrato: por muchos que pida el front, el gobernador
+        no compromete más procesos de los que la máquina puede sostener."""
+        import os
+
         config = Config(_env_file=None)
-        assert resolver_workers(config, 999) == 64
+        nucleos = max(1, (os.cpu_count() or 4) - 2)
+        assert 1 <= resolver_workers(config, 999) <= nucleos
         assert resolver_workers(config, 1) == 1
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 RAIZ = Path(__file__).resolve().parents[2]
 
@@ -65,7 +65,7 @@ class TestComposeProduccion:
     en un VPS con IP pública es el índice y la base enteros abiertos a internet.
     Estos tests impiden que ese archivo, o uno parecido, acabe en producción."""
 
-    PUBLICOS_PERMITIDOS = {"caddy"}
+    PUBLICOS_PERMITIDOS: ClassVar[set[str]] = {"caddy"}
 
     def test_solo_caddy_publica_puertos(self) -> None:
         servicios = _compose("docker-compose.prod.yml")["services"]
