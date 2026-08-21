@@ -14,7 +14,17 @@ from normalizacion.core.config import Config, PerillasDespliegue
 
 
 def _cfg(**kwargs: object) -> Config:
-    """Config por defecto (sin .env del repo), opcionalmente con despliegue propio."""
+    """Config con el perfil LOCAL fijado EXPLÍCITAMENTE.
+
+    `Config(_env_file=None)` desactiva el archivo .env pero SIGUE leyendo las
+    variables de entorno. Como la CI corre esta suite en los tres perfiles
+    (NORM_DESPLIEGUE__PERFIL en el entorno), heredarlo haría que los tests que
+    dicen comprobar `local` comprobaran otra cosa — y pasarían o fallarían según
+    quién los lance. `PerillasDespliegue()` es un BaseModel normal, no lee entorno,
+    así que fija local/local pase lo que pase.
+
+    El default del CÓDIGO se verifica aparte, en `TestDefaults`."""
+    kwargs.setdefault("despliegue", PerillasDespliegue())
     return Config(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 
@@ -24,16 +34,27 @@ def _hibrido(perfil: str, nodo: str) -> Config:
 
 class TestDefaults:
     def test_el_default_es_local(self) -> None:
-        """Nadie que no lo pida explícitamente entra en modo híbrido."""
-        d = _cfg().despliegue
+        """Nadie que no lo pida explícitamente entra en modo híbrido.
+
+        Se comprueba sobre `PerillasDespliegue()` y no sobre `Config()`: el default
+        que importa es el del CÓDIGO. Config lee el entorno, y la CI lanza esta
+        suite con NORM_DESPLIEGUE__PERFIL puesto — mirarlo ahí mediría el entorno
+        del runner, no el default."""
+        d = PerillasDespliegue()
         assert d.perfil == "local"
         assert d.nodo_id == "local"
         assert d.es_local()
 
     def test_perfil_por_entorno(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """La topología se fija por entorno (NO por `config_overrides`: cambiarla con
+        procesos vivos no es coherente).
+
+        Construye `Config` directamente en vez de usar `_cfg()`: ese helper fija el
+        perfil local a propósito, y aquí lo que se comprueba es justo lo contrario
+        —que el entorno mande—."""
         monkeypatch.setenv("NORM_DESPLIEGUE__PERFIL", "hibrido-servicio")
         monkeypatch.setenv("NORM_DESPLIEGUE__NODO_ID", "vps-01")
-        d = _cfg().despliegue
+        d = Config(_env_file=None).despliegue
         assert d.perfil == "hibrido-servicio"
         assert d.nodo_id == "vps-01"
         assert not d.es_local()

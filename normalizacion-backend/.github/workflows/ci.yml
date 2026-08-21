@@ -6,6 +6,38 @@ on:
   pull_request:
 
 jobs:
+  # ⚙K16 — la suite corre en los TRES perfiles de despliegue.
+  #
+  # Es lo que hace sostenible tener dos modos de operación: `local` es la
+  # referencia, y si un cambio pensado para el híbrido altera un resultado de
+  # `local`, el build falla aquí en vez de descubrirse en producción semanas
+  # después. Sin esta matriz, el modo local deja de estar probado en cuanto
+  # alguien toca el híbrido.
+  perfiles:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - perfil: local
+            nodo_id: local
+          - perfil: hibrido-ingesta
+            nodo_id: mac-01
+          - perfil: hibrido-servicio
+            nodo_id: vps-01
+    env:
+      NORM_DESPLIEGUE__PERFIL: ${{ matrix.perfil }}
+      NORM_DESPLIEGUE__NODO_ID: ${{ matrix.nodo_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sincronizar entorno
+        run: uv sync --group dev --extra workers --extra api
+      - name: Tests unitarios (perfil ${{ matrix.perfil }})
+        run: uv run pytest -m "not integracion"
+
   calidad:
     runs-on: ubuntu-latest
     steps:
@@ -26,9 +58,6 @@ jobs:
 
       - name: Tipos (mypy --strict)
         run: uv run mypy
-
-      - name: Tests unitarios
-        run: uv run pytest -m "not integracion"
 
       - name: Licencias (riesgo L1 — sin GPL)
         run: >
