@@ -155,21 +155,38 @@ class SinkOpenSearch:
 # ------------------------------------------------------------------ administración
 
 
+def _ism_disponible(cliente: Any) -> bool:
+    """¿El clúster trae el plugin ISM? El build de Homebrew de la Mac de dev NO lo
+    trae. Sin ISM, `index.plugins.index_state_management.rollover_alias` es un
+    setting DESCONOCIDO y OpenSearch rechaza la plantilla/creación entera (400
+    settings_exception). Como sin ISM tampoco hay rotación, el ajuste se omite."""
+    try:
+        return any(
+            "index-management" in (p.get("component") or "")
+            for p in cliente.cat.plugins(format="json")
+        )
+    except Exception:
+        return False
+
+
 def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
     """Aplica el index template + política ISM y crea el índice inicial con su alias.
 
     Idempotente: re-aplicar no rompe nada (la política existente se respeta)."""
     cliente = crear_cliente(config)
+    ism = _ism_disponible(cliente)
 
     template = json.loads((ruta_deploy / "mappings" / "archivos.json").read_text(encoding="utf-8"))
     # `rollover_alias` NO puede vivir en el JSON: el alias es configurable
     # (`indice_alias`) y los tests usan uno propio. Se inyecta aquí para que los
     # índices que CREE la ISM al rotar lo hereden — sin él, ISM no sabe sobre qué
-    # alias rotar y la política queda muerta tras la primera rotación.
+    # alias rotar y la política queda muerta tras la primera rotación. Sólo CON ISM:
+    # sin el plugin el setting es desconocido y tumba el put_index_template entero.
     plantilla = template.setdefault("template", {})
-    plantilla.setdefault("settings", {})[
-        "index.plugins.index_state_management.rollover_alias"
-    ] = config.indice_alias
+    if ism:
+        plantilla.setdefault("settings", {})[
+            "index.plugins.index_state_management.rollover_alias"
+        ] = config.indice_alias
     cliente.indices.put_index_template(name="archivos", body=template)
 
     politica = json.loads(
@@ -194,19 +211,18 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
 
     indice = indice_escritura(config)
     if not cliente.indices.exists(index=indice):
-        cliente.indices.create(
-            index=indice,
-            body={
-                # `is_write_index` es lo que convierte al alias en destino escribible
-                # y lo que la ISM necesita para poder rotar. Sin él, escribir al
-                # alias falla en cuanto tiene más de un índice — que es exactamente
-                # lo que pasa en híbrido al restaurar el snapshot del otro nodo.
-                "aliases": {config.indice_alias: {"is_write_index": True}},
-                "settings": {
-                    "index.plugins.index_state_management.rollover_alias": config.indice_alias
-                },
-            },
-        )
+        cuerpo: dict[str, Any] = {
+            # `is_write_index` es lo que convierte al alias en destino escribible
+            # y lo que la ISM necesita para poder rotar. Sin él, escribir al
+            # alias falla en cuanto tiene más de un índice — que es exactamente
+            # lo que pasa en híbrido al restaurar el snapshot del otro nodo.
+            "aliases": {config.indice_alias: {"is_write_index": True}},
+        }
+        if ism:
+            cuerpo["settings"] = {
+                "index.plugins.index_state_management.rollover_alias": config.indice_alias
+            }
+        cliente.indices.create(index=indice, body=cuerpo)
     log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
 
 
