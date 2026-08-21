@@ -36,6 +36,50 @@ services:
       POSTGRES_USER: ${NORM_PG_USER:?falta NORM_PG_USER}
       POSTGRES_PASSWORD: ${NORM_PG_PASSWORD:?falta NORM_PG_PASSWORD}
       POSTGRES_DB: ${NORM_PG_DB:-normalizacion}
+    # La imagen arranca con los valores de FÁBRICA: shared_buffers=128MB y
+    # random_page_cost=4 (que asume discos giratorios). Para el plano de control
+    # —la tabla `archivos`, con millones de filas y UPDATE constante— eso es dejar
+    # la máquina parada. Estos valores dimensionan Postgres para SU parte del
+    # servidor, no para todo: OpenSearch necesita la suya y los workers la suya.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${NORM_PG_SHARED_BUFFERS:-8GB}
+      # No reserva memoria: le dice al planificador cuánta caché de SO puede
+      # suponer. Generoso a propósito.
+      - -c
+      - effective_cache_size=${NORM_PG_CACHE_SIZE:-20GB}
+      # Por conexión y por operación de orden: 32MB × ~40 conexiones reales
+      # (2 por worker + API + exportador) es un techo sano.
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=2GB
+      # NVMe: buscar en disco cuesta casi lo mismo que leer secuencial. Con el 4
+      # por defecto el planificador evita índices que aquí sí compensan.
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - wal_buffers=64MB
+      - -c
+      - checkpoint_completion_target=0.9
+      # `archivos` es una tabla-cola: cada fila se actualiza varias veces en su
+      # ciclo de vida. Con el 0.2 por defecto, autovacuum espera a que el 20% esté
+      # muerto antes de actuar y la tabla se infla — el propio worker ya evita
+      # sostener transacciones largas por esto mismo.
+      - -c
+      - autovacuum_vacuum_scale_factor=0.05
+      - -c
+      - autovacuum_analyze_scale_factor=0.02
+      - -c
+      - autovacuum_naptime=30s
+    # Las consultas paralelas usan memoria compartida; los 64MB por defecto de
+    # Docker se quedan cortos y degradan a plan serie sin avisar.
+    shm_size: 2gb
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: [interna]
@@ -71,8 +115,11 @@ services:
       # DISABLE_SECURITY_PLUGIN=true). Sin él, cualquiera con acceso de red al
       # 9200 lee y borra el índice entero sin credencial.
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${NORM_OS_ADMIN_PASSWORD:?falta NORM_OS_ADMIN_PASSWORD}
-      # Heap: ~1/2 de la RAM del contenedor; el resto queda para el page cache de
-      # Lucene, que es quien de verdad sirve las búsquedas.
+      # Heap: nunca por encima de ~31g (más allá, la JVM pierde la compresión de
+      # punteros y el heap RINDE MENOS aunque sea mayor). El resto de la RAM no se
+      # desperdicia: la usa el page cache del SO, que es quien de verdad sirve las
+      # búsquedas de Lucene. Por eso la regla es "la mitad al heap, la mitad al SO"
+      # y no "todo lo que quepa".
       OPENSEARCH_JAVA_OPTS: -Xms${NORM_OS_HEAP:-4g} -Xmx${NORM_OS_HEAP:-4g}
     ulimits:
       memlock: { soft: -1, hard: -1 }
@@ -132,6 +179,12 @@ services:
       NORM_API_CARPETA_RAIZ: /datos
       # Sin volumen de destino a propósito: el nodo de servicio no ofrece selector.
       NORM_RECURSOS__POLITICA: ${NORM_RECURSOS__POLITICA:-maximo}
+      # ⚙K11 — rendimiento: por debajo de este umbral el worker mantiene el archivo
+      # en RAM; por encima lo vuelca a disco temporal. Con los 64 KB por defecto,
+      # casi cualquier archivo toca disco DOS veces (se escribe el spool y se
+      # relee para extraer). 6 workers x 8 MB son 48 MB: nada aquí, y el I/O es
+      # justo el cuello del sistema.
+      NORM_WORKER__UMBRAL_MEMORIA_BYTES: ${NORM_WORKER__UMBRAL_MEMORIA_BYTES:-8388608}
     volumes:
       - ${NORM_CARPETA_DATOS:?falta NORM_CARPETA_DATOS}:/datos:ro
     networks: [interna]
