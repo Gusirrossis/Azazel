@@ -11,6 +11,7 @@ import ExploradorCola from "./componentes/ExploradorCola";
 import Filtro from "./componentes/Filtro";
 import Entidades from "./componentes/Entidades";
 import ClavesBusqueda from "./componentes/ClavesBusqueda";
+import ResumenNodo from "./componentes/ResumenNodo";
 
 type Pestana =
   | "inicio" | "busqueda" | "entidades" | "corridas" | "archivos" | "errores" | "filtro" | "acceso";
@@ -80,6 +81,7 @@ export default function App() {
       {/* Inicio: el tablero de control + la barra de ingesta (lanzar/ver corrida) */}
       {pestana === "inicio" && (
         <>
+          <ResumenNodo />
           <Ingesta onIrACorridas={() => setPestana("corridas")} />
           <Tablero onIrA={(destino) => setPestana(destino)} />
         </>
