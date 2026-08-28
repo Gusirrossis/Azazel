@@ -97,6 +97,26 @@ class TestCapacidades:
         assert not t.es_archivo_maestro
         assert not t.destino_eligible  # replica blobs: necesita un almacén único
 
+    def test_online_lo_enciende_todo_incluido_publico(self) -> None:
+        """El nodo único todo-en-uno: `hibrido-servicio` + archivo maestro. Al ser su
+        propio maestro no depende de nadie, así que su puerta puede dar verde y
+        reclamar el espacio del origen."""
+        t = despliegue.de_config(_hibrido("online", "vps-01"))
+        assert t.corre_ingesta
+        assert t.corre_entidades
+        assert t.sirve_publico
+        assert t.es_archivo_maestro
+        assert not t.destino_eligible  # almacén MinIO único: reindexable, no carpetas sueltas
+
+    def test_online_escribe_en_el_indice_del_nodo_como_el_de_servicio(self) -> None:
+        """Migrar vps-01 de `hibrido-servicio` a `online` NO cambia el índice de
+        escritura (`archivos-vps-01-000001`): el corpus ya indexado sigue siendo
+        direccionable sin reindexar."""
+        from normalizacion.core.indexador.opensearch import indice_escritura
+
+        assert indice_escritura(_hibrido("online", "vps-01")) == "archivos-vps-01-000001"
+        assert despliegue.exige_disco_id_explicito(_hibrido("online", "vps-01"))
+
     def test_un_solo_resolvedor_de_entidades(self) -> None:
         """Dos nodos resolviendo producirían conjuntos incompletos y distintos que
         se pisarían en el AEB (el cable manda modo_merge='reemplazar')."""
@@ -118,7 +138,7 @@ class TestCapacidades:
     def test_quien_no_es_maestro_no_elige_destino(self) -> None:
         """Invariante estructural: el nodo que replica blobs hacia fuera necesita un
         almacén único y direccionable, así que no puede tener el selector."""
-        for perfil in ("local", "hibrido-ingesta", "hibrido-servicio"):
+        for perfil in ("local", "hibrido-ingesta", "hibrido-servicio", "online"):
             t = despliegue.derivar(PerillasDespliegue(perfil=perfil))  # type: ignore[arg-type]
             if not t.es_archivo_maestro:
                 assert not t.destino_eligible, perfil

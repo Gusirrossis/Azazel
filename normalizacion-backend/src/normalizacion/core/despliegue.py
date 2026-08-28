@@ -1,11 +1,15 @@
 """⚙ K16 — topología del despliegue: qué SABE HACER este nodo.
 
-Azazel corre de dos formas con la MISMA base de código:
+Azazel corre de varias formas con la MISMA base de código:
 
   · `local` — todo en una máquina. El default, y byte a byte el sistema de siempre.
   · híbrido — dos nodos que ambos ingieren, pero cosas distintas:
       `hibrido-ingesta`  (mac-01): discos físicos desechables · archivo maestro
       `hibrido-servicio` (vps-01): fuentes de red · entidades · API pública
+  · `online` — un solo VPS que lo hace TODO y está expuesto: ingiere lo que cae en
+      su carpeta, resuelve entidades, sirve al público Y es su propio archivo
+      maestro. Es `hibrido-servicio` + `es_archivo_maestro`: como no replica a
+      nadie, su puerta da verde por sí sola y puede reclamar el espacio del origen.
 
 **La regla que sostiene el diseño:** los sitios de uso NUNCA preguntan por el
 perfil, preguntan por la CAPACIDAD. Este módulo es el único lugar del código donde
@@ -62,6 +66,13 @@ _MATRIZ: dict[str, tuple[bool, bool, bool, bool, bool]] = {
     "local": (True, True, False, True, True),
     "hibrido-ingesta": (True, False, False, True, True),
     "hibrido-servicio": (True, True, True, False, False),
+    # Nodo único, expuesto y todo-en-uno. Enciende TODO. `destino_eligible=False`
+    # a propósito: el almacén es un MinIO fijo y direccionable —no carpetas sueltas
+    # por corrida— para que el vigilante ingiera sin elegir destino y para que un
+    # reindex-desde-almacén a futuro tenga un único sitio de dónde leer. Es el único
+    # perfil con maestro=True y destino=False: el invariante prohíbe (no maestro ∧
+    # destino), no (maestro ∧ no destino).
+    "online": (True, True, True, True, False),
 }
 
 

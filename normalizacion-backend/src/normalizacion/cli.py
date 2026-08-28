@@ -451,6 +451,46 @@ def pipeline(
 
 
 @app.command()
+def vigilante(
+    carpeta: str | None = typer.Option(
+        None, help="Carpeta raíz a vigilar (default: NORM_API_CARPETA_RAIZ, p.ej. /datos)"
+    ),
+    intervalo: float = typer.Option(30.0, help="Segundos entre sondeos"),
+    quiescencia: float = typer.Option(
+        60.0, help="Segundos sin escrituras antes de ingerir una fuente (lote a medio copiar)"
+    ),
+    sentinela: str | None = typer.Option(
+        None, help="Solo procesar fuentes que contengan este archivo (p.ej. .listo)"
+    ),
+    reclamar: bool = typer.Option(
+        False, "--reclamar",
+        help="Borrar el origen tras puerta verde (exige montaje RW y nodo maestro)",
+    ),
+    workers: int | None = typer.Option(None, "--workers", min=1, max=64),
+) -> None:
+    """Ingesta AUTOMÁTICA: vigila una carpeta y normaliza lo que va cayendo.
+
+    Una subcarpeta = una fuente = un disco. Serializa (una corrida a la vez) y va en
+    round-robin entre fuentes. Pensado para el perfil `online`: los otros VPS vuelcan
+    a `/datos/<su-nombre>` y esto los procesa a máxima capacidad sin intervención."""
+    from normalizacion.core import despliegue
+    from normalizacion.ingesta.vigilante import correr_vigilante
+
+    config = cargar_config()
+    _exigir(config, despliegue.de_config(config).corre_ingesta, "ingiere")
+    configurar_logging()
+    correr_vigilante(
+        config,
+        carpeta,
+        intervalo_s=intervalo,
+        quiescencia_s=quiescencia,
+        sentinela=sentinela,
+        reclamar=reclamar,
+        workers=workers,
+    )
+
+
+@app.command()
 def doctor() -> None:
     """¿Está bien configurado ESTE nodo? Perfil, stores, seguridad y réplica.
 

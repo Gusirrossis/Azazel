@@ -300,9 +300,14 @@ class PerillasRecursos(BaseModel):
 class PerillasDespliegue(BaseModel):
     """⚙ K16 — QUÉ ES este nodo dentro de la topología. NO es una conducta.
 
-    Azazel corre en dos formas: TODO en una máquina (`local`, el default y el
-    comportamiento de siempre) o repartido entre un nodo que ingiere discos físicos
-    y otro que ingiere fuentes de red, resuelve entidades y sirve al público.
+    Azazel corre en varias formas con la MISMA base de código:
+      · `local` — TODO en una máquina, sin exponer (el default y el de siempre).
+      · híbrido — un nodo que ingiere discos físicos (`hibrido-ingesta`) y otro que
+        ingiere fuentes de red, resuelve entidades y sirve al público
+        (`hibrido-servicio`).
+      · `online` — TODO en un solo VPS y EXPUESTO: ingiere lo que cae en su carpeta,
+        resuelve entidades, sirve al público Y es su propio archivo maestro (no
+        replica a nadie, así que su puerta da verde sin depender de otro nodo).
 
     A diferencia de las demás perillas, esta NO es editable en caliente: cambiar la
     política de RAM entre corridas es coherente, cambiar la topología con procesos
@@ -313,7 +318,7 @@ class PerillasDespliegue(BaseModel):
     (workers en varias máquinas, Fase 7) es añadir un perfil, no tocar el código.
     """
 
-    perfil: Literal["local", "hibrido-ingesta", "hibrido-servicio"] = "local"
+    perfil: Literal["local", "hibrido-ingesta", "hibrido-servicio", "online"] = "local"
 
     # Namespace de este nodo. Entra en el `disco_id` de los discos NUEVOS y en el
     # nombre del índice de escritura, para que dos nodos no colisionen. "local"

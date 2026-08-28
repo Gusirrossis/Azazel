@@ -185,6 +185,16 @@ services:
       # relee para extraer). 6 workers x 8 MB son 48 MB: nada aquí, y el I/O es
       # justo el cuello del sistema.
       NORM_WORKER__UMBRAL_MEMORIA_BYTES: ${NORM_WORKER__UMBRAL_MEMORIA_BYTES:-8388608}
+      # Blindaje: nº de workers acotado y FIJO. El gobernador adaptativo mira la RAM
+      # del HOST (no el mem_limit del contenedor), así que sobredimensionaba.
+      NORM_RECURSOS__MODO: ${NORM_RECURSOS__MODO:-fijo}
+      NORM_WORKER__PROCESOS: ${NORM_WORKER__PROCESOS:-4}
+    # Tope DURO de memoria del contenedor: si una extracción se dispara (bomba de
+    # descompresión, archivo que se carga entero en RAM), el cgroup mata a ESE proceso
+    # al llegar al tope y el box —OpenSearch, Postgres, SSH— sigue vivo. memswap=mem:
+    # el contenedor no roba swap. Es la garantía de "no vuelve a tumbar la máquina".
+    mem_limit: 6g
+    memswap_limit: 6g
     volumes:
       - ${NORM_CARPETA_DATOS:?falta NORM_CARPETA_DATOS}:/datos:ro
     networks: [interna]
@@ -212,7 +222,68 @@ services:
     networks: [interna]
     depends_on:
       postgres: { condition: service_healthy }
+    mem_limit: 512m
+    memswap_limit: 512m
     command: norm exportador --puerto 9108 --intervalo 15
+
+  # ⚙K16 — INGESTA AUTOMÁTICA (opcional). Vigila /datos/<fuente> y normaliza lo que
+  # cae, sin intervención. DESACTIVADO por defecto: vive en su propio profile
+  # `vigilante`, así que el `up` normal (datos/app/obs) y un reboot NO lo arrancan —
+  # la ingesta es manual (API/CLI). Para reactivarlo (ya con mem_limit y anti-bomba):
+  #   docker compose ... --profile vigilante up -d vigilante
+  # Aun así lleva sus topes de memoria, por si se enciende.
+  vigilante:
+    <<: *comun
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    profiles: ["vigilante"]
+    environment:
+      NORM_DESPLIEGUE__PERFIL: ${NORM_DESPLIEGUE__PERFIL}
+      NORM_DESPLIEGUE__NODO_ID: ${NORM_DESPLIEGUE__NODO_ID}
+      NORM_POSTGRES_DSN: postgresql://${NORM_PG_USER}:${NORM_PG_PASSWORD}@postgres:5432/${NORM_PG_DB:-normalizacion}
+      NORM_OPENSEARCH_URL: ${NORM_OPENSEARCH_URL:-https://opensearch:9200}
+      NORM_OPENSEARCH_USUARIO: admin
+      NORM_OPENSEARCH_PASSWORD: ${NORM_OS_ADMIN_PASSWORD}
+      NORM_MINIO_ENDPOINT: minio:9000
+      NORM_MINIO_ACCESS_KEY: ${NORM_MINIO_ROOT_USER}
+      NORM_MINIO_SECRET_KEY: ${NORM_MINIO_ROOT_PASSWORD}
+      NORM_API_CARPETA_RAIZ: /datos
+      NORM_RECURSOS__POLITICA: ${NORM_RECURSOS__POLITICA:-maximo}
+      NORM_WORKER__UMBRAL_MEMORIA_BYTES: ${NORM_WORKER__UMBRAL_MEMORIA_BYTES:-8388608}
+      # Blindaje: workers acotados y FIJOS (el gobernador mira la RAM del host, no el
+      # mem_limit del contenedor, así que sobredimensionaba y disparaba el OOM global).
+      NORM_RECURSOS__MODO: ${NORM_RECURSOS__MODO:-fijo}
+      NORM_WORKER__PROCESOS: ${NORM_WORKER__PROCESOS:-4}
+      # Knobs del vigilante (el shell del contenedor arma los flags opcionales).
+      NORM_VIGILANTE_INTERVALO: ${NORM_VIGILANTE_INTERVALO:-30}
+      NORM_VIGILANTE_QUIESCENCIA: ${NORM_VIGILANTE_QUIESCENCIA:-60}
+      NORM_VIGILANTE_SENTINELA: ${NORM_VIGILANTE_SENTINELA:-}
+      NORM_VIGILANTE_RECLAMAR: ${NORM_VIGILANTE_RECLAMAR:-}
+    # Tope DURO de memoria: aquí nacen los procesos worker de extracción. Si una
+    # corrida se dispara (bomba de descompresión, archivo cargado entero en RAM), el
+    # cgroup mata a ESE proceso al tope y el box sigue vivo. memswap=mem: sin swap
+    # para el contenedor. Garantía de que la ingesta no vuelve a tumbar la máquina.
+    mem_limit: 10g
+    memswap_limit: 10g
+    volumes:
+      # RW (NO :ro): el vigilante es el ÚNICO que puede reclamar el origen —borrar el
+      # lote ya normalizado— y solo tras puerta verde + firma estable. La API lo
+      # sigue montando :ro. El almacén (MinIO) nunca se toca: retiene el 100%.
+      - ${NORM_CARPETA_DATOS:?falta NORM_CARPETA_DATOS}:/datos:rw
+    networks: [interna]
+    depends_on:
+      # A través de la API: cuando está healthy, `alembic upgrade head` y
+      # `norm aplicar-indice` ya corrieron. El vigilante no re-migra.
+      api: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - >
+        norm vigilante --intervalo "$$NORM_VIGILANTE_INTERVALO"
+        --quiescencia "$$NORM_VIGILANTE_QUIESCENCIA"
+        $${NORM_VIGILANTE_SENTINELA:+--sentinela $$NORM_VIGILANTE_SENTINELA}
+        $${NORM_VIGILANTE_RECLAMAR:+--reclamar}
 
   front:
     <<: *comun
