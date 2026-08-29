@@ -204,8 +204,17 @@ class TestPrecalificarArchivo:
         assert r.ruta is RutaDecision.COLD
         assert r.motivo == "fuera_de_lista_blanca"
 
-    def test_imagen_va_a_hot_con_ocr_activo(self, tmp_path: Path) -> None:
-        """Con `ocr_activo`, una imagen se rutea DIRECTO a HOT (para extraerle texto)."""
+    def test_imagen_ilegible_va_a_hot_con_ocr_activo(self, tmp_path: Path) -> None:
+        """Con `ocr_activo`, una imagen que no se puede clasificar va a HOT.
+
+        Estos bytes son basura con firma JPEG: Pillow no los abre, así que el
+        clasificador (Fase 3) no puede decidir. Ante la duda, HOT — recall primero:
+        gastar OCR de más cuesta segundos, mandar un documento a frío por error lo
+        deja fuera de toda consulta.
+
+        El caso de una imagen que SÍ se puede clasificar está en `test_ocr_politica`,
+        que construye PNGs válidos.
+        """
         ruta = tmp_path / "escaneo.jpg"
         ruta.write_bytes(b"\xff\xd8\xff\xe0" + random.Random(1).randbytes(5000))
         r = precalificar_archivo(
@@ -217,8 +226,24 @@ class TestPrecalificarArchivo:
             tamano=ruta.stat().st_size,
         )
         assert r.ruta is RutaDecision.HOT
-        assert r.motivo == "imagen_ocr"
+        assert r.motivo.startswith("imagen_ocr")
         assert r.senales.get("ocr") is True
+
+    def test_imagen_sigue_yendo_a_frio_sin_ocr(self, tmp_path: Path) -> None:
+        """Sin `ocr_activo`, `image/*` no está en la lista blanca y va a frío. Es el
+        estado por defecto, y el motivo por el que hoy no hay ni una imagen indexada."""
+        ruta = tmp_path / "foto.jpg"
+        ruta.write_bytes(b"\xff\xd8\xff\xe0" + random.Random(1).randbytes(5000))
+        r = precalificar_archivo(
+            PerillasFiltro(ocr_activo=False),
+            ruta,
+            nombre="foto.jpg",
+            extension=".jpg",
+            ruta_relativa="fotos/foto.jpg",
+            tamano=ruta.stat().st_size,
+        )
+        assert r.ruta is RutaDecision.COLD
+        assert r.motivo == "fuera_de_lista_blanca"
 
     def test_modo_lista_negra_legado(self, tmp_path: Path) -> None:
         """El modo negro (legacy) sigue disponible por configuración."""

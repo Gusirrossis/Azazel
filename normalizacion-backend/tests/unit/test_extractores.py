@@ -50,7 +50,13 @@ class TestRegistro:
 
 class TestAislamiento:
     def test_timeout_no_cuelga_al_worker(self) -> None:
-        """DoD: un plugin colgado → flag extraccion_timeout y el worker SIGUE."""
+        """DoD: un plugin colgado → flag extraccion_timeout y el worker SIGUE.
+
+        Este plugin ignora `ctx.vencido()` a propósito: representa al que se queda
+        atascado dentro de una librería nativa y nunca llega a mirar el reloj. Para
+        ese caso el corte duro sigue siendo la única salida, y sí se pierde lo que
+        llevara — no hay forma de sacárselo a un hilo que no vuelve.
+        """
 
         @registrar("application/x-lentisimo")
         def extraer_lento(ctx: ContextoExtraccion) -> ResultadoExtraccion:
@@ -62,6 +68,41 @@ class TestAislamiento:
         r = _extraer(b"x", "application/x-lentisimo", perillas)
         assert time.monotonic() - inicio < 2.0
         assert r.flags == ["extraccion_timeout"]
+
+    def test_el_plugin_que_respeta_el_plazo_conserva_lo_avanzado(self) -> None:
+        """El fallo que motivó el plazo cooperativo.
+
+        Antes, un PDF de 20 páginas que alcanzaba a OCR-ear 15 y se pasaba de tiempo
+        se indexaba SIN UNA LÍNEA: el corte ocurría fuera y descartaba el resultado
+        entero. En un corpus de escaneos eso no era un caso raro, era el común.
+
+        Ahora el plugin consulta `ctx.vencido()` en cada vuelta y devuelve lo que
+        lleva. El texto parcial vale: sus CURPs resuelven entidades igual.
+        """
+
+        @registrar("application/x-por-partes")
+        def extraer_por_partes(ctx: ContextoExtraccion) -> ResultadoExtraccion:
+            partes: list[str] = []
+            for i in range(100):
+                if ctx.vencido():
+                    return ResultadoExtraccion(
+                        texto=" ".join(partes), flags=["ocr_pdf_parcial"]
+                    )
+                time.sleep(0.02)
+                partes.append(f"pagina{i}")
+            return ResultadoExtraccion(texto=" ".join(partes))
+
+        r = _extraer(b"x", "application/x-por-partes", PerillasWorker(extractor_timeout_s=0.3))
+        assert "ocr_pdf_parcial" in r.flags
+        assert r.texto, "el trabajo ya hecho debe conservarse, no descartarse"
+        assert "extraccion_timeout" not in r.flags
+
+    def test_el_corte_duro_es_proporcional_al_plazo(self) -> None:
+        """Un margen FIJO haría que un timeout corto no tuviera corte duro efectivo,
+        y el límite configurado dejaría de significar nada."""
+        from normalizacion.ingesta.workers.extractores import _MARGEN_CORTE_DURO
+
+        assert 0 < _MARGEN_CORTE_DURO < 1
 
     def test_crash_del_plugin_es_flag(self) -> None:
         """Un plugin que revienta NO tira el worker: flag con el tipo de error."""

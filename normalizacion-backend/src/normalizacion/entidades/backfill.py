@@ -25,7 +25,6 @@ indexado o enganchar la resolución al pipeline de ingesta (el resto de E4).
 from __future__ import annotations
 
 import json
-import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,17 +37,13 @@ from normalizacion.core import recursos
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 
-from . import normalizadores as N
+from . import anclas
+from .anclas import Ancla
 from .modelo import calcular_entidad_id
 from .pipeline import _upsert, construir_entidad
 from .receta import obtener_receta
 
 log = obtener_logger("entidades.backfill")
-
-# Regex LIBERALES para encontrar candidatos; el validador (dígito verificador / formato)
-# es el que decide. Lookarounds para no cortar dentro de una cadena alfanumérica mayor.
-_SCAN_CURP = re.compile(r"(?<![0-9A-ZÑ])[A-ZÑ]{4}\d{6}[HM][A-ZÑ]{5}[0-9A-ZÑ]\d(?![0-9A-ZÑ])")
-_SCAN_RFC = re.compile(r"(?<![0-9A-ZÑ&])[A-ZÑ&]{4}\d{6}[0-9A-ZÑ]{3}(?![0-9A-ZÑ])")
 
 _CURSOR_CLAVE = "backfill_entidades_cursor"
 _ESTADO_CLAVE = "backfill_entidades_estado"  # progreso/último resumen para la UI
@@ -94,58 +89,33 @@ def _aplanar(v: Any) -> Any:
             yield from _aplanar(x)
 
 
-def _anclas_de_doc(doc: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """(curps_validas, rfcs_validas) únicas, en orden de aparición.
+def _anclas_de_doc(doc: dict[str, Any]) -> list[Ancla]:
+    """Anclas válidas del documento, únicas y en orden de aparición.
 
-    MEMORIA (K15): escanea campo por campo —cada escalar en MAYÚSCULAS por sí solo—
-    en vez de armar un único texto gigante con `" ".join(...).upper()`. Para un
-    `texto_indexable` de ~100 KB ese patrón mantenía TRES copias del texto vivas a
-    la vez (la lista de partes, el join y su versión upper); por cientos de docs/lote
-    eso disparaba la RAM. Aquí solo vive un campo a la vez."""
-    curps: list[str] = []
-    rfcs: list[str] = []
-    vistos_c: set[str] = set()
-    vistos_r: set[str] = set()
+    MEMORIA (K15): escanea campo por campo en vez de armar un único texto gigante con
+    `" ".join(...)`. Para un `texto_indexable` de ~100 KB ese patrón mantenía varias
+    copias del texto vivas a la vez; por cientos de docs por lote eso disparaba la RAM.
+    Aquí solo vive un campo cada vez.
+    """
+    encontradas: list[Ancla] = []
+    vistas: set[tuple[str, str]] = set()
     for clave in _FUENTES:
         for escalar in _aplanar(doc.get(clave)):
-            texto = escalar.upper()
-            for m in _SCAN_CURP.finditer(texto):
-                n = N.validar_curp(m.group())
-                if n.valido and n.valor and n.valor not in vistos_c:
-                    vistos_c.add(n.valor)
-                    curps.append(n.valor)
-            for m in _SCAN_RFC.finditer(texto):
-                n = N.validar_rfc(m.group())
-                if n.valido and n.valor and n.valor not in vistos_r:
-                    vistos_r.add(n.valor)
-                    rfcs.append(n.valor)
-    return curps, rfcs
+            for a in anclas.buscar_en_texto(escalar):
+                if (a.tipo, a.valor) not in vistas:
+                    vistas.add((a.tipo, a.valor))
+                    encontradas.append(a)
+    return encontradas
 
 
 def personas_de_doc(doc: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Extrae las filas-persona (anclas) de un documento indexado + su procedencia.
 
-    Regla de anclaje (sin duplicar ni perder anclas en docs multi-persona):
-      · una fila por CURP.
-      · un RFC enriquece la fila de una CURP SOLO si comparten los 10 primeros chars
-        (4 letras del nombre + AAMMDD): garantía fuerte de que son la misma persona.
-      · cualquier RFC que no se haya asociado a una CURP ancla su propia persona (no
-        se descarta).
+    La regla de agrupación vive en `entidades.anclas`, compartida con el worker: la
+    resolución en vivo y el backfill del histórico tienen que decidir IGUAL, o el
+    mismo documento produciría entidades distintas según por dónde entró.
     """
-    curps, rfcs = _anclas_de_doc(doc)
-    filas: list[dict[str, str]] = []
-    asociados: set[str] = set()
-    for c in curps:
-        fila = {"curp": c}
-        # RFC del MISMO prefijo (misma persona) y 1:1 → enriquece esta CURP.
-        mismos = [r for r in rfcs if r[:10] == c[:10] and r not in asociados]
-        if len(mismos) == 1:
-            fila["rfc"] = mismos[0]
-            asociados.add(mismos[0])
-        filas.append(fila)
-    for r in rfcs:  # RFCs sin asociar → su propia persona (no se pierden)
-        if r not in asociados:
-            filas.append({"rfc": r})
+    filas = anclas.filas_persona(_anclas_de_doc(doc))
     procedencia = {
         "fuente": "backfill_indice",
         "archivo_id": doc.get("archivo_id"),

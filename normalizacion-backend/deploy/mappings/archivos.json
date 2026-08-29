@@ -5,9 +5,30 @@
     "settings": {
       "number_of_shards": 1,
       "number_of_replicas": 0,
-      "index.mapping.total_fields.limit": 2000
+      "index.mapping.total_fields.limit": 2000,
+      "analysis": {
+        "filter": {
+          "es_stop": { "type": "stop", "stopwords": "_spanish_" },
+          "es_stemmer": { "type": "stemmer", "language": "light_spanish" }
+        },
+        "analyzer": {
+          "es_texto": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": ["lowercase", "asciifolding", "es_stop", "es_stemmer"]
+          },
+          "es_texto_busqueda": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": ["lowercase", "asciifolding", "es_stop", "es_stemmer"]
+          }
+        }
+      }
     },
     "mappings": {
+      "_source": {
+        "excludes": ["contexto_anclas.contexto"]
+      },
       "dynamic_templates": [
         {
           "campos_extraidos_strings": {
@@ -40,7 +61,29 @@
         "perfil_calidad": { "type": "flat_object" },
         "procedencias": { "type": "keyword" },
         "limites_alcanzados": { "type": "keyword" },
-        "texto_indexable": { "type": "text" }
+
+        "texto_indexable": {
+          "type": "text",
+          "analyzer": "es_texto",
+          "search_analyzer": "es_texto_busqueda",
+          "fields": {
+            "exacto": {
+              "type": "text",
+              "analyzer": "standard"
+            }
+          }
+        },
+
+        "ocr_confianza": { "type": "float" },
+
+        "contexto_anclas": {
+          "type": "object",
+          "properties": {
+            "tipo": { "type": "keyword" },
+            "valor": { "type": "keyword" },
+            "contexto": { "type": "text", "analyzer": "es_texto" }
+          }
+        }
       }
     }
   }

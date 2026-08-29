@@ -226,6 +226,108 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
     log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
 
 
+def reindexar_a_mapping_nuevo(
+    config: Config, ruta_deploy: Path = Path("deploy"), *, borrar_viejo: bool = False
+) -> dict[str, Any]:
+    """Migra el alias a un índice NUEVO con la plantilla actual, copiando los documentos.
+
+    Por qué hace falta un índice nuevo: el mapping de un índice existente es casi
+    inmutable. `put_index_template` solo afecta a los que se CREEN después, y reindexar
+    documentos uno a uno tampoco lo cambia — así que un analizador nuevo (el español
+    con `asciifolding`) no llega jamás al corpus ya indexado. Sin este paso, la mejora
+    de búsqueda simplemente no ocurre, aunque todo lo demás se despliegue bien.
+
+    Se usa el `_reindex` del propio OpenSearch en vez de reingerir desde el almacén:
+    copia servidor-a-servidor sin volver a extraer ni a pasar OCR, que sobre 19.656
+    contenidos únicos es la diferencia entre minutos y días.
+
+    REVERSIBLE: el índice viejo se conserva (sale del alias, pero sigue ahí) salvo que
+    se pida `borrar_viejo`. Si algo sale mal, se devuelve el alias y no se perdió nada.
+    """
+    cliente = crear_cliente(config)
+    alias = config.indice_alias
+
+    # 1) La plantilla nueva primero: el índice que se cree después la hereda.
+    aplicar_indice(config, ruta_deploy)
+
+    viejos = sorted(cliente.indices.get_alias(name=alias).keys())
+    if not viejos:
+        raise RuntimeError(f"el alias {alias!r} no apunta a ningún índice")
+
+    # 2) Nombre del nuevo: se conserva el prefijo del que hoy escribe y se sube el
+    #    contador, para no romper el patrón que la ISM usa al rotar.
+    escritura = indice_escritura(config)
+    base, _, sufijo = escritura.rpartition("-")
+    siguiente = f"{base}-{int(sufijo) + 1:06d}" if sufijo.isdigit() else f"{escritura}-000002"
+    if cliente.indices.exists(index=siguiente):
+        raise RuntimeError(f"{siguiente} ya existe: revísalo antes de reindexar")
+
+    cliente.indices.create(index=siguiente, body={})
+    log.info("reindex_indice_creado", indice=siguiente, desde=viejos)
+
+    # 3) Copia. `wait_for_completion=False` devuelve una tarea: un corpus grande
+    #    excede cualquier timeout HTTP razonable y no se puede esperar en línea.
+    tarea = cliente.reindex(
+        body={"source": {"index": alias}, "dest": {"index": siguiente}},
+        wait_for_completion=False,
+        request_timeout=120,
+    )
+    return {
+        "indice_nuevo": siguiente,
+        "indices_viejos": viejos,
+        "tarea": tarea.get("task"),
+        "borrar_viejo": borrar_viejo,
+        "siguiente_paso": (
+            f"Vigila con GET _tasks/{tarea.get('task')}; cuando termine, cambia el alias"
+            f" con `norm reindexar --finalizar {siguiente}`."
+        ),
+    }
+
+
+def finalizar_reindex(
+    config: Config, indice_nuevo: str, *, borrar_viejo: bool = False
+) -> dict[str, Any]:
+    """Mueve el alias al índice nuevo en una operación ATÓMICA.
+
+    Las dos acciones —quitar el alias de los viejos y ponerlo en el nuevo— van en la
+    MISMA llamada a `_aliases`: si se hicieran por separado habría un instante sin
+    índice de escritura, y todo lo que llegara en ese hueco se perdería.
+    """
+    cliente = crear_cliente(config)
+    alias = config.indice_alias
+    viejos = [i for i in sorted(cliente.indices.get_alias(name=alias).keys()) if i != indice_nuevo]
+
+    cuenta_nueva = int(cliente.count(index=indice_nuevo)["count"])
+    cuenta_vieja = sum(int(cliente.count(index=i)["count"]) for i in viejos) if viejos else 0
+    if cuenta_nueva < cuenta_vieja:
+        raise RuntimeError(
+            f"{indice_nuevo} tiene {cuenta_nueva} documentos y los viejos {cuenta_vieja}:"
+            " la copia no ha terminado (o falló). NO se mueve el alias."
+        )
+
+    acciones: list[dict[str, Any]] = [
+        {"add": {"index": indice_nuevo, "alias": alias, "is_write_index": True}}
+    ]
+    acciones += [{"remove": {"index": i, "alias": alias}} for i in viejos]
+    cliente.indices.update_aliases(body={"actions": acciones})
+    log.info("reindex_alias_movido", alias=alias, nuevo=indice_nuevo, quitados=viejos)
+
+    borrados: list[str] = []
+    if borrar_viejo:
+        for i in viejos:
+            cliente.indices.delete(index=i)
+            borrados.append(i)
+        log.warning("reindex_viejos_borrados", indices=borrados)
+
+    return {
+        "alias": alias,
+        "indice_nuevo": indice_nuevo,
+        "documentos": cuenta_nueva,
+        "viejos_fuera_del_alias": viejos,
+        "viejos_borrados": borrados,
+    }
+
+
 def buscar_por_nombre(config: Config, texto: str, limite: int = 20) -> list[dict[str, Any]]:
     """Búsqueda de demo por nombre (wildcard field — la decisión de costo del diseño)."""
     cliente = crear_cliente(config)

@@ -18,16 +18,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
-from typing import IO
+from typing import IO, Any
 
 import psycopg
 
-from normalizacion.core import cola, recursos
+from normalizacion.core import cache_extraccion, cola, recursos
 from normalizacion.core.almacen import Almacen, crear_almacen
 from normalizacion.core.config import Config
 from normalizacion.core.indexador import Sink, SinkNulo
 from normalizacion.core.modelo import DocumentoArchivo, Estado, RutaDecision, clave_almacen
 from normalizacion.core.observabilidad import obtener_logger
+from normalizacion.entidades import anclas
 from normalizacion.ingesta.precalificacion import contenedores
 from normalizacion.ingesta.workers import extractores
 
@@ -47,6 +48,9 @@ class ResumenWorker:
     errores: int
     transitorios: int  # devueltos con backoff (se reintentarán solos)
     huerfanos_rescatados: int
+    # Extracciones servidas desde la caché por contenido: el trabajo de OCR que NO
+    # hubo que rehacer sobre copias del mismo archivo.
+    extracciones_reusadas: int = 0
 
 
 def _abrir_fuente(config: Config, raiz: str, fila: cola.FilaReclamada) -> IO[bytes]:
@@ -98,6 +102,104 @@ def _persistir(
             destino.close()
 
 
+def _extraer_o_reusar(
+    config: Config,
+    conn_ctl: psycopg.Connection[Any],
+    spool: IO[bytes],
+    fila: cola.FilaReclamada,
+    hash_contenido: str,
+) -> tuple[extractores.ResultadoExtraccion, bool]:
+    """Extrae el contenido, o reusa lo ya extraído si es el MISMO contenido.
+
+    El almacén deduplica bytes; esto deduplica el trabajo de entenderlos. Sin ello, un
+    corpus con cada archivo por duplicado paga el doble de OCR por cero información
+    nueva — que es exactamente el caso hoy: 39 312 archivos, 19 656 hashes.
+
+    Todo el camino de la caché es best-effort: si Postgres parpadea, se extrae y punto.
+    Perder la caché encarece la corrida; hacerla obligatoria la detendría.
+    """
+    version = cache_extraccion.clave_version(config)
+    try:
+        guardada = cache_extraccion.buscar(conn_ctl, hash_contenido, version=version)
+    except Exception as exc:
+        log.warning("cache_extraccion_no_disponible", error=str(exc)[:150])
+        guardada = None
+
+    if guardada is not None:
+        return (
+            extractores.ResultadoExtraccion(
+                campos=guardada.campos,
+                texto=guardada.texto,
+                perfil_calidad=guardada.perfil_calidad,
+                flags=[*guardada.flags, "extraccion_reusada"],
+                confianza=guardada.confianza,
+            ),
+            True,
+        )
+
+    inicio = time.monotonic()
+    extraccion = extractores.extraer(
+        config.worker,
+        spool,
+        tipo_real=fila.tipo_real,
+        nombre=fila.nombre,
+        tamano=fila.tamano,
+        ocr_activo=config.filtro.ocr_activo,
+    )
+    ms = int((time.monotonic() - inicio) * 1000)
+    # Un resultado incompleto o fallido NO se cachea. Guardarlo convertía un problema
+    # transitorio —tesseract todavía sin instalar, un timeout puntual, OpenSearch
+    # caído— en la respuesta definitiva para ese contenido y para TODAS sus copias, y
+    # además la dejaba con la versión al día, así que `reextraer` tampoco la veía.
+    if cache_extraccion.es_cacheable(extraccion.flags):
+        # Las banderas que se guardan son las del DOC final, con el descarte por
+        # confianza ya aplicado. Antes se guardaban las de antes del descarte, así que
+        # `ocr_descartado_confianza` no llegaba nunca a la tabla y
+        # `norm reextraer --bandera ocr_descartado_confianza` —el filtro documentado
+        # para recuperar el texto dudoso— no encontraba jamás un candidato.
+        final = _aplicar_descarte(config, extraccion)
+        try:
+            cache_extraccion.guardar(
+                conn_ctl,
+                hash_contenido,
+                tipo_real=fila.tipo_real,
+                texto=extraccion.texto,
+                campos=extraccion.campos,
+                perfil_calidad=extraccion.perfil_calidad,
+                flags=final.flags,
+                confianza=extraccion.confianza,
+                ms=ms,
+                version=version,
+            )
+        except Exception as exc:
+            log.warning("cache_extraccion_no_guardada", error=str(exc)[:150])
+    return extraccion, False
+
+
+def _aplicar_descarte(
+    config: Config, extraccion: extractores.ResultadoExtraccion
+) -> extractores.ResultadoExtraccion:
+    """Un texto OCR por debajo del umbral NO va al índice.
+
+    Un texto inventado es peor que ningún texto: ensucia la búsqueda con aciertos
+    falsos y —más grave— mete anclas CURP/RFC inexistentes en la resolución de
+    entidades, creando personas que no existen y que después hay que desenredar.
+
+    El texto NO se pierde: queda en `extracciones` con su confianza, y `norm reextraer`
+    lo vuelve a intentar cuando el OCR mejore.
+    """
+    umbral = config.filtro.ocr_confianza_descarte
+    if umbral <= 0 or extraccion.confianza is None or extraccion.confianza >= umbral:
+        return extraccion
+    return extractores.ResultadoExtraccion(
+        campos=extraccion.campos,
+        texto=None,
+        perfil_calidad=extraccion.perfil_calidad,
+        flags=[*extraccion.flags, "ocr_descartado_confianza"],
+        confianza=extraccion.confianza,
+    )
+
+
 def _construir_doc(
     fila: cola.FilaReclamada,
     hash_contenido: str,
@@ -126,6 +228,11 @@ def _construir_doc(
         texto_indexable=extraccion.texto,
         perfil_calidad=extraccion.perfil_calidad,
         limites_alcanzados=extraccion.flags,
+        ocr_confianza=extraccion.confianza,
+        # Las ventanas alrededor de cada CURP/RFC se calculan AQUÍ, con el texto en la
+        # mano. Recuperarlas después obligaría a releer el documento del índice —o peor,
+        # a volver a OCR-earlo— cuando llegue el NER que las va a usar.
+        contexto_anclas=anclas.contexto_para_doc(anclas.buscar_en_texto(extraccion.texto)),
     )
 
 
@@ -144,7 +251,7 @@ def procesar_hot(
     de filas insertadas entre el último claim y la muerte del productor)."""
     sink = sink if sink is not None else SinkNulo()
     almacen = almacen if almacen is not None else crear_almacen(config)
-    procesados = nuevos = dedup = copiados = errores = transitorios = 0
+    procesados = nuevos = dedup = copiados = errores = transitorios = reusos = 0
     barrido_final = False
     w = config.worker
 
@@ -222,17 +329,18 @@ def procesar_hot(
                         hash_contenido, leidos, era_nuevo = _persistir(
                             config, almacen, fuente, spool=spool
                         )
-                        # L1 sobre el MISMO spool: cero re-lecturas del disco origen
-                        extraccion = extractores.extraer(
-                            w,
-                            spool,
-                            tipo_real=fila.tipo_real,
-                            nombre=fila.nombre,
-                            tamano=fila.tamano,
-                            ocr_activo=config.filtro.ocr_activo,
+                        # L1 sobre el MISMO spool: cero re-lecturas del disco origen.
+                        # Y cero re-EXTRACCIONES: si este contenido ya se entendió
+                        # (misma copia por otra ruta), se reusa lo guardado.
+                        extraccion, reusada = _extraer_o_reusar(
+                            config, conn_ctl, spool, fila, hash_contenido
                         )
+                        if reusada:
+                            reusos += 1
                     # entregar DENTRO del try: si serializar el doc falla, no tumba la corrida
-                    sink.entregar(_construir_doc(fila, hash_contenido, extraccion))
+                    sink.entregar(
+                        _construir_doc(fila, hash_contenido, _aplicar_descarte(config, extraccion))
+                    )
                     hash_por_id[fila.archivo_id] = hash_contenido
                     fila_por_id[fila.archivo_id] = fila
                     copiados += leidos
@@ -326,5 +434,8 @@ def procesar_hot(
         bytes=copiados,
         errores=errores,
         transitorios=transitorios,
+        extracciones_reusadas=reusos,
     )
-    return ResumenWorker(procesados, nuevos, dedup, copiados, errores, transitorios, huerfanos)
+    return ResumenWorker(
+        procesados, nuevos, dedup, copiados, errores, transitorios, huerfanos, reusos
+    )

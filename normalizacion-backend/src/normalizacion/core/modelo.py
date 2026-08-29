@@ -136,3 +136,22 @@ class DocumentoArchivo(BaseModel):
     texto_indexable: str | None = None
     perfil_calidad: dict[str, Any] | None = None
     limites_alcanzados: list[str] = Field(default_factory=list)
+
+    # Calidad del reconocimiento (0-100). None cuando no hubo OCR: un CSV o un PDF con
+    # texto nativo no tienen "confianza", tienen el texto exacto. Distinguir `None` de
+    # `0.0` importa — filtrar por `ocr_confianza < 50` no debe arrastrar todo el corpus
+    # de texto nativo, que es la mayoría.
+    ocr_confianza: float | None = Field(default=None, ge=0, le=100)
+
+    # Trozos de texto alrededor de cada ancla encontrada (CURP/RFC). Hoy la resolución
+    # de entidades solo fija el ancla y lo que de ella se deriva; el nombre y el
+    # domicilio que están JUNTO al ancla se pierden porque asociarlos requiere NER.
+    # Guardar la ventana ahora no cuesta casi nada y es exactamente la entrada que ese
+    # NER va a necesitar — sin tener que volver a leer 39 000 documentos.
+    #
+    # DATOS PERSONALES: el subcampo `contexto` está EXCLUIDO de `_source` en el mapping
+    # (`deploy/mappings/archivos.json`). Sigue indexado y buscable, pero no se devuelve
+    # en los resultados. Sin esa exclusión, cualquier `lector` —incluida una clave de
+    # máquina externa— podía enumerar el corpus de datos personales navegando hits, que
+    # es una capacidad que nadie decidió darle al índice.
+    contexto_anclas: list[dict[str, Any]] = Field(default_factory=list)

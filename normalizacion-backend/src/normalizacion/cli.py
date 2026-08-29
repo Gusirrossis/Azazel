@@ -16,6 +16,24 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+# `norm usuarios …` — el primer admin se crea desde aquí: el panel exige una cuenta
+# para entrar, así que la primera no puede salir del propio panel.
+from normalizacion.cli_usuarios import app as app_usuarios  # noqa: E402
+
+app.add_typer(app_usuarios, name="usuarios")
+
+# `norm calidad …` — medir la extracción contra el conjunto dorado. Todo cambio en el
+# OCR se justifica contra esta tabla; sin ella, "mejoramos el OCR" es una opinión.
+from normalizacion.cli_calidad import app as app_calidad  # noqa: E402
+
+app.add_typer(app_calidad, name="calidad")
+
+# `norm reextraer …` — rehacer la extracción de lo que se leyó mal, leyendo los bytes
+# del almacén. Es lo que convierte una mejora del OCR en una mejora del corpus.
+from normalizacion.cli_reextraer import app as app_reextraer  # noqa: E402
+
+app.add_typer(app_reextraer, name="reextraer")
+
 
 def _exigir(config: Any, capaz: bool, que: str) -> None:
     """⚙K16: corta con un motivo claro si este nodo no tiene la capacidad.
@@ -568,3 +586,50 @@ def main() -> None:
     """Entrypoint del script `norm`."""
     configurar_logging()
     app()
+
+
+@app.command("reindexar")
+def reindexar_cmd(
+    finalizar: str | None = typer.Option(
+        None, "--finalizar", help="Índice nuevo cuyo _reindex ya terminó: mueve el alias"
+    ),
+    borrar_viejo: bool = typer.Option(
+        False, "--borrar-viejo", help="Borra los índices viejos tras mover el alias"
+    ),
+) -> None:
+    """Migra el alias a un índice nuevo con el mapping actual (analizador español).
+
+    El mapping de un índice existente es casi inmutable: `norm aplicar-indice` solo
+    afecta a los que se creen después, así que un analizador nuevo NO llega al corpus
+    ya indexado. Este comando crea el índice nuevo, copia los documentos con el
+    `_reindex` de OpenSearch (sin re-extraer ni re-OCR) y mueve el alias.
+
+    Va en DOS pasos porque la copia de un corpus grande dura más que cualquier
+    petición HTTP:
+
+        norm reindexar                      # crea y lanza la copia
+        # vigilar con GET _tasks/<id>
+        norm reindexar --finalizar archivos-000002
+    """
+    from normalizacion.core.indexador.opensearch import (
+        finalizar_reindex,
+        reindexar_a_mapping_nuevo,
+    )
+
+    config = cargar_config()
+    if finalizar:
+        r = finalizar_reindex(config, finalizar, borrar_viejo=borrar_viejo)
+        typer.secho(f"Alias '{r['alias']}' → {r['indice_nuevo']}", fg="green")
+        typer.echo(f"  documentos:       {r['documentos']}")
+        typer.echo(f"  fuera del alias:  {', '.join(r['viejos_fuera_del_alias']) or '—'}")
+        if r["viejos_borrados"]:
+            typer.secho(f"  BORRADOS:         {', '.join(r['viejos_borrados'])}", fg="yellow")
+        else:
+            typer.echo("  (los viejos siguen ahí: el cambio es reversible)")
+        return
+
+    r = reindexar_a_mapping_nuevo(config)
+    typer.echo(f"Índice nuevo: {r['indice_nuevo']}")
+    typer.echo(f"Copiando desde: {', '.join(r['indices_viejos'])}")
+    typer.echo(f"Tarea: {r['tarea']}")
+    typer.secho(f"\n{r['siguiente_paso']}", fg="yellow")

@@ -3,7 +3,7 @@
 L1: cabeceras siempre; el OCR sí lee píxeles y solo corre cuando el operador activó OCR
 (⚙ `filtro.ocr_activo`, propagado por el worker). El OCR se hace de forma segura (helper
 `_ocr`): sin el binario/paquete → flag `ocr_no_disponible`, se devuelve la metadata igual.
-El texto extraído va a `texto` → `texto_indexable` (buscable)."""
+El texto extraído va a `texto` → `texto_indexable` (buscable), junto con su confianza."""
 
 from __future__ import annotations
 
@@ -32,6 +32,10 @@ def extraer_imagen(ctx: ContextoExtraccion) -> ResultadoExtraccion:
             campos["exif_fecha"] = str(fecha)[:40]
         texto: str | None = None
         flags: list[str] = []
+        confianza: float | None = None
         if ctx.ocr_activo:
-            texto, flags = ocr_imagen(imagen, ctx.perillas)
-    return ResultadoExtraccion(campos=campos, texto=texto, flags=flags)
+            if ctx.vencido():
+                flags = ["ocr_omitido_sin_tiempo"]
+            else:
+                texto, flags, confianza = ocr_imagen(imagen, ctx.perillas)
+    return ResultadoExtraccion(campos=campos, texto=texto, flags=flags, confianza=confianza)

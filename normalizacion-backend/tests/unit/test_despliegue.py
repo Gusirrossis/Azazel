@@ -304,7 +304,11 @@ class TestLocalNoCambiaNada:
     def test_perillas_criticas_sin_deriva(self) -> None:
         c = _cfg()
         assert c.indice_alias == "archivos"
-        assert c.filtro.version_filtro == "reglas-v3-lista-blanca"
+        # v4: el router de `image/*` cambió (clasificador escaneo-vs-foto). Este test
+        # existe justamente para que un cambio de conducta del filtro no pase sin
+        # subir la versión — sin ella, dos archivos clasificados con reglas distintas
+        # quedan indistinguibles en `archivos.version_filtro` y en el índice.
+        assert c.filtro.version_filtro == "reglas-v4-imagen-ocr"
         assert c.filtro.umbral_hot == 65
         assert c.recursos.mem_por_worker_mb == 700
         assert c.recursos.politica == "conservador"

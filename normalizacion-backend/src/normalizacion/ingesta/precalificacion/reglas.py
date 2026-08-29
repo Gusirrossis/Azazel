@@ -523,6 +523,57 @@ def precalificar_archivo(
     )
 
 
+def _rutear_imagen(
+    perillas: PerillasFiltro,
+    tipo: str,
+    senales: dict[str, Any],
+    abrible: Path | IO[bytes] | None,
+) -> ResultadoPrecalificacion:
+    """Decide el destino de una imagen cuando el OCR está activo (⚙ ocr_politica_imagen).
+
+    El scoring de texto no sirve aquí: una imagen no tiene señales textuales en el head
+    y siempre saldría COLD. Pero mandarlas TODAS a HOT (lo que se hacía antes) paga OCR
+    por fotos y fondos de pantalla. El clasificador de `precalificacion.imagen` separa
+    escaneo de fotografía mirando aspecto, saturación y proporción de blanco.
+    """
+    from normalizacion.ingesta.precalificacion import imagen as clasificador
+
+    politica = perillas.ocr_politica_imagen
+    senales["ocr"] = True
+    senales["ocr_politica"] = politica
+
+    if politica == "ninguna":
+        return ResultadoPrecalificacion(
+            5, RutaDecision.COLD, tipo, "imagen_ocr_desactivado", senales
+        )
+
+    if politica == "todas" or abrible is None:
+        # Sin `abrible` no hay píxeles que mirar (entrada de contenedor ya consumida):
+        # se manda a HOT, que es el lado seguro del error.
+        return ResultadoPrecalificacion(
+            perillas.umbral_hot, RutaDecision.HOT, tipo, "imagen_ocr", senales
+        )
+
+    fuente: IO[bytes] | None = None
+    try:
+        fuente = abrible.open("rb") if isinstance(abrible, Path) else abrible
+        clase = clasificador.clasificar(fuente, ancho_min=perillas.imagen_ancho_min_documento)
+    finally:
+        if fuente is not None and isinstance(abrible, Path):
+            fuente.close()
+
+    senales["imagen"] = clase.senales
+    if clase.es_documento:
+        return ResultadoPrecalificacion(
+            perillas.umbral_hot, RutaDecision.HOT, tipo, f"imagen_ocr:{clase.motivo}", senales
+        )
+    # No es documento: a frío, que es REVERSIBLE. Si mañana se decide OCR-ear también
+    # las fotos, `rescore-frio` las devuelve a la cola sin haber perdido nada.
+    return ResultadoPrecalificacion(
+        5, RutaDecision.COLD, tipo, f"imagen_no_ocr:{clase.motivo}", senales
+    )
+
+
 def precalificar_contenido(
     perillas: PerillasFiltro,
     *,
@@ -562,12 +613,7 @@ def precalificar_contenido(
 
     tipo = deteccion.tipo
     if tipo is not None and perillas.ocr_activo and tipo.startswith("image/"):
-        # OCR activo: la imagen va DIRECTO a HOT para extraerle texto (bypass del scoring
-        # de texto, que la mandaría a COLD por no tener señales textuales en el head).
-        senales["ocr"] = True
-        return ResultadoPrecalificacion(
-            perillas.umbral_hot, RutaDecision.HOT, tipo, "imagen_ocr", senales
-        )
+        return _rutear_imagen(perillas, tipo, senales, abrible)
     if tipo is not None and not pasa_lista(perillas, tipo):
         return ResultadoPrecalificacion(5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales)
 
