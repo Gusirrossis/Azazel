@@ -54,6 +54,7 @@ ESPERADO: dict[tuple[str, str], str] = {
 SIN_AUTENTICAR: dict[tuple[str, str], str] = {
     ("/auth/login", "post"): "es la puerta: exigir sesión para iniciar sesión no cierra",
     ("/auth/logout", "post"): "cerrar sesión con una cookie ya vencida debe funcionar",
+    ("/salud", "get"): "sonda de disponibilidad: la llaman antes de tener credencial",
 }
 
 # `Identificado` = autenticado pero SIN el corte por `debe_cambiar`, para los tres

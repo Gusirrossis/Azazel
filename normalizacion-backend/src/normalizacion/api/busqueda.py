@@ -29,6 +29,40 @@ MARCA_INICIO = "⟪"  # ⟪
 MARCA_FIN = "⟫"  # ⟫
 
 
+#: Campos que un cliente puede pedir en `SolicitudBusqueda.campos`.
+#:
+#: Se deriva del modelo del documento, no se escribe a mano: así un campo nuevo se
+#: puede pedir sin tocar esto, y —más importante— un campo que se RETIRE del modelo
+#: deja de ser pedible en el acto.
+#:
+#: `contexto_anclas` queda FUERA a propósito. Está excluido de `_source` en el
+#: mapping por ser datos personales (±200 caracteres alrededor de cada CURP), y
+#: dejarlo en la allowlist sugeriría que se puede pedir. No se puede: OpenSearch no
+#: lo tiene guardado en `_source`, así que pedirlo devolvería vacío y confundiría.
+def _campos_permitidos() -> frozenset[str]:
+    from normalizacion.core.modelo import DocumentoArchivo
+
+    return frozenset(DocumentoArchivo.model_fields) - {"contexto_anclas"}
+
+
+def _source_de(solicitud: SolicitudBusqueda) -> list[str] | None:
+    """Traduce `campos` a `_source`. None = todos (el comportamiento de siempre).
+
+    Es una ALLOWLIST y no un paso directo: el cuerpo de la consulta a OpenSearch se
+    construye en el servidor y nada de lo que llega del cliente entra en él como
+    sintaxis — la misma disciplina que ya tiene el resto de `construir_consulta`.
+    Lo desconocido se descarta en silencio en vez de dar error: un cliente que pide
+    un campo que ya no existe debe seguir funcionando, no romperse.
+    """
+    if not solicitud.campos:
+        return None
+    permitidos = _campos_permitidos()
+    pedidos = [c for c in solicitud.campos if c in permitidos]
+    # Ni un solo campo válido: se devuelve el documento entero en vez de uno vacío.
+    # Un `_source: []` daría documentos sin nada y parecería que no hay resultados.
+    return pedidos or None
+
+
 def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[str, Any]:
     """DSL desde los campos tipados. El texto del usuario SOLO viaja como VALOR
     (wildcard sobre nombre + match sobre el texto extraído — sin sintaxis inyectable).
@@ -95,6 +129,9 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
         "query": consulta,
         "track_total_hits": True,
     }
+    fuente = _source_de(solicitud)
+    if fuente is not None:
+        cuerpo["_source"] = fuente
     if debe:  # fragmentos del contenido donde aparece lo buscado
         cuerpo["highlight"] = {
             "fields": {"texto_indexable": {"fragment_size": 180, "number_of_fragments": 2}},
@@ -157,6 +194,7 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         cursor=hits[-1]["sort"] if hits else None,
         facetas=facetas,
         pit_id=respuesta.get("pit_id", pit_id),
+        origen=config.despliegue.nodo_id,
     )
 
 

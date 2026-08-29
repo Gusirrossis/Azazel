@@ -72,3 +72,52 @@ class TestNoInyeccion:
 
         with pytest.raises(ValidationError):
             SolicitudBusqueda.model_validate({"query": {"match_all": {}}})
+
+
+class TestSeleccionDeCampos:
+    """`campos` → `_source`. Lo pide la federación con Lilith: el 59 % de cada
+    respuesta es `texto_indexable`, que el consumidor no usa y cruza Europa igual.
+
+    Es una ALLOWLIST, no un paso directo: nada de lo que llega del cliente entra en
+    el cuerpo de la consulta como sintaxis."""
+
+    def _cuerpo(self, **kw):  # type: ignore[no-untyped-def]
+        from normalizacion.api.busqueda import construir_consulta
+        from normalizacion.api.esquemas import SolicitudBusqueda
+
+        return construir_consulta(SolicitudBusqueda(**kw), 100)
+
+    def test_por_omision_no_cambia_nada(self) -> None:
+        """Ningún consumidor existente debe enterarse de que esto existe."""
+        assert "_source" not in self._cuerpo(texto="garcia")
+
+    def test_pedir_campos_los_traduce_a_source(self) -> None:
+        cuerpo = self._cuerpo(texto="garcia", campos=["nombre", "ruta_original"])
+        assert cuerpo["_source"] == ["nombre", "ruta_original"]
+
+    def test_un_campo_inventado_se_descarta(self) -> None:
+        cuerpo = self._cuerpo(campos=["nombre", "; DROP TABLE", "../../etc/passwd"])
+        assert cuerpo["_source"] == ["nombre"]
+
+    def test_solo_campos_invalidos_devuelve_el_documento_entero(self) -> None:
+        """Un `_source: []` daría documentos vacíos y parecería que no hay resultados."""
+        assert "_source" not in self._cuerpo(campos=["no_existe"])
+
+    def test_contexto_anclas_no_se_puede_pedir(self) -> None:
+        """Son datos personales: ±200 caracteres alrededor de cada CURP. Está
+        excluido de _source en el mapping y fuera de la allowlist a propósito."""
+        assert "_source" not in self._cuerpo(campos=["contexto_anclas"])
+
+    def test_la_allowlist_sale_del_modelo_no_de_una_lista_a_mano(self) -> None:
+        """Un campo retirado del modelo deja de ser pedible en el acto."""
+        from normalizacion.api.busqueda import _campos_permitidos
+        from normalizacion.core.modelo import DocumentoArchivo
+
+        assert _campos_permitidos() <= set(DocumentoArchivo.model_fields)
+        assert "hash_contenido" in _campos_permitidos()
+
+    def test_el_resaltado_sigue_llegando_aunque_se_filtren_campos(self) -> None:
+        """`_resaltado` no viene de _source sino de `highlight`, así que pedir solo
+        `nombre` NO debe perder los fragmentos — que es justo lo que se pinta."""
+        cuerpo = self._cuerpo(texto="garcia", campos=["nombre"])
+        assert "highlight" in cuerpo

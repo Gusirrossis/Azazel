@@ -34,6 +34,14 @@ class SolicitudBusqueda(BaseModel):
     abrir_pit: bool = Field(
         default=False, description="Abrir un Point-In-Time (vista estable para paginar)"
     )
+    campos: list[str] | None = Field(
+        default=None,
+        max_length=40,
+        description=(
+            "Campos a devolver por documento. Por omisión, TODOS (comportamiento"
+            " actual). Se filtran contra una allowlist: lo desconocido se ignora."
+        ),
+    )
     pit_id: str | None = Field(default=None, description="PIT de una búsqueda anterior")
 
 
@@ -43,6 +51,18 @@ class RespuestaBusqueda(BaseModel):
     cursor: list[Any] | None = None  # pasa esto como `cursor` para la siguiente página
     facetas: dict[str, dict[str, int]] | None = None
     pit_id: str | None = None
+    # De QUÉ nodo salieron estos resultados. Existe para quien federa: mezclar
+    # resultados de varios sistemas obliga a etiquetarlos, y sin esto el nombre
+    # "Azazel" acabaría cableado a mano en el código de otro — que además dejaría
+    # de ser cierto el día que haya un segundo nodo.
+    origen: str = "azazel"
+
+
+class Salud(BaseModel):
+    """Sonda de disponibilidad BARATA. Ver el endpoint `/salud` para el porqué."""
+
+    ok: bool
+    indice: bool
 
 
 class SolicitudLogin(BaseModel):

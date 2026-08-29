@@ -37,6 +37,7 @@ from normalizacion.api.esquemas import (
     RespuestaReprocesar,
     RespuestaTablero,
     ResumenPanel,
+    Salud,
     Sesion,
     SolicitudAtributos,
     SolicitudBusqueda,
@@ -382,6 +383,29 @@ def crear_app(config: Config) -> FastAPI:
         )
 
     # ---------------- Sesión (login de personas) ----------------
+
+    @aplicacion.get("/salud", response_model=Salud)
+    def get_salud(request: Request) -> Salud:
+        """Sonda de disponibilidad BARATA, para quien federa con esta API.
+
+        Existe porque lo más parecido que había era `/estadisticas`, que ejecuta tres
+        agregaciones y un `track_total_hits` sobre el índice ENTERO para responder
+        "sí, estoy vivo". Usarlo como sonda castiga a OpenSearch en cada comprobación
+        de un consumidor que solo quiere saber si merece la pena preguntar.
+
+        Aquí solo se hace un `ping`. Y NO miente: si OpenSearch no responde, `indice`
+        es False, porque `/buscar` va a fallar de todas formas y quien pregunta
+        prefiere saberlo antes de gastar su presupuesto de tiempo.
+
+        Sin autenticar a propósito: es lo que llama un balanceador o un consumidor
+        ANTES de tener contexto. Por eso devuelve dos booleanos y nada más — ni
+        versión, ni recuentos, ni el identificador del nodo.
+        """
+        try:
+            indice = bool(_cliente(request).ping())
+        except Exception:
+            indice = False
+        return Salud(ok=True, indice=indice)
 
     @aplicacion.post("/auth/login", response_model=Identidad)
     def post_login(
