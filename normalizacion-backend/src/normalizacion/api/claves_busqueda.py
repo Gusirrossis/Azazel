@@ -95,6 +95,38 @@ def revocar_clave(config: Config, nombre: str) -> bool:
     return True
 
 
+def hay_alguna(config: Config) -> bool:
+    """¿Hay al menos UNA clave dada de alta (estática o con nombre)?
+
+    Existe para que quien autentica pueda distinguir «esta clave es válida» de
+    «no hay ninguna clave configurada, así que el canal está abierto». `autorizada`
+    mezcla las dos cosas, y usarla como comprobación de identidad convertía cualquier
+    cabecera `X-API-Key: loquesea` en un acceso válido de rol `lector`.
+    """
+    if config.api_keys:
+        return True
+    try:
+        return bool(_leer_cacheado(config))
+    except Exception:
+        # Sin poder consultar, se asume que SÍ hay claves: el sentido seguro del error
+        # es no declarar abierto un canal que no se ha podido comprobar.
+        return True
+
+
+def coincide(config: Config, presentada: str | None) -> bool:
+    """¿La clave presentada coincide con alguna REALMENTE configurada?
+
+    A diferencia de `autorizada`, esto nunca devuelve True por ausencia de claves.
+    Es la comprobación que debe usar la autenticación.
+    """
+    if not presentada:
+        return False
+    if presentada in tuple(config.api_keys):
+        return True
+    h = _hash(presentada)
+    return any(hmac.compare_digest(h, c.get("hash", "")) for c in _leer_cacheado(config))
+
+
 def autorizada(config: Config, presentada: str | None) -> bool:
     """¿La clave presentada es válida? Combina las estáticas de `config.api_keys` (texto plano,
     compat) y las dinámicas con nombre (por hash). Sin NINGUNA clave configurada → abierto (dev)."""

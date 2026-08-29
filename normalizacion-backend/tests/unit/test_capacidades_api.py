@@ -43,11 +43,20 @@ CAPACIDADES: dict[str, dict[str, bool]] = {
 
 @pytest.fixture(autouse=True)
 def _sin_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
-    """La autorización consulta Postgres (claves dinámicas con nombre del panel).
+    """La autorización consulta Postgres. Estos tests comprueban SÓLO el corte por
+    capacidad, así que se simula una instalación recién creada —sin usuarios y sin
+    claves— donde el canal está abierto para poder dar de alta al primer admin.
 
-    Estos tests comprueban SÓLO el corte por capacidad, que ocurre antes de tocar
-    datos, así que la auth se cortocircuita en vez de levantar una base."""
+    Son DOS parches porque hay dos vías de entrada: la cookie de sesión (personas,
+    vía `usuarios`) y la `X-API-Key` (consumidores máquina, vía `claves_busqueda`).
+
+    `hay_alguno_cacheado` devuelve True cuando la BD no responde —ante la duda,
+    cerrado: una caída de Postgres no puede abrir el panel—, y por eso sin este
+    parche estos tests recibirían 401 en vez del 409 que buscan.
+    """
     monkeypatch.setattr("normalizacion.api.claves_busqueda.autorizada", lambda cfg, k: True)
+    monkeypatch.setattr("normalizacion.api.claves_busqueda.hay_alguna", lambda cfg: False)
+    monkeypatch.setattr("normalizacion.api.usuarios.hay_alguno_cacheado", lambda cfg: False)
 
 
 def _app(perfil: str, nodo_id: str) -> Any:

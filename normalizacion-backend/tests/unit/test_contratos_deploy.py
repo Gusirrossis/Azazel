@@ -95,9 +95,11 @@ class TestComposeProduccion:
         assert "POSTGRES_PASSWORD: norm" not in crudo
 
     def test_la_api_exige_llaves_y_perfil(self) -> None:
-        """Con `api_keys` vacío la autenticación queda DESHABILITADA (`llave_valida`
-        devuelve True). Y sin perfil, un VPS arrancaría como `local`: archivo
-        maestro y selector de destino, que son justo lo que no debe ser."""
+        """Sin usuarios NI `api_keys` la API queda abierta a cualquiera; en el nodo
+        público la llave estática es la red de seguridad que no depende de que
+        alguien se acuerde de crear el primer usuario. Y sin perfil, un VPS
+        arrancaría como `local`: archivo maestro y selector de destino, que son
+        justo lo que no debe ser."""
         crudo = (RAIZ / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
         assert "${NORM_API_KEYS:?" in crudo
         assert "${NORM_DESPLIEGUE__PERFIL:?" in crudo

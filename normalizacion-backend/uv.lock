@@ -1131,6 +1131,7 @@ dependencies = [
 
 [package.optional-dependencies]
 api = [
+    { name = "argon2-cffi" },
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1169,6 +1170,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
+    { name = "argon2-cffi", marker = "extra == 'api'", specifier = ">=23.1" },
     { name = "charset-normalizer", marker = "extra == 'workers'", specifier = ">=3.3" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.111" },
     { name = "minio", marker = "extra == 'workers'", specifier = ">=7.2" },

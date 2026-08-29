@@ -2205,3 +2205,228 @@ button.chip-estado.activo .chip-clave {
 .rn-acento .rn-v { color: var(--gold); }
 .rn-k { color: var(--silver); font-size: 0.8rem; margin-top: 6px; }
 .rn-nota { color: var(--silver); font-size: 0.82rem; margin-top: 14px; margin-bottom: 0; }
+
+/* ============================================================
+   Login — la primera pantalla de Azazel.
+   Misma gramática que el resto: carbón de fondo, oro viejo SOLO en el
+   título y los filetes, Cinzel en mayúsculas con tracking amplio.
+   La tarjeta no lleva sombra: en un fondo tan oscuro una sombra no se
+   ve, y el filete de medio punto ya la separa del fondo.
+   ============================================================ */
+.login-fondo {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  /* Halo dorado apenas perceptible: da centro a la página sin competir
+     con el título, que es lo único que debe brillar. */
+  background:
+    radial-gradient(ellipse at 50% 34%, rgba(201, 164, 92, 0.07), transparent 62%),
+    var(--bg);
+}
+
+.login-tarjeta {
+  width: 100%;
+  max-width: 380px;
+  background: var(--panel);
+  border: 0.5px solid var(--gold-soft);
+  border-radius: 5px;
+  padding: 40px 36px 34px;
+}
+
+.login-marca {
+  text-align: center;
+  margin-bottom: 30px;
+}
+.login-marca h1 {
+  font-size: 30px;
+  letter-spacing: 0.3em;
+  /* Cinzel en mayúsculas con este tracking deja un hueco óptico a la
+     derecha; el padding lo compensa para que el título quede centrado
+     de verdad y no dos píxeles a la izquierda. */
+  padding-left: 0.3em;
+  margin-bottom: 14px;
+}
+.login-filete {
+  display: block;
+  width: 54px;
+  height: 1px;
+  margin: 0 auto;
+  background: linear-gradient(90deg, transparent, var(--gold-soft), transparent);
+}
+.login-subtitulo {
+  margin-top: 13px;
+  font-size: 13px;
+  color: var(--silver);
+  letter-spacing: 0.05em;
+}
+
+.login-etiqueta {
+  display: block;
+  font-family: "Cinzel", "Cormorant Garamond", serif;
+  font-size: 11px;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--silver);
+  margin-bottom: 7px;
+}
+.login-etiqueta + .login-campo,
+.login-etiqueta + .login-campo-clave {
+  margin-bottom: 19px;
+}
+
+.login-campo {
+  width: 100%;
+  background: var(--panel-2);
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  padding: 11px 14px;
+  font-family: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  transition: border-color 0.15s ease;
+}
+.login-campo::placeholder {
+  color: var(--silver);
+}
+.login-campo:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+.login-campo:disabled {
+  opacity: 0.55;
+}
+
+/* El ojo va DENTRO del campo; el padding derecho le reserva sitio para
+   que el texto largo no pase por debajo del botón. */
+.login-campo-clave {
+  position: relative;
+}
+.login-campo-clave .login-campo {
+  padding-right: 66px;
+  margin-bottom: 0;
+}
+.login-ojo {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: 0;
+  color: var(--silver);
+  font-family: inherit;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 6px 8px;
+}
+.login-ojo:hover {
+  color: var(--gold);
+}
+
+.login-boton {
+  width: 100%;
+  margin-top: 26px;
+  background: transparent;
+  border: 0.5px solid var(--gold-soft);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: "Cinzel", "Cormorant Garamond", serif;
+  font-size: 13px;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+  color: var(--gold);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.login-boton:hover:not(:disabled) {
+  background: var(--gold-faint);
+  border-color: var(--gold);
+}
+.login-boton:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* Los dos avisos se distinguen a propósito: el rojo es "te equivocaste,
+   prueba otra vez"; el de plata es "no puedes probar todavía". Pintarlos
+   igual haría que el usuario siguiera tecleando contra un muro. */
+.login-error,
+.login-espera {
+  margin-top: 17px;
+  font-size: 14px;
+  text-align: center;
+}
+.login-error {
+  color: var(--rojo);
+}
+.login-espera {
+  color: var(--silver);
+}
+
+.login-nota {
+  margin-top: 22px;
+  padding-top: 17px;
+  border-top: 0.5px solid var(--line);
+  font-size: 13px;
+  color: var(--silver);
+  text-align: center;
+}
+
+/* Foco visible en todo lo enfocable de la tarjeta: quien navega con
+   teclado tiene que ver siempre dónde está parado. */
+.login-tarjeta :is(input, button):focus-visible {
+  outline: 1px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ----- Sesión en la cabecera ----- */
+.sesion-barra {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 13px;
+  font-size: 13px;
+  color: var(--silver);
+  padding: 7px 0 0;
+}
+.sesion-usuario {
+  color: var(--ink);
+}
+.sesion-rol {
+  font-family: "Cinzel", "Cormorant Garamond", serif;
+  font-size: 10.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--gold);
+  border: 0.5px solid var(--gold-soft);
+  border-radius: 3px;
+  padding: 2px 8px;
+}
+.sesion-salir {
+  background: transparent;
+  border: 0.5px solid var(--line);
+  border-radius: 3px;
+  color: var(--silver);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.sesion-salir:hover {
+  color: var(--ink);
+  border-color: var(--gold-soft);
+}
+
+/* Pantalla completa mientras se comprueba la cookie: sin esto parpadea el
+   login un instante antes de entrar, en cada recarga. */
+.sesion-cargando {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--silver);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+}

@@ -45,6 +45,82 @@ class RespuestaBusqueda(BaseModel):
     pit_id: str | None = None
 
 
+class SolicitudLogin(BaseModel):
+    """Credenciales del panel. `extra="forbid"` para que un campo de más sea un 422
+    ruidoso y no algo que el servidor ignora en silencio."""
+
+    model_config = ConfigDict(extra="forbid")
+    usuario: str = Field(min_length=1, max_length=60)
+    contrasena: str = Field(min_length=1, max_length=200)
+
+
+class Identidad(BaseModel):
+    """Quién está usando el panel. Es lo que el front pinta en la cabecera y lo que
+    usa para decidir qué pestañas mostrar."""
+
+    usuario: str
+    nombre: str
+    rol: str
+    # True tras un alta o un reseteo: el front obliga a cambiarla antes de seguir.
+    debe_cambiar: bool = False
+
+
+class SolicitudCambioContrasena(BaseModel):
+    """Cambio de la propia contraseña. Exige la actual: con la sesión ya abierta,
+    sin este paso a cualquiera que encuentre la pantalla desbloqueada le basta un
+    clic para quedarse con la cuenta."""
+
+    model_config = ConfigDict(extra="forbid")
+    actual: str = Field(min_length=1, max_length=200)
+    nueva: str = Field(min_length=1, max_length=200)
+
+
+class Sesion(BaseModel):
+    """Una sesión abierta, para que el usuario reconozca las suyas."""
+
+    id: int
+    creada_en: str | None = None
+    vista_en: str | None = None
+    expira_en: str | None = None
+    ip: str = ""
+    agente: str = ""
+
+
+class SolicitudUsuarioNuevo(BaseModel):
+    """Alta de usuario por un admin."""
+
+    model_config = ConfigDict(extra="forbid")
+    usuario: str = Field(min_length=1, max_length=60)
+    contrasena: str = Field(min_length=1, max_length=200)
+    rol: str = Field(default="lector", pattern="^(lector|operador|admin)$")
+    nombre: str = Field(default="", max_length=120)
+
+
+class SolicitudUsuarioCambio(BaseModel):
+    """Cambios parciales sobre un usuario. Todo opcional: se aplica lo que venga."""
+
+    model_config = ConfigDict(extra="forbid")
+    rol: str | None = Field(default=None, pattern="^(lector|operador|admin)$")
+    nombre: str | None = Field(default=None, max_length=120)
+    activo: bool | None = None
+    # Reseteo por un admin: deja la cuenta con `debe_cambiar`, así el dueño la
+    # cambia al entrar y el admin no se queda sabiendo la contraseña ajena.
+    contrasena: str | None = Field(default=None, max_length=200)
+
+
+class UsuarioPanel(BaseModel):
+    """Usuario tal como lo ve el panel de administración. Nunca lleva el hash."""
+
+    id: int
+    usuario: str
+    nombre: str
+    rol: str
+    activo: bool
+    debe_cambiar: bool
+    creado_en: str | None = None
+    ultimo_acceso: str | None = None
+
+
 class SolicitudClaveBusqueda(BaseModel):
     """Alta de una clave de búsqueda CON NOMBRE (una por consumidor, revocable aparte)."""
 

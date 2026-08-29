@@ -155,18 +155,54 @@ def _chequear_almacen(config: Config) -> list[Chequeo]:
 
 
 def _chequear_seguridad(config: Config) -> list[Chequeo]:
+    """La API se cierra por DOS vías independientes: usuarios (personas, con cookie
+    de sesión) y llaves estáticas (máquinas). Basta una para que deje de estar
+    abierta; sin ninguna, responde a cualquiera."""
     t = despliegue.de_config(config)
+    chequeos: list[Chequeo] = []
+
+    hay_usuarios = _hay_usuarios(config)
+    if hay_usuarios is True:
+        chequeos.append(_ok("Usuarios del panel", "hay al menos una cuenta: el panel exige login"))
+    elif hay_usuarios is False:
+        detalle = (
+            "sin usuarios NI llaves la API acepta a cualquiera. Crea el primero con"
+            " `norm usuarios crear <usuario> --rol admin`."
+        )
+        chequeos.append(
+            _error("Panel sin usuarios", detalle)
+            if t.sirve_publico and not config.api_keys
+            else _aviso("Panel sin usuarios", "nadie puede entrar por el panel todavía")
+        )
+    # `None` = no se pudo consultar la BD; el chequeo de Postgres ya lo reporta.
+
     if config.api_keys:
-        return [_ok("Autenticación de la API", f"{len(config.api_keys)} llave(s) estática(s)")]
-    if t.sirve_publico:
-        return [
+        chequeos.append(
+            _ok("Llaves de máquina", f"{len(config.api_keys)} llave(s) estática(s)")
+        )
+    elif t.sirve_publico and hay_usuarios is not True:
+        chequeos.append(
             _error(
                 "NORM_API_KEYS vacío en un nodo PÚBLICO",
-                "con la lista vacía `llave_valida` devuelve True: la API responde a"
-                " cualquiera. El índice completo queda abierto.",
+                "sin llaves ni usuarios la API responde a cualquiera y el índice"
+                " completo queda abierto.",
             )
-        ]
-    return [_aviso("API sin llaves estáticas", "aceptable en un nodo no expuesto")]
+        )
+    else:
+        chequeos.append(_aviso("API sin llaves estáticas", "aceptable si el panel exige login"))
+
+    return chequeos
+
+
+def _hay_usuarios(config: Config) -> bool | None:
+    """True/False, o None si la BD no responde — que es un problema distinto y ya
+    lo señala su propio chequeo; aquí no se convierte en un falso positivo."""
+    try:
+        from normalizacion.api import usuarios
+
+        return usuarios.hay_alguno(config)
+    except Exception:
+        return None
 
 
 def _chequear_replica(config: Config) -> list[Chequeo]:

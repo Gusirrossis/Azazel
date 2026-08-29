@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { estadisticas, topologia } from "./api";
 import type { Topologia } from "./api";
 import type { Estadisticas } from "./tipos";
+import { ProveedorSesion, alcanza, useSesion } from "./contexto/Sesion";
 import Cabecera from "./componentes/Cabecera";
+import Login from "./componentes/Login";
+import CambioContrasena from "./componentes/CambioContrasena";
 import Ingesta from "./componentes/Ingesta";
 import Tablero from "./componentes/tablero/Tablero";
 import Busqueda from "./componentes/Busqueda";
@@ -11,6 +14,7 @@ import ExploradorCola from "./componentes/ExploradorCola";
 import Filtro from "./componentes/Filtro";
 import Entidades from "./componentes/Entidades";
 import ClavesBusqueda from "./componentes/ClavesBusqueda";
+import Usuarios from "./componentes/Usuarios";
 import ResumenNodo from "./componentes/ResumenNodo";
 
 type Pestana =
@@ -34,7 +38,16 @@ const CAPACIDAD_POR_PESTANA: Partial<Record<Pestana, keyof Topologia["capacidade
   entidades: "entidades",
 };
 
-export default function App() {
+// Rol mínimo por pestaña. Es una cortesía visual, NO la autorización: quien la
+// impone es el backend en cada endpoint. Esconder aquí lo que allí se rechazaría
+// evita ofrecer botones que solo pueden terminar en un 403.
+const ROL_POR_PESTANA: Partial<Record<Pestana, "lector" | "operador" | "admin">> = {
+  filtro: "operador",
+  acceso: "admin",
+};
+
+function Panel() {
+  const { identidad } = useSesion();
   const [pestana, setPestana] = useState<Pestana>("inicio");
   const [stats, setStats] = useState<Estadisticas | null>(null);
   const [topo, setTopo] = useState<Topologia | null>(null);
@@ -48,7 +61,10 @@ export default function App() {
 
   const visibles = PESTANAS.filter((p) => {
     const necesita = CAPACIDAD_POR_PESTANA[p.clave];
-    return !necesita || !topo || topo.capacidades[necesita];
+    if (necesita && topo && !topo.capacidades[necesita]) return false;
+    const rolMinimo = ROL_POR_PESTANA[p.clave];
+    if (rolMinimo && !alcanza(identidad?.rol, rolMinimo)) return false;
+    return true;
   });
 
   // Si la pestaña activa deja de estar disponible (llegó la topología después del
@@ -97,7 +113,35 @@ export default function App() {
       {pestana === "archivos" && <ExploradorCola modo="todos" />}
       {pestana === "errores" && <ExploradorCola modo="errores" />}
       {pestana === "filtro" && <Filtro />}
-      {pestana === "acceso" && <ClavesBusqueda />}
+      {/* Acceso reúne las dos formas de entrar: personas (usuarios) y máquinas
+          (claves con nombre). Verlas juntas evita la confusión de creer que una
+          clave sirve para entrar al panel — ya no. */}
+      {pestana === "acceso" && (
+        <>
+          <Usuarios />
+          <ClavesBusqueda />
+        </>
+      )}
     </div>
+  );
+}
+
+/** Decide entre login, cambio obligatorio de contraseña y panel. */
+function Puerta() {
+  const { identidad, cargando } = useSesion();
+
+  // Sin este estado intermedio el login parpadea en cada recarga, antes de que
+  // vuelva la comprobación de la cookie.
+  if (cargando) return <div className="sesion-cargando">Comprobando sesión…</div>;
+  if (!identidad) return <Login />;
+  if (identidad.debe_cambiar) return <CambioContrasena />;
+  return <Panel />;
+}
+
+export default function App() {
+  return (
+    <ProveedorSesion>
+      <Puerta />
+    </ProveedorSesion>
   );
 }

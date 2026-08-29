@@ -102,6 +102,25 @@ class PerillasFiltro(BaseModel):
     # extractor de imágenes les saca texto por OCR (→ texto_indexable, buscable).
     ocr_activo: bool = False
 
+    # ⚙ Política de OCR por CLASE de imagen (Fase 3). Antes esto era todo-o-nada:
+    # con `ocr_activo` TODA imagen saltaba a HOT sin pasar por el scoring, así que un
+    # fondo de pantalla costaba lo mismo que un acta escaneada. El clasificador barato
+    # de `precalificacion.imagen` mira el head y separa escaneo de fotografía.
+    #
+    # "escaneo"  → solo lo que parece documento (bitonal, márgenes, poca saturación)
+    # "todas"    → el comportamiento anterior; útil para una pasada exhaustiva
+    # "ninguna"  → OCR solo en PDFs escaneados, nunca en `image/*`
+    ocr_politica_imagen: str = "escaneo"
+    # Confianza media por debajo de la cual el texto OCR NO va a `texto_indexable`.
+    # Un texto inventado es peor que ningún texto: contamina la búsqueda y mete anclas
+    # falsas en la resolución de entidades. El texto se conserva aparte para poder
+    # reprocesarlo. 0 = no descartar nada.
+    ocr_confianza_descarte: float = 40.0
+    # px: por debajo de esto una imagen es un ícono/avatar/miniatura, no un documento.
+    # Muy por encima de `worker.ocr_min_lado` (64), que solo evita OCR-ear un favicon:
+    # una página escaneada de verdad no baja de ~600 px ni al peor escáner.
+    imagen_ancho_min_documento: int = 600
+
     # PRIORIDAD a comprimidos (decisión del usuario: la mayoría de lo útil viene
     # dentro). Se procesan PRIMERO y sus entradas internas heredan la urgencia.
     prioridad_contenedores: int = Field(default=90, ge=0, le=100)
@@ -163,7 +182,7 @@ class PerillasFiltro(BaseModel):
     lineas_consistencia_csv: int = 10
 
     # ⚙ K7 — pesos del puntaje (señal → puntos). CUALQUIER cambio = nueva version_filtro.
-    version_filtro: str = "reglas-v3-lista-blanca"
+    version_filtro: str = "reglas-v4-imagen-ocr"
     pesos: dict[str, int] = Field(
         default_factory=lambda: {
             "tabular": 35,
@@ -224,13 +243,34 @@ class PerillasWorker(BaseModel):
     # El binario tesseract y sus idiomas se instalan aparte; si faltan, se degrada con
     # un flag `ocr_no_disponible` (nunca rompe). El downscale acota RAM/tiempo.
     ocr_idiomas: str = "spa+eng"        # códigos de idioma de tesseract (spa, eng, …)
-    ocr_max_lado: int = 2600            # px: se reduce la imagen si el lado mayor lo supera
+    # px: se reduce la imagen si el lado mayor lo supera.
+    #
+    # 3500 y no 2600: una carta a 300 dpi mide 2550 x 3300 px, así que con el tope
+    # anterior TODA página rasterizada se reducía justo después de renderizarla — se
+    # pagaba el coste de los 300 dpi y se leía a ~230. El tope sigue existiendo para
+    # acotar la RAM de un escaneo gigante, pero ya no recorta el caso normal.
+    ocr_max_lado: int = 3500
     ocr_min_lado: int = 64              # px: se saltan íconos/miniaturas (no valen OCR)
     # OCR de PDFs ESCANEADOS (Fase 2): si el texto nativo del PDF es menor a
     # `ocr_pdf_umbral_chars`, se rasterizan sus páginas (pypdfium2) y se les hace OCR.
     ocr_pdf_umbral_chars: int = 20      # < esto de texto nativo ⇒ se trata como escaneado
     ocr_pdf_max_paginas: int = 20       # tope de páginas a rasterizar+OCR (acota tiempo)
-    ocr_pdf_escala: float = 3.0  # escala de render pypdfium2 (~216 dpi; ocr_max_lado la topa)
+    # 4.2 ≈ 300 dpi, que es el punto donde Tesseract está calibrado. Con el 3.0
+    # anterior (~216 dpi) se leía por debajo de sus posibilidades; `ocr_max_lado`
+    # sigue topando el coste en páginas grandes.
+    ocr_pdf_escala: float = 4.2
+
+    # ⚙ OCR — preprocesado. Cada paso cuesta milisegundos y cambia el resultado en
+    # escaneos de fotocopia. Se pueden apagar por separado para medir su aporte real
+    # contra el conjunto dorado (`norm calidad evaluar`), en vez de suponerlo.
+    ocr_deskew: bool = True             # endereza la página (OSD de Tesseract)
+    ocr_binarizar: bool = True          # umbral de Otsu: separa tinta de papel
+    ocr_lado_minimo_util: int = 1000    # px: por debajo se amplía (≈20 px por carácter)
+    ocr_upscale_max: float = 3.0        # tope de ampliación (más allá solo agranda el ruido)
+    # Confianza media (0-100) por debajo de la cual el texto se considera dudoso.
+    # NO se descarta silenciosamente: se marca con `ocr_confianza_baja` y el llamador
+    # decide. Ver `filtro.ocr_confianza_descarte` para el corte duro.
+    ocr_confianza_min: float = 60.0
 
     # ⚙ K12 — perfil de calidad tabular (chequeos estilo great_expectations sobre polars)
     calidad_chequeos: tuple[str, ...] = (
@@ -391,8 +431,25 @@ class Config(BaseSettings):
 
     indice_alias: str = "archivos"
 
-    # API de búsqueda (Fase 5). Llaves vacías = auth deshabilitada (solo dev).
+    # API de búsqueda (Fase 5). Estas llaves son para consumidores MÁQUINA
+    # (reddoor, el AEB): no tienen navegador ni cookies. Las PERSONAS entran con
+    # usuario y contraseña — ver los ajustes de sesión más abajo.
     api_keys: tuple[str, ...] = ()
+
+    # --- Sesión del panel (login de personas) ---
+    # Caducidad por INACTIVIDAD: cada request usada renueva la ventana.
+    sesion_duracion_min: int = 720  # 12 h
+    # `Secure` exige HTTPS. En prod (Caddy con TLS) va True; en dev nativo el front
+    # corre en http://localhost y con esto en True el navegador descarta la cookie
+    # sin avisar y el login "no hace nada".
+    sesion_cookie_secure: bool = True
+    # `Strict` no manda la cookie en navegaciones que vengan de otro sitio, lo que
+    # cierra el CSRF sin token aparte. El panel no se enlaza desde fuera, así que
+    # no se pierde nada; las llamadas del propio SPA son del mismo sitio y sí la llevan.
+    sesion_cookie_samesite: str = "strict"
+    # Fallos seguidos antes de frenar el login, y cuánto dura el freno.
+    login_max_intentos: int = 5
+    login_bloqueo_seg: int = 300
     api_cors_origenes: tuple[str, ...] = ("http://localhost:5173",)  # el front en dev
     # Si se define, el explorador/pipeline SOLO puede operar dentro de esta carpeta
     # (en Docker: el volumen montado /datos). None = sin confinar (dev nativo).

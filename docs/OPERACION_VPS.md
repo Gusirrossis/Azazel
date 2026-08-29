@@ -142,3 +142,92 @@ docker run --rm --network normalizacion_interna \
 
 Para la suite unitaria en los **tres perfiles** (lo que hace la CI), repite
 cambiando `-e NORM_DESPLIEGUE__PERFIL=local|hibrido-ingesta|hibrido-servicio`.
+
+## Acceso al panel: usuarios y sesiones
+
+El panel se entra con **usuario y contraseña**. La sesión viaja en una cookie
+`HttpOnly` + `Secure` + `SameSite=Strict`, y vive como fila en la tabla `sesiones`:
+por eso se puede revocar de verdad y al instante, cosa que un JWT no permite sin
+montar una lista negra.
+
+Las `NORM_API_KEYS` del `.env.prod` **no desaparecen**: son para consumidores
+máquina (reddoor, el AEB) y como acceso de emergencia. Ver la tabla de más abajo.
+
+### Alta del primer administrador
+
+El panel exige una cuenta para entrar, así que la primera se crea desde la
+terminal del servidor. Mientras no exista ningún usuario **ni** ninguna llave, la
+API acepta cualquier petición: es el hueco justo para este arranque, y se cierra
+solo en cuanto existe la primera cuenta.
+
+```bash
+ssh mawitherock
+cd /srv/azazel/normalizacion-backend
+docker compose -f deploy/docker-compose.prod.yml exec api \
+  norm usuarios crear tu-usuario --rol admin
+```
+
+Pide la contraseña por teclado, sin eco: no pasarla como argumento es deliberado,
+porque un argumento queda en el historial del shell y en la lista de procesos.
+
+Mínimo **12 caracteres**. La política prefiere longitud a composición: no exige
+símbolos porque eso empuja a `Password1!`, que es lo primero que prueba cualquier
+diccionario.
+
+### Los tres roles
+
+| Rol | Puede |
+|---|---|
+| `lector` | Buscar, ver tableros y entidades, descargar originales |
+| `operador` | Lo anterior + lanzar corridas, reprocesar, mover frío, editar el filtro |
+| `admin` | Todo + usuarios, claves de API, recetas y recursos |
+
+Son acumulativos. El backend los impone endpoint por endpoint; el front además
+esconde lo que tu rol no alcanza, para no ofrecer botones que solo darían 403.
+
+### Cómo entra cada tipo de credencial
+
+| Credencial | Rol | Para qué |
+|---|---|---|
+| Usuario + contraseña | el suyo | Personas, en el panel |
+| Clave CON NOMBRE (pestaña Acceso, `bus_…`) | `lector` | Consumidores externos: buscar y descargar |
+| `NORM_API_KEYS` del `.env.prod` | `admin` | Emergencia, cuando nadie puede entrar al panel |
+
+### Operaciones habituales
+
+```bash
+# Dentro del contenedor api (mismo prefijo docker compose … exec api que arriba)
+norm usuarios listar
+norm usuarios crear ana --rol operador
+norm usuarios rol ana admin
+norm usuarios contrasena ana        # reseteo: cierra todas sus sesiones
+norm usuarios desactivar ana        # no borra: conserva la traza de lo que hizo
+norm usuarios activar ana
+```
+
+No se puede degradar ni desactivar al **último admin activo**: el CLI y la API lo
+rechazan. Salir de esa situación obligaría a entrar a Postgres a mano.
+
+### Si te quedas fuera
+
+1. **Olvidaste la contraseña** → `norm usuarios contrasena <usuario>` por SSH.
+2. **No queda ningún admin** → crea otro: `norm usuarios crear rescate --rol admin`.
+3. **La API no responde y hace falta consultar ya** → usa la llave de
+   `NORM_API_KEYS` con la cabecera `X-API-Key`; entra como `admin`.
+
+Un reseteo de contraseña cierra todas las sesiones de esa cuenta. Es deliberado:
+si se cambia porque se sospecha que alguien entró, dejar viva su sesión no arregla
+nada.
+
+### Cosas que rompen el login (y no lo parecen)
+
+- **`NORM_SESION_COOKIE_SECURE=true` sin HTTPS.** El navegador descarta la cookie
+  sin avisar: el login responde 200 y aun así "no pasa nada". En producción va
+  siempre en `true` (Caddy pone el TLS); solo en dev nativo sobre `http://localhost`
+  hay que ponerlo en `false`.
+- **Quitar `X-Forwarded-For` del nginx del front.** La API vería a todo el mundo
+  con la misma IP, y el freno del login por IP bloquearía a todos los usuarios a la
+  vez en cuanto alguien fallara cinco veces.
+- **Un `NORM_API_CORS_ORIGENES` que no incluya el origen real del front.** Con
+  `allow_credentials` el navegador exige orígenes explícitos; con `*` no manda la
+  cookie.

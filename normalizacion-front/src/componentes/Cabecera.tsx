@@ -1,15 +1,16 @@
-import { useState } from "react";
 import { formatearBytes } from "../api";
+import { useSesion } from "../contexto/Sesion";
 import type { Estadisticas } from "../tipos";
 
+/**
+ * Cabecera del panel: identidad de Azazel, cifras del índice y quién ha entrado.
+ *
+ * Aquí vivía un campo `<input type="password">` donde se pegaba a mano la API key,
+ * que se guardaba en `localStorage`. Lo ha sustituido la sesión: la credencial va
+ * en una cookie `httpOnly` y esta cabecera solo muestra quién eres y te deja salir.
+ */
 export default function Cabecera({ stats }: { stats: Estadisticas | null }) {
-  const [llave, setLlave] = useState(localStorage.getItem("norm_api_key") ?? "");
-
-  const guardarLlave = (valor: string) => {
-    setLlave(valor);
-    if (valor) localStorage.setItem("norm_api_key", valor);
-    else localStorage.removeItem("norm_api_key");
-  };
+  const { identidad, salir } = useSesion();
 
   return (
     <header className="cabecera">
@@ -31,14 +32,17 @@ export default function Cabecera({ stats }: { stats: Estadisticas | null }) {
             </span>
           </div>
         )}
-        <input
-          className="campo-llave"
-          type="password"
-          placeholder="API key (opcional)"
-          value={llave}
-          onChange={(e) => guardarLlave(e.target.value)}
-          title="Se manda como X-API-Key; vacío si la API no exige auth"
-        />
+        {identidad && (
+          <div className="sesion-barra">
+            <span className="sesion-usuario">{identidad.nombre || identidad.usuario}</span>
+            <span className="sesion-rol" title="Lo que este rol te permite hacer">
+              {identidad.rol}
+            </span>
+            <button className="sesion-salir" onClick={salir}>
+              Salir
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

@@ -7,9 +7,13 @@ import {
 import type { ClaveBusqueda } from "../tipos";
 
 /**
- * Gestión de claves de acceso al endpoint de búsqueda (POST /buscar) y descarga.
- * Solo se guarda el hash en el servidor: la clave en claro se muestra UNA vez al generar.
- * Sin ninguna clave, el endpoint está ABIERTO; al crear la primera queda cerrado.
+ * Claves de acceso para consumidores MÁQUINA (POST /buscar y descarga).
+ *
+ * Solo se guarda el hash en el servidor: la clave en claro se muestra UNA vez al
+ * generarla. Cada clave entra con rol `lector` — buscar y descargar, nada más.
+ *
+ * Ya no son la credencial del panel: las personas entran con usuario y contraseña,
+ * y el panel viaja con cookie de sesión, no con esta cabecera.
  */
 export default function ClavesBusqueda() {
   const [claves, setClaves] = useState<ClaveBusqueda[]>([]);
@@ -59,10 +63,15 @@ export default function ClavesBusqueda() {
     <div className="config-atributos">
       <h3>Claves de acceso al buscador</h3>
       <p className="panel-nota">
-        Cada consumidor externo necesita su <b>clave</b> para llamar al buscador
-        (<code>POST /buscar</code>) y descargar archivos. El servidor guarda solo el <b>hash</b>:
-        la clave se muestra <b>una sola vez</b> al generarla — cópiala en el momento.
-        Sin ninguna clave, el endpoint está <b>abierto</b>; al crear la primera queda <b>cerrado</b>.
+        Para consumidores <b>máquina</b> (reddoor, el AEB): programas sin navegador ni
+        cookies, que llaman al buscador (<code>POST /buscar</code>) y descargan archivos
+        con la cabecera <code>X-API-Key</code>. Las personas no usan esto — entran con
+        usuario y contraseña.
+      </p>
+      <p className="panel-nota">
+        Una clave entra con permisos de <b>lector</b>: puede buscar y descargar, nada
+        más. El servidor guarda solo su <b>hash</b>, así que se muestra <b>una sola vez</b>
+        al generarla — cópiala en el momento; después solo se puede revocar o rotar.
       </p>
 
       {error && <div className="banner-error">{error}</div>}
@@ -114,7 +123,7 @@ export default function ClavesBusqueda() {
           {claves.length === 0 && (
             <tr>
               <td colSpan={3}>
-                <span className="panel-nota">Sin claves — el endpoint está abierto.</span>
+                <span className="panel-nota">Sin claves de máquina. Las personas entran con usuario y contraseña.</span>
               </td>
             </tr>
           )}

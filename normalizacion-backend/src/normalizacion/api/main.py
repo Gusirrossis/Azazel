@@ -8,13 +8,15 @@ locales — con annotations diferidas el Depends se degrada a query param.)
 """
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from normalizacion import __version__
-from normalizacion.api import busqueda, claves_busqueda
+from normalizacion.api import busqueda, claves_busqueda, roles, sesiones, usuarios
+from normalizacion.api import contrasena as pwd
 from normalizacion.api.esquemas import (
     ClaveBusqueda,
     Corrida,
@@ -23,6 +25,7 @@ from normalizacion.api.esquemas import (
     EstadisticasEntidades,
     EstadoPipeline,
     FiltroVisible,
+    Identidad,
     RespuestaAutocompletar,
     RespuestaBusqueda,
     RespuestaCarpetas,
@@ -34,24 +37,138 @@ from normalizacion.api.esquemas import (
     RespuestaReprocesar,
     RespuestaTablero,
     ResumenPanel,
+    Sesion,
     SolicitudAtributos,
     SolicitudBusqueda,
+    SolicitudCambioContrasena,
     SolicitudCarpetaNueva,
     SolicitudClaveBusqueda,
     SolicitudDestino,
     SolicitudFiltro,
+    SolicitudLogin,
     SolicitudPipeline,
     SolicitudProponerMapeo,
     SolicitudProyectar,
     SolicitudReceta,
     SolicitudRecursos,
     SolicitudReprocesar,
+    SolicitudUsuarioCambio,
+    SolicitudUsuarioNuevo,
+    UsuarioPanel,
 )
-from normalizacion.api.seguridad import LimitadorPorMinuto
+from normalizacion.api.roles import Rol
+from normalizacion.api.seguridad import FrenoDeIntentos, LimitadorPorMinuto
 from normalizacion.core.almacen import Almacen, crear_almacen
 from normalizacion.core.config import Config, PerillasFiltro, cargar_config
+from normalizacion.core.observabilidad import obtener_logger
+
+log = obtener_logger("api")
+
+#: Traza de eventos de seguridad. La 0008 justifica desactivar en vez de borrar
+#: usuarios "para no perder la traza de quién hizo qué" — pero sin estos logs esa
+#: traza no existía en ninguna parte: ni el login, ni un alta, ni un cambio de rol
+#: dejaban rastro. Nunca se registra la contraseña ni el token, solo QUIÉN y QUÉ.
+def _auditar(evento: str, request: Request, **datos: Any) -> None:
+    log.info(evento, ip=_ip_cliente(request), **datos)
+
 
 _BLOQUE_DESCARGA = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class QuienEs:
+    """Identidad ya resuelta de un request, venga de una cookie o de una API key.
+
+    Antes esta dependencia devolvía un `str` que servía a la vez de identidad y de
+    cubeta del rate-limit. Con roles hace falta algo más: quién es, con qué rol y
+    por qué vía entró.
+    """
+
+    #: 'sesion' (persona) | 'clave' (máquina) | 'abierta' (instalación sin configurar)
+    tipo: str
+    usuario: str
+    nombre: str
+    rol: str
+    #: Cubeta del rate-limit. Nunca es la clave en claro: ver `de_clave_nombrada`.
+    identidad: str
+    usuario_id: int | None = None
+    debe_cambiar: bool = False
+
+    @classmethod
+    def de_sesion(cls, sesion: Any) -> "QuienEs":
+        return cls(
+            tipo="sesion",
+            usuario=sesion.usuario,
+            nombre=sesion.nombre,
+            rol=sesion.rol,
+            identidad=f"u:{sesion.usuario_id}",
+            usuario_id=sesion.usuario_id,
+            debe_cambiar=sesion.debe_cambiar,
+        )
+
+    @classmethod
+    def de_clave_nombrada(cls, clave: str) -> "QuienEs":
+        """Clave de consumidor: entra como `lector` y nada más. Se llama "clave de
+        acceso al buscador" — buscar y descargar es exactamente su alcance."""
+        return cls(
+            tipo="clave", usuario="(clave)", nombre="Consumidor externo",
+            rol="lector", identidad=f"k:{_cubeta(clave)}",
+        )
+
+    @classmethod
+    def de_clave_estatica(cls, clave: str) -> "QuienEs":
+        """`NORM_API_KEYS` del `.env.prod`: acceso de emergencia con rol `admin`. La
+        pone quien ya controla el servidor, así que no concede nada que no tuviera."""
+        return cls(
+            tipo="clave", usuario="(clave-estatica)", nombre="Acceso de emergencia",
+            rol="admin", identidad=f"k:{_cubeta(clave)}",
+        )
+
+    @classmethod
+    def anonima(cls, request: Request) -> "QuienEs":
+        """Instalación sin usuarios ni claves: hay que poder crear al primer admin."""
+        ip = _ip_cliente(request)
+        return cls(
+            tipo="abierta", usuario="(sin configurar)", nombre="",
+            rol="admin", identidad=f"ip:{ip}",
+        )
+
+
+def _cubeta(clave: str) -> str:
+    """Identificador estable y corto de una clave, para agrupar su rate-limit sin
+    quedarse el secreto en memoria ni arriesgarlo en un log."""
+    import hashlib
+
+    return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:16]
+
+
+def _ip_cliente(request: Request) -> str:
+    """IP real de quien llama, mirando `X-Forwarded-For` si viene.
+
+    En producción la API solo se alcanza a través de Caddy y del nginx del front,
+    así que `request.client.host` sería siempre la IP del contenedor de al lado —
+    la misma para todos. El freno del login cuenta fallos por IP: sin esto, cinco
+    intentos de un atacante bloquearían el acceso de todo el mundo.
+
+    Se usa `X-Real-IP`, que el nginx del front reescribe SIEMPRE con `$remote_addr`,
+    y no la entrada izquierda de `X-Forwarded-For`. Esa izquierda la escribe el
+    CLIENTE: `$proxy_add_x_forwarded_for` añade la IP real por detrás, así que un
+    atacante que mande su propia cabecera controla al 100% lo que veríamos como
+    "su" IP — y con eso el freno del login por IP se esquiva mandando una distinta
+    en cada intento.
+
+    Como respaldo se toma la entrada de MÁS A LA DERECHA de `X-Forwarded-For`, que
+    es la que añadió nuestro propio proxy y el cliente no puede empujar.
+    """
+    real = request.headers.get("x-real-ip", "").strip()
+    if real:
+        return real[:60]
+    reenviada = request.headers.get("x-forwarded-for", "")
+    if reenviada:
+        ultima = reenviada.split(",")[-1].strip()
+        if ultima:
+            return ultima[:60]
+    return request.client.host if request.client else "anonimo"
 
 
 def crear_app(config: Config) -> FastAPI:
@@ -65,11 +182,25 @@ def crear_app(config: Config) -> FastAPI:
     )
     from fastapi.middleware.cors import CORSMiddleware
 
+    # `*` + `allow_credentials` es una combinación explosiva: Starlette refleja el
+    # Origin de quien pregunte, y con la cookie de sesión eso convierte cualquier web
+    # del mundo en un cliente autenticado del panel. `NORM_API_CORS_ORIGENES` es libre
+    # en el `.env.prod`, así que el comentario de "nunca *" no bastaba: se impone aquí.
+    origenes = [o for o in config.api_cors_origenes if o != "*"]
+    if len(origenes) != len(config.api_cors_origenes):
+        log.warning(
+            "cors_comodin_descartado",
+            detalle="'*' es incompatible con la cookie de sesión; enumera los orígenes",
+        )
     aplicacion.add_middleware(
         CORSMiddleware,
-        allow_origins=list(config.api_cors_origenes),
+        allow_origins=origenes,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "X-API-Key"],
+        # El front de dev corre en otro puerto (5173) que la API: sin esto el
+        # navegador no manda la cookie de sesión y el login "funciona" pero ningún
+        # request posterior va autenticado. Exige orígenes explícitos, nunca `*`.
+        allow_credentials=True,
     )
     # Política de recursos persistida (K15): se mergea al arrancar para que el
     # gobernador y los daemons (envío) usen lo que el operador dejó configurado en la
@@ -83,8 +214,38 @@ def crear_app(config: Config) -> FastAPI:
 
     aplicacion.state.config = config
     aplicacion.state.limitador = LimitadorPorMinuto(config.api_solicitudes_por_minuto)
+    aplicacion.state.freno_login = FrenoDeIntentos(
+        max_intentos=config.login_max_intentos, bloqueo_seg=float(config.login_bloqueo_seg)
+    )
     aplicacion.state.cliente = None
     aplicacion.state.almacen = None
+
+    # Higiene de la tabla de sesiones y aviso de arranque, en un hilo aparte.
+    #
+    # En un HILO y no en línea porque `crear_app` NO puede depender de que Postgres
+    # responda: cada intento de conexión gasta hasta `connect_timeout` segundos, y
+    # construir la app es algo que hacen también los tests y el generador de OpenAPI,
+    # donde no hay ninguna base de datos. En línea, esto convertía cada construcción
+    # de la app en varios segundos de espera contra un puerto cerrado.
+    #
+    # Best-effort además: si la BD no responde, la API arranca igual y las sesiones
+    # funcionan en cuanto responda — un panel que no levanta es peor que uno sin barrer.
+    def _higiene_arranque() -> None:
+        try:
+            sesiones.barrer(config)
+            if not usuarios.hay_alguno(config):
+                import structlog
+
+                structlog.get_logger(__name__).warning(
+                    "no hay usuarios: la API acepta cualquier petición hasta que crees el "
+                    "primero con `norm usuarios crear <usuario> --rol admin`",
+                )
+        except Exception:
+            pass
+
+    import threading
+
+    threading.Thread(target=_higiene_arranque, name="higiene-sesiones", daemon=True).start()
 
     # ⚙K16 — topología de este nodo. Las capacidades se derivan UNA vez al construir
     # la app; los endpoints preguntan por ellas, nunca por el perfil.
@@ -123,18 +284,322 @@ def crear_app(config: Config) -> FastAPI:
     def _autorizar(
         request: Request,
         x_api_key: Annotated[str | None, Header()] = None,
-    ) -> str:
-        cfg: Config = request.app.state.config
-        # Acepta claves estáticas (config.api_keys) y las dinámicas CON NOMBRE del panel
-        # (por hash). Sin ninguna configurada, el canal queda abierto (solo dev).
-        if not claves_busqueda.autorizada(cfg, x_api_key):
-            raise HTTPException(status_code=401, detail="API key inválida o ausente")
-        identidad = x_api_key or (request.client.host if request.client else "anonimo")
-        if not request.app.state.limitador.permitir(identidad):
-            raise HTTPException(status_code=429, detail="Límite de solicitudes excedido")
-        return identidad
+    ) -> QuienEs:
+        """Resuelve QUIÉN hace el request por dos vías, en este orden:
 
-    Autorizado = Annotated[str, Depends(_autorizar)]
+        1. **Cookie de sesión** — una persona con usuario y contraseña. Trae su rol.
+        2. **`X-API-Key`** — un consumidor máquina (reddoor, el AEB), que no tiene
+           navegador ni cookies.
+
+        Las dos vías no son intercambiables en permisos. Las claves CON NOMBRE son,
+        literalmente, "claves de acceso al buscador": entran como `lector` y no
+        pueden administrar nada. Las estáticas de `NORM_API_KEYS` sí son `admin`:
+        las pone quien controla el `.env.prod` del servidor, y son el acceso de
+        emergencia para cuando no se puede entrar por el panel.
+        """
+        cfg: Config = request.app.state.config
+
+        token = request.cookies.get(sesiones.COOKIE)
+        if token:
+            sesion = sesiones.validar(cfg, token)
+            if sesion is not None:
+                return _con_limite(request, QuienEs.de_sesion(sesion))
+
+        if x_api_key:
+            if x_api_key in tuple(cfg.api_keys):
+                return _con_limite(request, QuienEs.de_clave_estatica(x_api_key))
+            # `coincide`, NO `autorizada`: esta última devuelve True cuando no hay
+            # NINGUNA clave configurada (su modo abierto de dev), y usarla aquí
+            # convertía cualquier cabecera inventada en un acceso válido de rol
+            # lector — es decir, el índice entero y la descarga de todos los
+            # originales, aunque ya existieran usuarios. El modo abierto se decide
+            # abajo y en un solo sitio.
+            if claves_busqueda.coincide(cfg, x_api_key):
+                return _con_limite(request, QuienEs.de_clave_nombrada(x_api_key))
+            raise HTTPException(status_code=401, detail="API key inválida")
+
+        # Instalación recién creada: sin usuarios NI claves —ni estáticas ni con
+        # nombre— no hay forma de entrar y tampoco hay nada que proteger. Se deja
+        # abierto para poder dar de alta al primer admin. En cuanto existe un usuario
+        # o una clave, esta puerta se cierra sola.
+        if not claves_busqueda.hay_alguna(cfg) and not usuarios.hay_alguno_cacheado(cfg):
+            return _con_limite(request, QuienEs.anonima(request))
+
+        raise HTTPException(status_code=401, detail="Sesión requerida")
+
+    def _con_limite(request: Request, quien: QuienEs) -> QuienEs:
+        if not request.app.state.limitador.permitir(quien.identidad):
+            raise HTTPException(status_code=429, detail="Límite de solicitudes excedido")
+        return quien
+
+    def _exige(minimo: Rol) -> Any:
+        """Dependencia que exige un rol mínimo. 403, no 401: el usuario está bien
+        identificado, simplemente no le alcanza — decirle "inicia sesión" cuando ya
+        la tiene abierta lo manda a un bucle sin salida."""
+
+        def verificar(quien: Annotated[QuienEs, Depends(_autorizar)]) -> QuienEs:
+            # Contraseña temporal puesta por un admin: hasta que el dueño la cambie,
+            # la cuenta solo sirve para cambiarla. Esconder el panel en el front no
+            # bastaba — la contraseña la conoce quien la creó, así que sin este corte
+            # servía indefinidamente contra la API con curl.
+            if quien.debe_cambiar:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Debes cambiar tu contraseña antes de usar el panel",
+                )
+            if not roles.alcanza(quien.rol, minimo):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Requiere rol '{minimo}'; el tuyo es '{quien.rol}'",
+                )
+            return quien
+
+        return verificar
+
+    # `Autorizado` = autenticado, con rol `lector` como mínimo. Es el suelo de toda
+    # la API y lo que ya usaban los endpoints existentes, así que no hay que tocarlos.
+    Autorizado = Annotated[QuienEs, Depends(_exige("lector"))]
+    Operador = Annotated[QuienEs, Depends(_exige("operador"))]
+    Admin = Annotated[QuienEs, Depends(_exige("admin"))]
+    # Autenticado pero SIN el corte por `debe_cambiar`: es el mínimo que necesitan los
+    # tres endpoints con los que una cuenta recién creada sale de ese estado. Si
+    # exigieran `Autorizado`, la cuenta quedaría encerrada sin forma de arreglarse.
+    Identificado = Annotated[QuienEs, Depends(_autorizar)]
+
+    def _sesion_actual(request: Request) -> tuple[str | None, Any]:
+        token = request.cookies.get(sesiones.COOKIE)
+        return token, (sesiones.validar(request.app.state.config, token) if token else None)
+
+    def _poner_cookie(respuesta: Response, token: str, cfg: Config) -> None:
+        respuesta.set_cookie(
+            sesiones.COOKIE,
+            token,
+            max_age=cfg.sesion_duracion_min * 60,
+            httponly=True,  # fuera del alcance de cualquier JS inyectado
+            secure=cfg.sesion_cookie_secure,
+            samesite=cfg.sesion_cookie_samesite,  # type: ignore[arg-type]
+            path="/",
+        )
+
+    # ---------------- Sesión (login de personas) ----------------
+
+    @aplicacion.post("/auth/login", response_model=Identidad)
+    def post_login(
+        solicitud: SolicitudLogin, request: Request, respuesta: Response
+    ) -> Identidad:
+        """Abre sesión y deja la cookie. Es el único endpoint sin autenticar."""
+        cfg: Config = request.app.state.config
+        ip = _ip_cliente(request)
+        usuario_norm = usuarios.normalizar(solicitud.usuario)
+        freno = request.app.state.freno_login
+
+        # Caudal ANTES de tocar argon2. `post_login` es el único endpoint sin
+        # `Autorizado`, así que no pasa por `_con_limite`: sin esto, una petición
+        # anónima con un usuario inventado cuesta ~80 ms y 64 MiB de argon2 (el hash
+        # señuelo se verifica igual), y basta un bucle para llevarse el VPS por
+        # delante — los endpoints síncronos corren en el threadpool de Starlette.
+        if not request.app.state.limitador.permitir(f"login:{ip}"):
+            raise HTTPException(status_code=429, detail="Demasiadas peticiones de login")
+
+        # Se frena por usuario Y por IP: ver `FrenoDeIntentos` para el porqué.
+        espera = freno.bloqueado(f"u:{usuario_norm}", f"ip:{ip}")
+        if espera > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Demasiados intentos fallidos. Reintenta en {int(espera) + 1} s.",
+                headers={"Retry-After": str(int(espera) + 1)},
+            )
+
+        encontrado = usuarios.verificar_credenciales(cfg, solicitud.usuario, solicitud.contrasena)
+        if encontrado is None:
+            freno.registrar_fallo(f"u:{usuario_norm}", f"ip:{ip}")
+            # Mismo mensaje para "no existe", "contraseña mala" y "cuenta desactivada":
+            # distinguirlos deja averiguar qué cuentas hay a fuerza de probar.
+            _auditar("login_fallido", request, usuario=usuario_norm)
+            raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+
+        freno.registrar_exito(f"u:{usuario_norm}", f"ip:{ip}")
+        token, _expira = sesiones.crear(
+            cfg, encontrado, ip=ip, agente=request.headers.get("user-agent", "")
+        )
+        usuarios.marcar_acceso(cfg, encontrado.id)
+        _poner_cookie(respuesta, token, cfg)
+        _auditar("login_ok", request, usuario=encontrado.usuario, rol=encontrado.rol)
+        return Identidad(
+            usuario=encontrado.usuario,
+            nombre=encontrado.nombre,
+            rol=encontrado.rol,
+            debe_cambiar=encontrado.debe_cambiar,
+        )
+
+    @aplicacion.post("/auth/logout")
+    def post_logout(request: Request, respuesta: Response) -> dict[str, Any]:
+        """Cierra la sesión en el servidor y borra la cookie. Sin autenticar a
+        propósito: cerrar sesión con una cookie ya vencida debe funcionar igual.
+
+        La cookie se borra PRIMERO y la revocación va en su propio try. Al revés, un
+        Postgres que no responde hacía subir la excepción antes del `delete_cookie`:
+        el front pinta el login igualmente (su `salir()` limpia en un `finally`), el
+        usuario se va convencido de haber salido, y la cookie sigue viva en el
+        navegador para quien use esa máquina después.
+        """
+        token = request.cookies.get(sesiones.COOKIE)
+        respuesta.delete_cookie(sesiones.COOKIE, path="/")
+        try:
+            cerrada = sesiones.revocar(request.app.state.config, token)
+        except Exception as exc:
+            log.warning("logout_sin_revocar", error=str(exc)[:150])
+            cerrada = False
+        return {"cerrada": cerrada}
+
+    @aplicacion.get("/auth/yo", response_model=Identidad)
+    def get_yo(quien: Identificado) -> Identidad:
+        """Con qué identidad estoy entrando. El front lo llama al cargar para decidir
+        entre pintar el login o el panel."""
+        return Identidad(
+            usuario=quien.usuario,
+            nombre=quien.nombre,
+            rol=quien.rol,
+            debe_cambiar=quien.debe_cambiar,
+        )
+
+    @aplicacion.post("/auth/contrasena")
+    def post_contrasena(
+        solicitud: SolicitudCambioContrasena, quien: Identificado, request: Request
+    ) -> dict[str, Any]:
+        """Cambio de la propia contraseña."""
+        cfg: Config = request.app.state.config
+        if quien.usuario_id is None:
+            raise HTTPException(
+                status_code=400, detail="Solo una sesión de usuario puede cambiar contraseña"
+            )
+        if usuarios.verificar_credenciales(cfg, quien.usuario, solicitud.actual) is None:
+            raise HTTPException(status_code=403, detail="La contraseña actual no es correcta")
+        try:
+            usuarios.cambiar_contrasena(cfg, quien.usuario_id, solicitud.nueva)
+        except pwd.ContrasenaDebil as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Cambiar la contraseña echa al resto de sesiones: si se cambia porque se
+        # sospecha que alguien entró, dejarle la sesión abierta no arregla nada.
+        _token, sesion = _sesion_actual(request)
+        sesiones.revocar_todas(
+            cfg, quien.usuario_id, excepto=sesion.sesion_id if sesion else None
+        )
+        _auditar("contrasena_cambiada", request, usuario=quien.usuario)
+        return {"cambiada": True}
+
+    @aplicacion.get("/auth/sesiones", response_model=list[Sesion])
+    def get_sesiones(quien: Identificado, request: Request) -> list[dict[str, Any]]:
+        if quien.usuario_id is None:
+            return []
+        return sesiones.listar(request.app.state.config, quien.usuario_id)
+
+    @aplicacion.delete("/auth/sesiones")
+    def delete_sesiones(quien: Identificado, request: Request) -> dict[str, Any]:
+        """Cierra las demás sesiones, conservando la actual."""
+        if quien.usuario_id is None:
+            return {"cerradas": 0}
+        _token, sesion = _sesion_actual(request)
+        n = sesiones.revocar_todas(
+            request.app.state.config,
+            quien.usuario_id,
+            excepto=sesion.sesion_id if sesion else None,
+        )
+        return {"cerradas": n}
+
+    # ---------------- Usuarios (solo admin) ----------------
+
+    @aplicacion.get("/auth/usuarios", response_model=list[UsuarioPanel])
+    def get_usuarios(_: Admin, request: Request) -> list[dict[str, Any]]:
+        return usuarios.listar(request.app.state.config)
+
+    @aplicacion.post("/auth/usuarios", response_model=UsuarioPanel)
+    def post_usuario(
+        solicitud: SolicitudUsuarioNuevo, quien: Admin, request: Request
+    ) -> dict[str, Any]:
+        """Alta por un admin. Nace con `debe_cambiar`: la contraseña inicial la sabe
+        quien la creó, así que no sirve como secreto hasta que el dueño la cambie."""
+        cfg: Config = request.app.state.config
+        try:
+            creado = usuarios.crear(
+                cfg,
+                solicitud.usuario,
+                solicitud.contrasena,
+                rol=solicitud.rol,  # type: ignore[arg-type]
+                nombre=solicitud.nombre,
+                debe_cambiar=True,
+            )
+        except usuarios.UsuarioExiste as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (pwd.ContrasenaDebil, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _auditar(
+            "usuario_creado", request,
+            actor=quien.usuario, nuevo=creado.usuario, rol=creado.rol,
+        )
+        return {
+            "id": creado.id, "usuario": creado.usuario, "nombre": creado.nombre,
+            "rol": creado.rol, "activo": creado.activo, "debe_cambiar": creado.debe_cambiar,
+            "creado_en": None, "ultimo_acceso": None,
+        }
+
+    @aplicacion.put("/auth/usuarios/{usuario_id}", response_model=UsuarioPanel)
+    def put_usuario(
+        usuario_id: int, solicitud: SolicitudUsuarioCambio, quien: Admin, request: Request
+    ) -> dict[str, Any]:
+        cfg: Config = request.app.state.config
+        objetivo = usuarios.por_id(cfg, usuario_id)
+        if objetivo is None:
+            raise HTTPException(status_code=404, detail="usuario no encontrado")
+
+        # La contraseña se valida ANTES de tocar nada. Al revés, el rol se commiteaba
+        # y solo después saltaba el 400 por contraseña débil: el llamador recibía un
+        # error creyendo que no se aplicó nada, y el cambio de rol ya estaba hecho.
+        if solicitud.contrasena is not None:
+            try:
+                pwd.exigir_politica(solicitud.contrasena)
+            except pwd.ContrasenaDebil as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # No dejar el panel sin administrador. La comprobación y el UPDATE van en la
+        # MISMA transacción con la fila bloqueada: separados eran un TOCTOU — dos PUT
+        # concurrentes leían "queda otro admin", los dos pasaban el guard y el panel
+        # se quedaba sin ninguno. De ahí solo se sale entrando a la BD a mano.
+        pierde_admin = (solicitud.rol is not None and solicitud.rol != "admin") or (
+            solicitud.activo is False
+        )
+        try:
+            actualizado = usuarios.actualizar_protegiendo_admins(
+                cfg, usuario_id,
+                rol=solicitud.rol, nombre=solicitud.nombre, activo=solicitud.activo,
+                exigir_otro_admin=pierde_admin,
+            )
+            if solicitud.contrasena is not None:
+                usuarios.cambiar_contrasena(
+                    cfg, usuario_id, solicitud.contrasena, debe_cambiar=True
+                )
+        except usuarios.UltimoAdmin as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (pwd.ContrasenaDebil, usuarios.RolInvalido, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        _auditar(
+            "usuario_modificado", request, actor=quien.usuario, objetivo=objetivo.usuario,
+            rol=solicitud.rol, activo=solicitud.activo,
+            contrasena_reseteada=solicitud.contrasena is not None,
+        )
+
+        # Desactivar o resetear la contraseña tiene que echarlo YA de donde esté.
+        if solicitud.activo is False or solicitud.contrasena is not None:
+            sesiones.revocar_todas(cfg, usuario_id)
+
+        assert actualizado is not None
+        return {
+            "id": actualizado.id, "usuario": actualizado.usuario, "nombre": actualizado.nombre,
+            "rol": actualizado.rol, "activo": actualizado.activo,
+            "debe_cambiar": actualizado.debe_cambiar or solicitud.contrasena is not None,
+            "creado_en": None, "ultimo_acceso": None,
+        }
 
     @aplicacion.post("/buscar", response_model=RespuestaBusqueda)
     def post_buscar(
@@ -144,13 +609,13 @@ def crear_app(config: Config) -> FastAPI:
         return busqueda.buscar(_cliente(request), request.app.state.config, solicitud)
 
     @aplicacion.get("/seguridad/claves-busqueda", response_model=list[ClaveBusqueda])
-    def get_claves_busqueda(_: Autorizado, request: Request) -> list[dict[str, Any]]:
+    def get_claves_busqueda(_: Admin, request: Request) -> list[dict[str, Any]]:
         """Claves de búsqueda con nombre (solo nombre y fecha; nunca el secreto)."""
         return claves_busqueda.listar_claves(request.app.state.config)
 
     @aplicacion.post("/seguridad/claves-busqueda", response_model=RespuestaClaveGenerada)
     def post_clave_busqueda(
-        solicitud: SolicitudClaveBusqueda, _: Autorizado, request: Request
+        solicitud: SolicitudClaveBusqueda, quien: Admin, request: Request
     ) -> RespuestaClaveGenerada:
         """Genera (o rota) la clave de un consumidor. Devuelve el secreto UNA sola vez;
         el servidor solo guarda su hash. Al crear la primera, el endpoint queda cerrado."""
@@ -158,13 +623,18 @@ def crear_app(config: Config) -> FastAPI:
             clave = claves_busqueda.generar_clave(request.app.state.config, solicitud.nombre)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _auditar(
+            "clave_generada", request,
+            actor=quien.usuario, consumidor=solicitud.nombre.strip(),
+        )
         return RespuestaClaveGenerada(nombre=solicitud.nombre.strip(), clave=clave)
 
     @aplicacion.delete("/seguridad/claves-busqueda/{nombre}")
-    def delete_clave_busqueda(nombre: str, _: Autorizado, request: Request) -> dict[str, Any]:
+    def delete_clave_busqueda(nombre: str, quien: Admin, request: Request) -> dict[str, Any]:
         """Revoca la clave de un consumidor (deja de poder consultar; los demás siguen)."""
         if not claves_busqueda.revocar_clave(request.app.state.config, nombre):
             raise HTTPException(status_code=404, detail="clave no encontrada")
+        _auditar("clave_revocada", request, actor=quien.usuario, consumidor=nombre)
         return {"revocada": True, "nombre": nombre}
 
     @aplicacion.get("/autocompletar", response_model=RespuestaAutocompletar)
@@ -277,7 +747,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/sistema/carpetas", response_model=RespuestaCarpetas)
     def post_carpetas(
-        solicitud: SolicitudCarpetaNueva, _: Autorizado, request: Request
+        solicitud: SolicitudCarpetaNueva, _: Operador, request: Request
     ) -> RespuestaCarpetas:
         """Crea una subcarpeta de DESTINO (confinada a su raíz) y devuelve su listado."""
         from normalizacion.ingesta.pipeline import crear_carpeta, listar_carpetas
@@ -293,7 +763,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/pipeline/ejecutar")
     def post_pipeline(
-        solicitud: SolicitudPipeline, _: Autorizado, request: Request
+        solicitud: SolicitudPipeline, _: Operador, request: Request
     ) -> dict[str, Any]:
         """Indexa una carpeta de punta a punta (en segundo plano). Una a la vez.
 
@@ -396,7 +866,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.put("/sistema/recursos")
     def put_recursos(
-        solicitud: SolicitudRecursos, _: Autorizado, request: Request
+        solicitud: SolicitudRecursos, _: Admin, request: Request
     ) -> dict[str, Any]:
         """Cambia la política de recursos (modo/política) sin reiniciar. Persiste el
         override y lo aplica EN VIVO al config compartido (daemons incluidos)."""
@@ -498,7 +968,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/cola/reprocesar-errores", response_model=RespuestaReprocesar)
     def post_reprocesar_errores(
-        solicitud: SolicitudReprocesar, _: Autorizado, request: Request
+        solicitud: SolicitudReprocesar, _: Operador, request: Request
     ) -> RespuestaReprocesar:
         """Dead-letter → de vuelta a su etapa de origen. Las filas devueltas se
         procesan en la SIGUIENTE corrida (re-indexar la carpeta las drena)."""
@@ -515,7 +985,7 @@ def crear_app(config: Config) -> FastAPI:
         )
 
     @aplicacion.post("/cola/rescore-frio")
-    def post_rescore_frio(_: Autorizado, request: Request) -> dict[str, int]:
+    def post_rescore_frio(_: Operador, request: Request) -> dict[str, int]:
         """COLD → PENDIENTE: re-evaluar el frío con el filtro vigente (p. ej. tras
         ampliar la lista blanca). Se puntúa de nuevo en la siguiente corrida."""
         import psycopg
@@ -529,7 +999,7 @@ def crear_app(config: Config) -> FastAPI:
         return {"re_encolados": re_encolados}
 
     @aplicacion.post("/cola/reexplorar-preservados")
-    def post_reexplorar_preservados(_: Autorizado, request: Request) -> dict[str, int]:
+    def post_reexplorar_preservados(_: Operador, request: Request) -> dict[str, int]:
         """Contenedores preservados sin explorar (RAR sin herramienta, formatos
         pendientes…) → PENDIENTE, para re-precalificarlos con las herramientas
         ya instaladas. rescore-frío NO sirve para esto: los preservados viven en
@@ -580,7 +1050,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.put("/entidades/recetas/{clave}")
     def put_receta(
-        clave: str, solicitud: SolicitudReceta, _: Autorizado, request: Request
+        clave: str, solicitud: SolicitudReceta, _: Admin, request: Request
     ) -> dict[str, Any]:
         """Crea o edita una receta de proyección (esquema de salida de un sistema)."""
         from normalizacion.entidades.recetas_db import guardar_receta
@@ -593,7 +1063,7 @@ def crear_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @aplicacion.delete("/entidades/recetas/{clave}")
-    def delete_receta(clave: str, _: Autorizado, request: Request) -> dict[str, bool]:
+    def delete_receta(clave: str, _: Admin, request: Request) -> dict[str, bool]:
         from normalizacion.entidades.recetas_db import borrar_receta
 
         try:
@@ -646,7 +1116,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.put("/entidades/config/atributos")
     def put_config_atributos(
-        solicitud: SolicitudAtributos, _: Autorizado, request: Request
+        solicitud: SolicitudAtributos, _: Admin, request: Request
     ) -> list[dict[str, str]]:
         """Reemplaza la lista de atributos declarados (valida nombres/normalizadores)."""
         from normalizacion.entidades.config_entidad import guardar_atributos
@@ -659,7 +1129,7 @@ def crear_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @aplicacion.get("/entidades/config/destino")
-    def get_config_destino(_: Autorizado, request: Request) -> dict[str, Any]:
+    def get_config_destino(_: Admin, request: Request) -> dict[str, Any]:
         """Config del destino de envío de entidades al backend central (AEB)."""
         from normalizacion.entidades.destino import leer_destino
 
@@ -667,7 +1137,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.put("/entidades/config/destino")
     def put_config_destino(
-        solicitud: SolicitudDestino, _: Autorizado, request: Request
+        solicitud: SolicitudDestino, _: Admin, request: Request
     ) -> dict[str, Any]:
         """Configura a qué endpoint/webhook se mandan las entidades (cuando esté hosteado)."""
         from normalizacion.entidades.destino import guardar_destino
@@ -679,7 +1149,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/entidades/enviar")
     def post_entidades_enviar(
-        _: Autorizado, request: Request, max_lotes: int = 20, reiniciar: bool = False
+        _: Operador, request: Request, max_lotes: int = 20, reiniciar: bool = False
     ) -> dict[str, Any]:
         """Empuja al AEB las entidades nuevas/modificadas (formato canónico), en lotes.
         Reanudable por cursor; `reiniciar=true` reenvía todo desde cero."""
@@ -736,7 +1206,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/entidades/{entidad_id}/activo")
     def post_activo(
-        entidad_id: str, _: Autorizado, request: Request, activo: bool = True
+        entidad_id: str, _: Operador, request: Request, activo: bool = True
     ) -> dict[str, bool]:
         """Contingencia LFPDPPP: desactiva (soft-delete) o reactiva una entidad."""
         from normalizacion.entidades.consultas import fijar_activo
@@ -747,7 +1217,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/entidades/mapeo/proponer")
     def post_proponer_mapeo(
-        solicitud: SolicitudProponerMapeo, _: Autorizado, request: Request
+        solicitud: SolicitudProponerMapeo, _: Operador, request: Request
     ) -> dict[str, Any]:
         """E2: propone columna→campo (sinónimos + contenido) para que el operador
         confirme. No persiste — eso es el paso de aprobación."""
@@ -765,7 +1235,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/entidades/proyectar")
     def post_proyectar(
-        solicitud: SolicitudProyectar, _: Autorizado, request: Request
+        solicitud: SolicitudProyectar, _: Operador, request: Request
     ) -> dict[str, int]:
         """E3: proyecta filas ya mapeadas a entidades (resolución por ancla,
         idempotente). Útil para CLI/integraciones; la proyección desde los blobs
@@ -783,7 +1253,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.post("/entidades/backfill")
     def post_backfill(
-        _: Autorizado, request: Request, lote: int = 500, max_docs: int = 2000,
+        _: Operador, request: Request, lote: int = 500, max_docs: int = 2000,
         reiniciar: bool = False,
     ) -> dict[str, Any]:
         """E4 (1er paso): resuelve entidades de los registros YA INDEXADOS que traen
@@ -847,7 +1317,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.put("/filtro", response_model=RespuestaFiltro)
     def put_filtro(
-        solicitud: SolicitudFiltro, _: Autorizado, request: Request
+        solicitud: SolicitudFiltro, _: Operador, request: Request
     ) -> RespuestaFiltro:
         """Edita perillas del filtro (merge sobre lo ya editado). Aplica a la
         SIGUIENTE corrida; el frío existente se re-evalúa con /cola/rescore-frio.
@@ -881,7 +1351,7 @@ def crear_app(config: Config) -> FastAPI:
         return _respuesta_filtro(cfg, overrides)
 
     @aplicacion.delete("/filtro", response_model=RespuestaFiltro)
-    def delete_filtro(_: Autorizado, request: Request) -> RespuestaFiltro:
+    def delete_filtro(_: Operador, request: Request) -> RespuestaFiltro:
         """Restablece el filtro a la config base (borra todos los overrides)."""
         import psycopg
 
@@ -910,9 +1380,14 @@ def crear_app(config: Config) -> FastAPI:
 
         from normalizacion.entidades.recetas_db import seed_recetas
 
-        with contextlib.suppress(Exception):  # la tabla puede no existir aún (migración)
-            with psycopg.connect(config.postgres_dsn) as conn:
-                seed_recetas(conn)
+        # `connect_timeout` por la misma razón que en `aplicar_recursos`: sin él, un
+        # Postgres que no responde deja la API sin arrancar en vez de arrancar sin
+        # recetas sembradas. El `suppress` no ayuda si la conexión nunca vuelve.
+        with (
+            contextlib.suppress(Exception),  # la tabla puede no existir aún (migración)
+            psycopg.connect(config.postgres_dsn, connect_timeout=5) as conn,
+        ):
+            seed_recetas(conn)
 
     return aplicacion
 

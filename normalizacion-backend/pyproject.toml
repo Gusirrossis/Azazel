@@ -46,6 +46,8 @@ ocr = [
     "pypdfium2>=4.30",  # rasteriza PDFs escaneados para OCR (permisivo, sin binario del sistema)
 ]
 api = [
+    # Login del panel: hash de contraseñas argon2id (recomendación OWASP).
+    "argon2-cffi>=23.1",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
 ]

@@ -301,3 +301,34 @@ export interface RespuestaClaveGenerada {
   nombre: string;
   clave: string;
 }
+
+// ---- Sesión y usuarios (login del panel) ----
+
+/** Quién está usando el panel. Lo devuelve `GET /auth/yo` y `POST /auth/login`. */
+export interface Identidad {
+  usuario: string;
+  nombre: string;
+  rol: string;
+  /** Alta o reseteo reciente: hay que cambiar la contraseña antes de seguir. */
+  debe_cambiar: boolean;
+}
+
+export interface SesionAbierta {
+  id: number;
+  creada_en: string | null;
+  vista_en: string | null;
+  expira_en: string | null;
+  ip: string;
+  agente: string;
+}
+
+export interface UsuarioPanel {
+  id: number;
+  usuario: string;
+  nombre: string;
+  rol: string;
+  activo: boolean;
+  debe_cambiar: boolean;
+  creado_en: string | null;
+  ultimo_acceso: string | null;
+}

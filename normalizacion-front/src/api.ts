@@ -20,24 +20,122 @@ import type {
   Receta,
   ClaveBusqueda,
   RespuestaClaveGenerada,
+  Identidad,
+  SesionAbierta,
+  UsuarioPanel,
 } from "./tipos";
 
 const BASE = "/api";
 
-function cabeceras(): HeadersInit {
-  const llave = localStorage.getItem("norm_api_key");
-  return llave
-    ? { "Content-Type": "application/json", "X-API-Key": llave }
-    : { "Content-Type": "application/json" };
+// Suscriptores al evento "se perdió la sesión". El contexto de sesión se apunta
+// aquí para devolver al login desde CUALQUIER petición que reciba un 401, sin que
+// cada componente tenga que acordarse de mirarlo.
+const oyentesSinSesion = new Set<() => void>();
+
+export function alPerderSesion(oyente: () => void): () => void {
+  oyentesSinSesion.add(oyente);
+  return () => {
+    oyentesSinSesion.delete(oyente);
+  };
+}
+
+function avisarSinSesion(): void {
+  for (const oyente of oyentesSinSesion) oyente();
 }
 
 async function pedir<T>(ruta: string, init?: RequestInit): Promise<T> {
-  const respuesta = await fetch(`${BASE}${ruta}`, { ...init, headers: cabeceras() });
+  const respuesta = await fetch(`${BASE}${ruta}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    // La sesión viaja en una cookie `httpOnly` que este código no puede leer ni
+    // escribir; solo hay que pedirle al navegador que la incluya. En dev el front
+    // corre en otro puerto que la API, y sin esto la cookie no se manda.
+    credentials: "include",
+  });
+
   if (!respuesta.ok) {
+    // 401 = la sesión caducó o fue revocada (posiblemente desde otro dispositivo).
+    // Se avisa a la app para que vuelva al login en vez de dejar al usuario
+    // mirando errores sueltos que no explican nada.
+    if (respuesta.status === 401) avisarSinSesion();
     const detalle = await respuesta.text().catch(() => "");
-    throw new Error(`API ${respuesta.status}: ${detalle.slice(0, 200)}`);
+    throw new Error(`API ${respuesta.status}: ${extraerDetalle(detalle)}`);
   }
+  // 204 y otras respuestas sin cuerpo revientan en `.json()`.
+  if (respuesta.status === 204) return undefined as T;
   return (await respuesta.json()) as T;
+}
+
+/** FastAPI envuelve los errores en `{"detail": "..."}`; se saca el mensaje para
+ *  poder enseñárselo a una persona en vez de un volcado de JSON. */
+function extraerDetalle(cuerpo: string): string {
+  try {
+    const datos = JSON.parse(cuerpo);
+    if (typeof datos?.detail === "string") return datos.detail;
+  } catch {
+    /* no era JSON: se usa el texto tal cual */
+  }
+  return cuerpo.slice(0, 200);
+}
+
+// ---- Sesión ----
+
+export function iniciarSesion(usuario: string, contrasena: string): Promise<Identidad> {
+  return pedir<Identidad>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ usuario, contrasena }),
+  });
+}
+
+export function cerrarSesion(): Promise<{ cerrada: boolean }> {
+  return pedir<{ cerrada: boolean }>("/auth/logout", { method: "POST" });
+}
+
+export function quienSoy(): Promise<Identidad> {
+  return pedir<Identidad>("/auth/yo");
+}
+
+export function cambiarContrasena(actual: string, nueva: string): Promise<{ cambiada: boolean }> {
+  return pedir<{ cambiada: boolean }>("/auth/contrasena", {
+    method: "POST",
+    body: JSON.stringify({ actual, nueva }),
+  });
+}
+
+export function sesionesAbiertas(): Promise<SesionAbierta[]> {
+  return pedir<SesionAbierta[]>("/auth/sesiones");
+}
+
+export function cerrarOtrasSesiones(): Promise<{ cerradas: number }> {
+  return pedir<{ cerradas: number }>("/auth/sesiones", { method: "DELETE" });
+}
+
+// ---- Usuarios (solo admin) ----
+
+export function listarUsuarios(): Promise<UsuarioPanel[]> {
+  return pedir<UsuarioPanel[]>("/auth/usuarios");
+}
+
+export function crearUsuario(datos: {
+  usuario: string;
+  contrasena: string;
+  rol: string;
+  nombre?: string;
+}): Promise<UsuarioPanel> {
+  return pedir<UsuarioPanel>("/auth/usuarios", {
+    method: "POST",
+    body: JSON.stringify(datos),
+  });
+}
+
+export function actualizarUsuario(
+  id: number,
+  cambios: { rol?: string; nombre?: string; activo?: boolean; contrasena?: string },
+): Promise<UsuarioPanel> {
+  return pedir<UsuarioPanel>(`/auth/usuarios/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(cambios),
+  });
 }
 
 export function buscar(solicitud: SolicitudBusqueda): Promise<RespuestaBusqueda> {
@@ -380,14 +478,16 @@ export function listarClavesBusqueda(): Promise<ClaveBusqueda[]> {
   return pedir<ClaveBusqueda[]>("/seguridad/claves-busqueda");
 }
 
-export async function generarClaveBusqueda(nombre: string): Promise<RespuestaClaveGenerada> {
-  const r = await pedir<RespuestaClaveGenerada>("/seguridad/claves-busqueda", {
+// Las claves con nombre son para consumidores MÁQUINA (reddoor, el AEB). El panel
+// ya no se autentica con una de ellas: entra con sesión de usuario. Antes esta
+// función guardaba la clave recién creada en `localStorage` para que el propio
+// panel siguiera funcionando — un apaño que dejaba un secreto de larga vida al
+// alcance de cualquier script inyectado en la página.
+export function generarClaveBusqueda(nombre: string): Promise<RespuestaClaveGenerada> {
+  return pedir<RespuestaClaveGenerada>("/seguridad/claves-busqueda", {
     method: "POST",
     body: JSON.stringify({ nombre }),
   });
-  // Guarda la clave localmente para que ESTE panel siga funcionando al activarse la auth.
-  localStorage.setItem("norm_api_key", r.clave);
-  return r;
 }
 
 export function revocarClaveBusqueda(nombre: string): Promise<{ revocada: boolean }> {

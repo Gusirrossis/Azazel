@@ -125,10 +125,21 @@ def aplicar_overrides(config: Config) -> Config:
     return config.model_copy(update=actualizaciones) if actualizaciones else config
 
 
+#: Tope de espera al conectar durante el ARRANQUE. Sin él, `psycopg.connect` espera
+#: lo que el sistema operativo tarde en decidir que no hay nadie al otro lado — en
+#: Windows eso puede ser indefinido. Y como esto corre dentro de `crear_app`, el
+#: efecto era que la API entera no llegaba a levantar: ni el `/salud`, ni el login,
+#: ni una página de error. El arranque tiene que degradar, no colgarse.
+_TIMEOUT_ARRANQUE = 5
+
+
 def aplicar_recursos(config: Config) -> Config:
     """Config con SOLO los overrides de recursos aplicados (para el arranque de la
-    API: que los daemons —envío— y el gobernador usen la política persistida)."""
-    with psycopg.connect(config.postgres_dsn) as conn:
+    API: que los daemons —envío— y el gobernador usen la política persistida).
+
+    Si la BD no responde a tiempo se devuelve la config base: arrancar con la
+    política por defecto es mucho mejor que no arrancar."""
+    with psycopg.connect(config.postgres_dsn, connect_timeout=_TIMEOUT_ARRANQUE) as conn:
         ov = leer_overrides(conn, SECCION_RECURSOS)
     if not ov:
         return config
