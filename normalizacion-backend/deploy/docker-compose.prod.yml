@@ -157,6 +157,11 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     profiles: ["app"]
+    # Sin esto, NINGUNA perilla del .env.prod que no esté enumerada abajo llega al
+    # contenedor: OCR, sesión y login se quedaban con sus valores por defecto y el
+    # fichero de configuración era decorativo. `environment` sigue mandando sobre él.
+    env_file:
+      - ../.env.prod
     environment:
       # ⚙K16 — QUÉ es este nodo. Sin esto arranca como `local`, que en un VPS
       # significaría archivo maestro y selector de destino: ninguno de los dos.
@@ -215,6 +220,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     profiles: ["app"]
+    # Ver la nota de `api`: sin env_file las perillas del .env.prod no llegan.
+    env_file:
+      - ../.env.prod
     environment:
       NORM_POSTGRES_DSN: postgresql://${NORM_PG_USER}:${NORM_PG_PASSWORD}@postgres:5432/${NORM_PG_DB:-normalizacion}
       NORM_DESPLIEGUE__PERFIL: ${NORM_DESPLIEGUE__PERFIL}
@@ -238,6 +246,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     profiles: ["vigilante"]
+    # Ver la nota de `api`: sin env_file las perillas del .env.prod no llegan.
+    env_file:
+      - ../.env.prod
     environment:
       NORM_DESPLIEGUE__PERFIL: ${NORM_DESPLIEGUE__PERFIL}
       NORM_DESPLIEGUE__NODO_ID: ${NORM_DESPLIEGUE__NODO_ID}

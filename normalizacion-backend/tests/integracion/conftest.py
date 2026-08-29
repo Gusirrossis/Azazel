@@ -38,8 +38,13 @@ def conexion(dsn: str, esquema: None) -> Iterator[Any]:
 
     with psycopg.connect(dsn) as conn:
         conn.execute(
+            # `usuarios`, `sesiones` y `extracciones` van aquí desde que existen: sin
+            # truncarlas, un test que crea un admin deja la instalación "con usuarios"
+            # para el siguiente, y una extracción cacheada hace que el de al lado
+            # reuse un resultado en vez de producirlo. CASCADE por la FK de sesiones.
             "TRUNCATE archivos, discos, control, corridas, config_overrides,"
-            " entidades, mapeos_aprobados, recetas"
+            " entidades, mapeos_aprobados, recetas, usuarios, sesiones, extracciones"
+            " CASCADE"
         )
         conn.commit()
         yield conn
