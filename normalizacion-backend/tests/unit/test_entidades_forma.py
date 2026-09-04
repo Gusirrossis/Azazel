@@ -97,3 +97,48 @@ class TestFichaBreve:
         assert b["curp"] == CURP
         assert b["sexo"] == "H"
         assert b["edad"]
+
+
+class TestAnclasDeDocumentos:
+    """El tercer camino de `coincidencias`: sacar las anclas de los documentos que ya
+    casaron. Falló en la primera prueba real contra producción porque solo miraba
+    `texto_indexable`, y en este corpus la CURP está muchas veces en el NOMBRE del
+    archivo — que son justo los escaneos con el texto vacío por no tener OCR."""
+
+    def _anclas(self, docs: list[dict]) -> list[str]:
+        from normalizacion.entidades.coincidencias import _anclas_de_documentos
+
+        return _anclas_de_documentos(docs)
+
+    def test_la_encuentra_en_el_nombre_del_archivo(self) -> None:
+        docs = [{"nombre": "GOGJ140929MSRNMDA1_PRIM2024.pdf", "texto_indexable": None}]
+        assert self._anclas(docs) == ["GOGJ140929MSRNMDA1"]
+
+    def test_y_en_la_ruta(self) -> None:
+        docs = [{"ruta_original": "PT4.7z!PT4/TEPB671014HNLLLL03.json"}]
+        assert self._anclas(docs) == ["TEPB671014HNLLLL03"]
+
+    def test_y_en_los_campos_extraidos_anidados(self) -> None:
+        docs = [{"campos_extraidos": {"titulo": "Acta de GOGJ140929MSRNMDA1"}}]
+        assert self._anclas(docs) == ["GOGJ140929MSRNMDA1"]
+
+    def test_prefiere_contexto_anclas_si_viajó(self) -> None:
+        """Si el worker ya hizo el trabajo al indexar, no se re-escanea nada."""
+        docs = [{
+            "contexto_anclas": [{"tipo": "curp", "valor": "GOGJ140929MSRNMDA1"}],
+            "texto_indexable": "aquí hay otra: TEPB671014HNLLLL03",
+        }]
+        assert self._anclas(docs) == ["GOGJ140929MSRNMDA1"]
+
+    def test_no_duplica_entre_campos(self) -> None:
+        docs = [{"nombre": "GOGJ140929MSRNMDA1.pdf",
+                 "ruta_original": "x/GOGJ140929MSRNMDA1.pdf"}]
+        assert self._anclas(docs) == ["GOGJ140929MSRNMDA1"]
+
+    def test_mira_los_mismos_campos_que_el_backfill(self) -> None:
+        """Si divergen, una entidad que el backfill resolvió es inencontrable desde
+        la búsqueda: existe en la base y nadie la ve."""
+        from normalizacion.entidades.backfill import _FUENTES
+        from normalizacion.entidades.coincidencias import _FUENTES_DOC
+
+        assert set(_FUENTES_DOC) == set(_FUENTES)

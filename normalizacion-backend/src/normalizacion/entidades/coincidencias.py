@@ -113,21 +113,57 @@ def _buscar(
             if filas:
                 return [_fila(f, "nombre") for f in filas]
 
-        # 3) Las anclas que ya venían en los documentos que casaron. No se busca nada
-        # nuevo: el worker las extrajo al indexar y viven en `contexto_anclas`.
-        de_docs: list[str] = []
-        vistos: set[str] = set()
-        for doc in documentos[:20]:
-            for a in doc.get("contexto_anclas") or []:
-                v = a.get("valor")
-                if v and v not in vistos:
-                    vistos.add(v)
-                    de_docs.append(v)
-            # Cuando `contexto_anclas` no viaja (excluido de _source o campos
-            # filtrados), se relee del texto que sí vino.
-            if not doc.get("contexto_anclas"):
-                for a in anclas.buscar_en_texto(doc.get("texto_indexable")):
-                    if a.valor not in vistos:
-                        vistos.add(a.valor)
-                        de_docs.append(a.valor)
-        return _por_ancla(conn, de_docs[:MAX_ENTIDADES], "documento")
+        # 3) Las anclas de los documentos que ya casaron. No se busca nada nuevo.
+        return _por_ancla(conn, _anclas_de_documentos(documentos), "documento")
+
+
+#: Dónde mirar dentro de un documento. Es la MISMA lista que usa el backfill, y tiene
+#: que serlo: si los dos no miran los mismos campos, una entidad que el backfill
+#: resolvió resulta inencontrable desde la búsqueda, que es la peor incoherencia
+#: posible — existe en la base y nadie la ve.
+#:
+#: `nombre` y `ruta_original` NO son decorado: en este corpus la CURP está muchas
+#: veces en el propio nombre del archivo (`GOGJ140929MSRNMDA1_PRIM2024.pdf`), y esos
+#: son justo los escaneos cuyo `texto_indexable` está vacío porque nadie les pasó OCR.
+_FUENTES_DOC = ("texto_indexable", "campos_extraidos", "nombre", "ruta_original")
+
+
+def _escalares(valor: Any) -> Any:
+    """Genera los textos de un valor anidado (dict/list), recursivo."""
+    if isinstance(valor, bool):
+        return
+    if isinstance(valor, (str, int, float)):
+        yield str(valor)
+    elif isinstance(valor, dict):
+        for v in valor.values():
+            yield from _escalares(v)
+    elif isinstance(valor, (list, tuple)):
+        for v in valor:
+            yield from _escalares(v)
+
+
+def _anclas_de_documentos(documentos: list[dict[str, Any]]) -> list[str]:
+    """Anclas únicas presentes en los documentos que casaron, en orden de aparición."""
+    encontradas: list[str] = []
+    vistos: set[str] = set()
+
+    def añadir(valor: str) -> None:
+        if valor not in vistos:
+            vistos.add(valor)
+            encontradas.append(valor)
+
+    for doc in documentos[:20]:
+        # Lo más barato primero: si `contexto_anclas` viajó, el worker ya hizo el
+        # trabajo al indexar y no hay que volver a escanear nada.
+        for a in doc.get("contexto_anclas") or []:
+            if a.get("valor"):
+                añadir(str(a["valor"]))
+        if doc.get("contexto_anclas"):
+            continue
+        for clave in _FUENTES_DOC:
+            for texto in _escalares(doc.get(clave)):
+                for a in anclas.buscar_en_texto(texto):
+                    añadir(a.valor)
+        if len(encontradas) >= MAX_ENTIDADES:
+            break
+    return encontradas[:MAX_ENTIDADES]
