@@ -168,3 +168,63 @@ class TestTextoCorto:
         from normalizacion.api.busqueda import _MIN_COMODIN_INICIAL
 
         assert 3 <= _MIN_COMODIN_INICIAL <= 5
+
+
+class TestCamposYEntidadesNoSePelean:
+    """Las dos funciones se peleaban, y salió al probarlas juntas contra producción:
+    `campos` quita `texto_indexable` para ahorrar el 59% del tráfico, y el
+    descubrimiento de entidades lo necesita para leer las anclas de los documentos.
+    Un consumidor que usa AMBAS —el caso exacto de la federación— recibía cero
+    entidades. El servidor pide lo que necesita y poda antes de responder."""
+
+    def _cuerpo(self, **kw):  # type: ignore[no-untyped-def]
+        from normalizacion.api.busqueda import construir_consulta
+        from normalizacion.api.esquemas import SolicitudBusqueda
+
+        return construir_consulta(SolicitudBusqueda(**kw), 100)
+
+    def test_con_entidades_se_piden_las_fuentes_de_anclas(self) -> None:
+        fuente = self._cuerpo(
+            texto="x", campos=["nombre"], incluir_entidades=True
+        )["_source"]
+        assert "texto_indexable" in fuente
+        assert "ruta_original" in fuente
+        assert "campos_extraidos" in fuente
+
+    def test_sin_entidades_se_respeta_lo_pedido(self) -> None:
+        """Quien no quiere entidades no debe pagar el texto completo."""
+        fuente = self._cuerpo(texto="x", campos=["nombre"])["_source"]
+        assert fuente == ["nombre"]
+
+    def test_no_se_duplica_lo_ya_pedido(self) -> None:
+        fuente = self._cuerpo(
+            texto="x", campos=["nombre", "texto_indexable"], incluir_entidades=True
+        )["_source"]
+        assert len(fuente) == len(set(fuente))
+
+    def test_la_poda_quita_lo_que_no_se_pidio(self) -> None:
+        from normalizacion.api.busqueda import _podar_documentos
+
+        docs = [{"nombre": "x.pdf", "texto_indexable": "…", "ruta_original": "a/x.pdf"}]
+        podados = _podar_documentos(docs, ["nombre"])
+        assert podados == [{"nombre": "x.pdf"}]
+
+    def test_la_poda_conserva_el_resaltado(self) -> None:
+        """`_resaltado` no sale de _source sino del highlight: es lo que se pinta."""
+        from normalizacion.api.busqueda import _podar_documentos
+
+        docs = [{"nombre": "x.pdf", "texto_indexable": "…", "_resaltado": ["⟪x⟫"]}]
+        assert _podar_documentos(docs, ["nombre"])[0]["_resaltado"] == ["⟪x⟫"]
+
+    def test_sin_campos_no_se_poda_nada(self) -> None:
+        from normalizacion.api.busqueda import _podar_documentos
+
+        docs = [{"nombre": "x.pdf", "texto_indexable": "…"}]
+        assert _podar_documentos(docs, None) == docs
+
+    def test_las_fuentes_coinciden_con_las_de_coincidencias(self) -> None:
+        """Si divergen, se pediría un campo que nadie mira o faltaría uno que sí."""
+        from normalizacion.api.busqueda import _FUENTES_ANCLA
+        from normalizacion.entidades.coincidencias import _FUENTES_DOC
+
+        assert set(_FUENTES_ANCLA) == set(_FUENTES_DOC)

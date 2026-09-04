@@ -46,6 +46,29 @@ def _campos_permitidos() -> frozenset[str]:
     return frozenset(DocumentoArchivo.model_fields) - {"contexto_anclas"}
 
 
+#: Campos donde viven las anclas. Se piden internamente cuando el consumidor quiere
+#: entidades, aunque los haya filtrado de su respuesta. Es la misma lista que usan el
+#: backfill y `coincidencias`; la unicidad de esa lista está fijada con un test.
+_FUENTES_ANCLA = ("texto_indexable", "campos_extraidos", "nombre", "ruta_original")
+
+
+def _podar_documentos(
+    documentos: list[dict[str, Any]], pedidos: list[str] | None
+) -> list[dict[str, Any]]:
+    """Quita los campos que se pidieron a OpenSearch pero el consumidor no quiere.
+
+    `_resaltado` NO se toca: no sale de `_source` sino del `highlight`, y es lo que
+    de verdad se pinta.
+    """
+    if not pedidos:
+        return documentos
+    conservar = set(pedidos)
+    return [
+        {k: v for k, v in doc.items() if k in conservar or k.startswith("_")}
+        for doc in documentos
+    ]
+
+
 def _source_de(solicitud: SolicitudBusqueda) -> list[str] | None:
     """Traduce `campos` a `_source`. None = todos (el comportamiento de siempre).
 
@@ -59,9 +82,22 @@ def _source_de(solicitud: SolicitudBusqueda) -> list[str] | None:
         return None
     permitidos = _campos_permitidos()
     pedidos = [c for c in solicitud.campos if c in permitidos]
-    # Ni un solo campo válido: se devuelve el documento entero en vez de uno vacío.
-    # Un `_source: []` daría documentos sin nada y parecería que no hay resultados.
-    return pedidos or None
+    if not pedidos:
+        # Ni un solo campo válido: se devuelve el documento entero en vez de uno
+        # vacío. Un `_source: []` daría documentos sin nada y parecería que no hay
+        # resultados.
+        return None
+    if solicitud.incluir_entidades:
+        # Las dos funciones se peleaban: `campos` quita `texto_indexable` para
+        # ahorrar el 59% del tráfico, y el descubrimiento de entidades lo necesita
+        # para leer las anclas de los documentos. Un consumidor que usa las dos
+        # —que es exactamente el caso de la federación— recibía CERO entidades.
+        #
+        # Se pide internamente lo que hace falta y se quita antes de responder
+        # (`_podar_documentos`): el consumidor conserva su payload pequeño y las
+        # entidades aparecen igual.
+        pedidos = pedidos + [c for c in _FUENTES_ANCLA if c in permitidos and c not in pedidos]
+    return pedidos
 
 
 #: Longitud a partir de la cual se permite el comodín INICIAL sobre `nombre`.
@@ -212,18 +248,22 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         if fragmentos:
             doc["_resaltado"] = fragmentos
         documentos.append(doc)
+    # Las entidades se buscan con los documentos COMPLETOS (llevan los campos de
+    # anclas), y solo despues se poda lo que el consumidor no pidio.
+    entidades = (
+        coincidencias.buscar_coincidencias(config, solicitud.texto, documentos)
+        if solicitud.incluir_entidades
+        else None
+    )
+    pedidos = [c for c in (solicitud.campos or []) if c in _campos_permitidos()]
     return RespuestaBusqueda(
         total=respuesta["hits"]["total"]["value"],
-        documentos=documentos,
+        documentos=_podar_documentos(documentos, pedidos or None),
         cursor=hits[-1]["sort"] if hits else None,
         facetas=facetas,
         pit_id=respuesta.get("pit_id", pit_id),
         origen=config.despliegue.nodo_id,
-        entidades=(
-            coincidencias.buscar_coincidencias(config, solicitud.texto, documentos)
-            if solicitud.incluir_entidades
-            else None
-        ),
+        entidades=entidades,
     )
 
 
