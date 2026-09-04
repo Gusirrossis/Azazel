@@ -34,7 +34,10 @@
 	# El rate-limit de la API (`api/seguridad.py`) es una ventana EN MEMORIA por
 	# proceso: con más de una instancia cada una lleva su propia cuenta y el límite
 	# efectivo se multiplica. El tope de verdad va aquí, delante de todas.
-	@api path /buscar* /autocompletar* /entidades* /archivo* /panel* /cola* /pipeline* /sistema* /seguridad* /filtro* /resumen* /estadisticas* /openapi.json /docs*
+	# /salud y /auth iban FUERA y caian al front: GET /salud devolvia el index.html
+	# del panel con 200, asi que quien lo usara como sonda de disponibilidad recibia
+	# "vivo" siempre — incluso con la API caida. Es la peor forma de fallar.
+	@api path /buscar* /autocompletar* /entidades* /archivo* /panel* /cola* /pipeline* /sistema* /seguridad* /filtro* /resumen* /estadisticas* /salud /auth* /openapi.json /docs*
 	handle @api {
 		reverse_proxy api:8000
 	}

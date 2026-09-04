@@ -33,6 +33,9 @@ ESPERADO: dict[tuple[str, str], str] = {
     ("/entidades/recetas/{clave}", "put"): "admin",
     ("/entidades/recetas/{clave}", "delete"): "admin",
     ("/entidades/config/atributos", "put"): "admin",
+    ("/archivo/{archivo_id}/contenido", "get"): "persona",
+    ("/sistema/carpetas", "get"): "persona",
+    ("/sistema/destinos-disco", "get"): "persona",
     ("/entidades/config/destino", "get"): "admin",
     ("/entidades/config/destino", "put"): "admin",
     # --- operación: operador ---
@@ -63,6 +66,9 @@ SIN_AUTENTICAR: dict[tuple[str, str], str] = {
 _ANOTACION_A_ROL = {
     "Autorizado": "lector",
     "Identificado": "identificado",
+    # Persona = rol lector Y no una clave de maquina: buscar y descargar son dos
+    # permisos distintos, y una clave de consumidor solo tiene el primero.
+    "Persona": "persona",
     "Operador": "operador",
     "Admin": "admin",
 }

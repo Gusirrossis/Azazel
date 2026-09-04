@@ -189,3 +189,41 @@ class TestCorsSinComodin:
         cors = next(m for m in app.user_middleware if "CORS" in str(m))
         assert "*" not in cors.kwargs["allow_origins"]
         assert "https://panel.example" in cors.kwargs["allow_origins"]
+
+
+class TestClaveDeConsumidorNoDescarga:
+    """Buscar y descargar son dos permisos distintos: buscar es saber que un documento
+    existe, descargarlo es tenerlo. Una clave con nombre entra como `lector` para poder
+    buscar, y con ese mismo rol le quedaba abierta la descarga de CUALQUIER original y
+    el listado del sistema de ficheros — dar el corpus entero a un tercero cuando solo
+    se le quería dar el buscador."""
+
+    def test_una_clave_de_consumidor_busca(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = TestClient(_app(monkeypatch, hay_usuarios=True, claves=("bus_lilith",)))
+        r = c.get("/auth/yo", headers={"X-API-Key": "bus_lilith"})
+        assert r.status_code == 200
+        assert r.json()["rol"] == "lector"
+
+    def test_pero_no_descarga(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = TestClient(_app(monkeypatch, hay_usuarios=True, claves=("bus_lilith",)))
+        r = c.get("/archivo/abc123/contenido", headers={"X-API-Key": "bus_lilith"})
+        assert r.status_code == 403, "una clave de consumidor no puede bajarse los originales"
+
+    def test_ni_explora_el_filesystem(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = TestClient(_app(monkeypatch, hay_usuarios=True, claves=("bus_lilith",)))
+        assert c.get("/sistema/carpetas", headers={"X-API-Key": "bus_lilith"}).status_code == 403
+        assert (
+            c.get("/sistema/destinos-disco", headers={"X-API-Key": "bus_lilith"}).status_code == 403
+        )
+
+    def test_el_corte_va_por_TIPO_no_por_rol(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Una PERSONA con rol lector sigue descargando desde el panel: es justo para
+        lo que existe ese rol. Si el corte fuera por rol, se la llevaría por delante."""
+        from normalizacion.api.main import QuienEs
+
+        persona = QuienEs(
+            tipo="sesion", usuario="ana", nombre="Ana", rol="lector", identidad="u:1", usuario_id=1
+        )
+        maquina = QuienEs.de_clave_nombrada("bus_x")
+        assert persona.rol == maquina.rol == "lector"
+        assert persona.tipo != maquina.tipo, "el tipo es lo que los separa"

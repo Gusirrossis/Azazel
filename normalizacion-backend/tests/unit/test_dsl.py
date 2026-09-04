@@ -121,3 +121,50 @@ class TestSeleccionDeCampos:
         `nombre` NO debe perder los fragmentos — que es justo lo que se pinta."""
         cuerpo = self._cuerpo(texto="garcia", campos=["nombre"])
         assert "highlight" in cuerpo
+
+
+class TestTextoCorto:
+    """Medido contra el índice real de 390.000 documentos: `a` daba 500 tras 30 s,
+    `de` 20 s, `la` 10 s, `garcia` 1,8 s. El culpable es el comodín INICIAL sobre
+    `nombre`, que no puede usar el índice y recorre el campo entero.
+
+    Importa porque quien federa manda TEXTO LIBRE de usuario: una letra suelta
+    devuelve un 500 que el consumidor no distingue de "Azazel está caído"."""
+
+    def _cuerpo(self, texto: str):  # type: ignore[no-untyped-def]
+        from normalizacion.api.busqueda import construir_consulta
+        from normalizacion.api.esquemas import SolicitudBusqueda
+
+        return construir_consulta(SolicitudBusqueda(texto=texto), 100)
+
+    def _ramas(self, texto: str):  # type: ignore[no-untyped-def]
+        return self._cuerpo(texto)["query"]["bool"]["must"][0]["bool"]["should"]
+
+    def test_texto_corto_no_usa_comodin_inicial(self) -> None:
+        for corto in ("a", "de", "la"):
+            ramas = self._ramas(corto)
+            assert not any("wildcard" in r for r in ramas), f"{corto!r} no debe usar comodín"
+            assert any("prefix" in r for r in ramas), f"{corto!r} debe usar prefijo"
+
+    def test_texto_largo_si_usa_comodin(self) -> None:
+        """Buscar 'garcia' tiene que seguir encontrando 'DELGARCIA.pdf'."""
+        ramas = self._ramas("garcia")
+        assert any("wildcard" in r for r in ramas)
+        assert not any("prefix" in r for r in ramas)
+
+    def test_el_contenido_se_busca_siempre(self) -> None:
+        """La rama sobre texto_indexable usa el índice invertido y es barata a
+        cualquier longitud: nunca se quita."""
+        for t in ("a", "garcia"):
+            assert any("match" in r and "texto_indexable" in r["match"] for r in self._ramas(t))
+
+    def test_hay_timeout_para_lo_que_se_escape(self) -> None:
+        """Red de seguridad: OpenSearch devuelve lo que lleve en vez de agotar el hilo."""
+        assert self._cuerpo("garcia").get("timeout")
+
+    def test_el_umbral_no_parte_una_palabra_util(self) -> None:
+        """4 caracteres: 'ana' o 'luz' pierden el comodín, pero son justo los términos
+        que devolvían decenas de miles de resultados inservibles."""
+        from normalizacion.api.busqueda import _MIN_COMODIN_INICIAL
+
+        assert 3 <= _MIN_COMODIN_INICIAL <= 5

@@ -63,6 +63,48 @@ def _source_de(solicitud: SolicitudBusqueda) -> list[str] | None:
     return pedidos or None
 
 
+#: Longitud a partir de la cual se permite el comodín INICIAL sobre `nombre`.
+#:
+#: Un `*a*` obliga a recorrer el campo de los 390.000 documentos. Medido contra el
+#: índice real: `a` → 500 tras 30 s (el hilo de OpenSearch se agota), `de` → 20 s,
+#: `la` → 10 s, `garcia` → 1,8 s. Es un gradiente, no un caso raro: cuanto más corto
+#: y frecuente el término, peor.
+#:
+#: Importa porque quien federa (Lilith) manda TEXTO LIBRE de usuario: una letra
+#: suelta o una errata tumban un hilo y devuelven un 500 que el consumidor no puede
+#: distinguir de "Azazel está caído". Por debajo de este umbral se busca por PREFIJO,
+#: que sí usa el índice y responde en milisegundos.
+_MIN_COMODIN_INICIAL = 4
+
+#: Tope de tiempo que se le da a OpenSearch. Con él devuelve lo que llevara
+#: encontrado marcándolo como parcial, en vez de agotar el hilo y dar un 500.
+#: Es una red de seguridad para el término que se escape del umbral de arriba.
+_TIMEOUT_BUSQUEDA = "15s"
+
+
+def _ramas_de_texto(texto: str) -> list[dict[str, Any]]:
+    """Las formas de casar el texto del usuario. Solo viaja como VALOR, nunca como
+    sintaxis: el DSL lo construye el servidor entero (allowlist implícita)."""
+    limpio = texto.lower().strip()
+    # El orden importa: la rama del NOMBRE va primera, como siempre. Hay tests que la
+    # localizan por posición, y cambiarlo sin necesidad rompe a quien la consuma.
+    if len(limpio) >= _MIN_COMODIN_INICIAL:
+        por_nombre: dict[str, Any] = {
+            "wildcard": {"nombre": {"value": f"*{limpio}*", "case_insensitive": True}}
+        }
+    else:
+        # Prefijo en vez de comodín inicial: `ana*` sí puede saltar por el índice,
+        # `*ana*` no. Se pierde encontrar "Mariana" tecleando "ana", que es un precio
+        # razonable por no colgar el clúster con cada pulsación corta.
+        por_nombre = {"prefix": {"nombre": {"value": limpio, "case_insensitive": True}}}
+    return [
+        por_nombre,
+        # El contenido extraído: usa el índice invertido y es barata a cualquier
+        # longitud, así que esta rama nunca se quita.
+        {"match": {"texto_indexable": {"query": texto, "operator": "and"}}},
+    ]
+
+
 def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[str, Any]:
     """DSL desde los campos tipados. El texto del usuario SOLO viaja como VALOR
     (wildcard sobre nombre + match sobre el texto extraído — sin sintaxis inyectable).
@@ -72,31 +114,7 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
     filtros: list[dict[str, Any]] = []
     debe: list[dict[str, Any]] = []
     if solicitud.texto:
-        debe.append(
-            {
-                "bool": {
-                    "should": [
-                        {
-                            "wildcard": {
-                                "nombre": {
-                                    "value": f"*{solicitud.texto.lower()}*",
-                                    "case_insensitive": True,
-                                }
-                            }
-                        },
-                        {
-                            "match": {
-                                "texto_indexable": {
-                                    "query": solicitud.texto,
-                                    "operator": "and",  # todas las palabras del nombre
-                                }
-                            }
-                        },
-                    ],
-                    "minimum_should_match": 1,
-                }
-            }
-        )
+        debe.append({"bool": {"should": _ramas_de_texto(solicitud.texto), "minimum_should_match": 1}})
     if solicitud.tipo_real:
         filtros.append({"term": {"tipo_real": solicitud.tipo_real}})
     if solicitud.extension:
@@ -128,6 +146,9 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
         "sort": _SORT_RELEVANCIA if debe else _SORT_ESTABLE,
         "query": consulta,
         "track_total_hits": True,
+        # Devuelve lo que lleve encontrado en vez de agotar el hilo: un 500 tras 30 s
+        # es indistinguible de "el servicio esta caido" para quien federa.
+        "timeout": _TIMEOUT_BUSQUEDA,
     }
     fuente = _source_de(solicitud)
     if fuente is not None:

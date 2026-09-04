@@ -112,7 +112,7 @@ class QuienEs:
         """Clave de consumidor: entra como `lector` y nada más. Se llama "clave de
         acceso al buscador" — buscar y descargar es exactamente su alcance."""
         return cls(
-            tipo="clave", usuario="(clave)", nombre="Consumidor externo",
+            tipo="clave-consumidor", usuario="(clave)", nombre="Consumidor externo",
             rol="lector", identidad=f"k:{_cubeta(clave)}",
         )
 
@@ -366,6 +366,34 @@ def crear_app(config: Config) -> FastAPI:
     # tres endpoints con los que una cuenta recién creada sale de ese estado. Si
     # exigieran `Autorizado`, la cuenta quedaría encerrada sin forma de arreglarse.
     Identificado = Annotated[QuienEs, Depends(_autorizar)]
+
+    def _solo_personas(quien: Annotated[QuienEs, Depends(_exige("lector"))]) -> QuienEs:
+        """Cierra el paso a las claves de CONSUMIDOR, no al rol `lector`.
+
+        BUSCAR y DESCARGAR son dos permisos distintos: buscar es saber que un
+        documento existe, descargarlo es tenerlo. Una clave con nombre entra como
+        `lector` para poder buscar, y con ese mismo rol le quedaba abierta la descarga
+        de cualquier original y el listado del sistema de ficheros del servidor — o
+        sea, dar el corpus entero a un tercero cuando solo se le quería dar el
+        buscador.
+
+        El corte va por TIPO y no por rol a propósito: una PERSONA con rol `lector`
+        sigue descargando desde el panel, que es justo para lo que existe ese rol. La
+        clave estática de `NORM_API_KEYS` también pasa: es el acceso de emergencia de
+        quien ya controla el `.env.prod` y no concede nada que no tuviera.
+        """
+        if quien.tipo == "clave-consumidor":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Una clave de consumidor puede buscar, no descargar ni explorar el"
+                    " sistema de ficheros. Usa los metadatos que devuelve /buscar."
+                ),
+            )
+        return quien
+
+    #: Autenticado, rol `lector` como mínimo, y NO una clave de máquina.
+    Persona = Annotated[QuienEs, Depends(_solo_personas)]
 
     def _sesion_actual(request: Request) -> tuple[str | None, Any]:
         token = request.cookies.get(sesiones.COOKIE)
@@ -680,7 +708,7 @@ def crear_app(config: Config) -> FastAPI:
         return doc
 
     @aplicacion.get("/archivo/{archivo_id}/contenido")
-    def get_contenido(archivo_id: str, _: Autorizado, request: Request) -> StreamingResponse:
+    def get_contenido(archivo_id: str, _: Persona, request: Request) -> StreamingResponse:
         """El ORIGINAL, en streaming desde el almacén por hash — el disco ya no existe."""
         doc = busqueda.doc_por_id(_cliente(request), request.app.state.config, archivo_id)
         if doc is None or not doc.get("hash_contenido"):
@@ -749,7 +777,7 @@ def crear_app(config: Config) -> FastAPI:
 
     @aplicacion.get("/sistema/carpetas", response_model=RespuestaCarpetas)
     def get_carpetas(
-        _: Autorizado, request: Request, ruta: str | None = None, ambito: str = "datos"
+        _: Persona, request: Request, ruta: str | None = None, ambito: str = "datos"
     ) -> RespuestaCarpetas:
         """Explorador del filesystem del SERVIDOR (para los selectores de carpeta)."""
         from normalizacion.ingesta.pipeline import listar_carpetas
@@ -762,7 +790,7 @@ def crear_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @aplicacion.get("/sistema/destinos-disco")
-    def get_destinos_disco(_: Autorizado, request: Request) -> dict[str, Any]:
+    def get_destinos_disco(_: Persona, request: Request) -> dict[str, Any]:
         """Raíz real del almacén (carpeta del sistema) por disco — para mostrar la
         ubicación física del original aunque cada corrida haya elegido su carpeta."""
         from normalizacion.ingesta.pipeline import destinos_por_disco
