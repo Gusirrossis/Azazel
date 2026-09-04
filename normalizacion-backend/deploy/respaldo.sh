@@ -48,9 +48,13 @@ $COMPOSE exec -T minio sh -c "
   mc mb -p l/${BUCKET} >/dev/null 2>&1 || true"
 
 # `mc pipe` evita tener que copiar el archivo dentro del contenedor.
+#
+# `--quiet` no es cosmética: `mc` pinta la barra de progreso aunque la salida no sea
+# un terminal, y desatendido eso son ~180 líneas de «1.55 GiB / ? 92.83 MiB/s» por
+# corrida enterrando en ruido la única línea que se va a leer, la del resultado.
 $COMPOSE exec -T minio sh -c "
   mc alias set l http://localhost:9000 \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD >/dev/null &&
-  mc pipe l/${BUCKET}/${NOMBRE}" < "$TMP"
+  mc --quiet --no-color pipe l/${BUCKET}/${NOMBRE}" < "$TMP"
 
 rm -f "$TMP"
 
