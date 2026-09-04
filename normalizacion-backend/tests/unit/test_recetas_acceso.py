@@ -43,15 +43,30 @@ def test_acceso_sin_correo_no_resuelve() -> None:
 
 
 def test_persona_sigue_intacta() -> None:
-    """Regresión: persona conserva ancla CURP y su forma anidada."""
+    """Regresión: persona conserva ancla CURP y su forma anidada AL LEERLA.
+
+    Lo GUARDADO ya no es la forma completa: las claves vacías y lo derivable de las
+    anclas dejaron de escribirse (una ficha del backfill tenía 20 de 27 claves
+    vacías). `direccion` sin ni un dato ya no se almacena, y `normalizados` se
+    recalcula al leer. El contrato de lectura no cambia: `derivados.enriquecer` lo
+    reconstruye, que es por donde pasan la proyección al AEB y el panel.
+    """
+    from normalizacion.entidades import derivados
+
     curp = _curp("MERV960314MDFNSL0")
     ent = construir_entidad(PERSONA_FZ1, {"curp": "curp", "nombre": "nombre1"},
                             {"curp": curp, "nombre": "Valeria"})
     assert ent is not None
     assert ent["ancla_tipo"] == AnclaTipo.CURP and ent["ancla_valor"] == curp
-    c = ent["campos"]
-    assert "nombre" in c and "direccion" in c and "normalizados" in c
-    assert c["nombre"]["nombre1"] == "Valeria"
+
+    guardado = ent["campos"]
+    assert guardado["nombre"]["nombre1"] == "Valeria"   # lo capturado SÍ se guarda
+    assert "direccion" not in guardado                  # sin ni un dato: no se escribe
+    assert "normalizados" not in guardado               # derivable de la CURP
+
+    leido = derivados.enriquecer(guardado)
+    assert "normalizados" in leido and leido["normalizados"]["normalized_curp"] == curp
+    assert leido["nombre"]["nombre1"] == "Valeria"
 
 
 def test_envio_mapea_kind_acceso() -> None:

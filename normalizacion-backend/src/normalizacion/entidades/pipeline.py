@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
 
+from . import derivados
 from . import normalizadores as N
 from .modelo import AnclaTipo, calcular_entidad_id
 from .receta import Receta
@@ -108,7 +109,11 @@ def construir_entidad(
         ancla_g = _elegir_ancla(receta, val)
         if ancla_g is None:
             return None
-        return {"campos": campos_g, "ancla_tipo": ancla_g[0], "ancla_valor": ancla_g[1]}
+        return {
+            "campos": derivados.podar(campos_g),
+            "ancla_tipo": ancla_g[0],
+            "ancla_valor": ancla_g[1],
+        }
 
     # 3) derivaciones desde la CURP (sexo, dob, estado) — el ancla de oro
     deriv = norm["curp"].derivados if norm.get("curp") and norm["curp"].valido else None
@@ -167,7 +172,11 @@ def construir_entidad(
     ancla = _elegir_ancla(receta, val)
     if ancla is None:
         return None
-    return {"campos": campos, "ancla_tipo": ancla[0], "ancla_valor": ancla[1]}
+    # Se guarda el mínimo canónico: fuera lo vacío y fuera lo que se puede recalcular
+    # desde las anclas. Una ficha del backfill pasa de 27 claves (20 vacías) a las 3-4
+    # que traen información. `derivados.enriquecer` la devuelve completa al leer, así
+    # que ni la proyección al AEB ni el panel notan la diferencia.
+    return {"campos": derivados.podar(campos), "ancla_tipo": ancla[0], "ancla_valor": ancla[1]}
 
 
 def _clave_procedencia(p: Any) -> str:

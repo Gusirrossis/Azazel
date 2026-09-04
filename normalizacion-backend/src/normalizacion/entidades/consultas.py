@@ -7,6 +7,7 @@ from typing import Any
 import psycopg
 
 from normalizacion.core.config import Config
+from normalizacion.entidades import derivados
 
 _COLS = ("entidad_id, tipo, ancla_tipo, ancla_valor, campos, confianza,"
          " version_receta, version_resolucion, activo, procedencias,"
@@ -14,9 +15,12 @@ _COLS = ("entidad_id, tipo, ancla_tipo, ancla_valor, campos, confianza,"
 
 
 def _a_dict(f: tuple[Any, ...]) -> dict[str, Any]:
+    # `enriquecer` reconstruye lo que no se guarda (normalizados, edad). La base
+    # almacena la forma reducida; TODO lector debe pasar por aqui o vera una ficha
+    # incompleta — y la proyeccion al AEB lee `normalizados.normalized_dob` por ruta.
     return {
         "entidad_id": f[0], "tipo": f[1], "ancla_tipo": f[2], "ancla_valor": f[3],
-        "campos": f[4], "confianza": f[5], "version_receta": f[6],
+        "campos": derivados.enriquecer(dict(f[4] or {})), "confianza": f[5], "version_receta": f[6],
         "version_resolucion": f[7], "activo": f[8], "procedencias": f[9],
         "creado_en": f[10], "actualizado_en": f[11],
     }

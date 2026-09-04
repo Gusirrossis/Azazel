@@ -17,6 +17,7 @@ from normalizacion.api.esquemas import (
 )
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
+from normalizacion.entidades import coincidencias
 
 log = obtener_logger("api.busqueda")
 
@@ -114,7 +115,9 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
     filtros: list[dict[str, Any]] = []
     debe: list[dict[str, Any]] = []
     if solicitud.texto:
-        debe.append({"bool": {"should": _ramas_de_texto(solicitud.texto), "minimum_should_match": 1}})
+        debe.append(
+            {"bool": {"should": _ramas_de_texto(solicitud.texto), "minimum_should_match": 1}}
+        )
     if solicitud.tipo_real:
         filtros.append({"term": {"tipo_real": solicitud.tipo_real}})
     if solicitud.extension:
@@ -216,6 +219,11 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         facetas=facetas,
         pit_id=respuesta.get("pit_id", pit_id),
         origen=config.despliegue.nodo_id,
+        entidades=(
+            coincidencias.buscar_coincidencias(config, solicitud.texto, documentos)
+            if solicitud.incluir_entidades
+            else None
+        ),
     )
 
 

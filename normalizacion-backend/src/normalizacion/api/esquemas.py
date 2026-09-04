@@ -42,6 +42,14 @@ class SolicitudBusqueda(BaseModel):
             " actual). Se filtran contra una allowlist: lo desconocido se ignora."
         ),
     )
+    incluir_entidades: bool = Field(
+        default=False,
+        description=(
+            "Además de los documentos, devuelve las ENTIDADES resueltas que casan con"
+            " la búsqueda: por CURP/RFC exacta, por nombre, o por las anclas de los"
+            " documentos encontrados. Por omisión no se incluyen."
+        ),
+    )
     pit_id: str | None = Field(default=None, description="PIT de una búsqueda anterior")
 
 
@@ -56,6 +64,10 @@ class RespuestaBusqueda(BaseModel):
     # "Azazel" acabaría cableado a mano en el código de otro — que además dejaría
     # de ser cierto el día que haya un segundo nodo.
     origen: str = "azazel"
+    # Entidades que casan con la búsqueda. `None` = no se pidieron; `[]` = se pidieron
+    # y no hubo ninguna. La diferencia importa para quien federa: necesita distinguir
+    # "no lo busqué" de "no hay nadie con ese nombre".
+    entidades: list[dict[str, Any]] | None = None
 
 
 class Salud(BaseModel):
