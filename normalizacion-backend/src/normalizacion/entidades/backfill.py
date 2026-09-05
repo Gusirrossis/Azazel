@@ -48,9 +48,15 @@ log = obtener_logger("entidades.backfill")
 _CURSOR_CLAVE = "backfill_entidades_cursor"
 _ESTADO_CLAVE = "backfill_entidades_estado"  # progreso/último resumen para la UI
 _LOCK_ID = 0x42_4143_4B46  # advisory lock para serializar el backfill (un proceso a la vez)
-_VERSION_RES = "backfill-anclas-v1"
-# Solo el ancla: asignacion fila→campo mínima (nombre/email/tel del texto = E8).
-_ASIGNACION = {"curp": "curp", "rfc": "rfc"}
+_VERSION_RES = "backfill-anclas-v2"  # v2: además del ancla, el nombre verificado
+# Ancla + las partes del nombre que `anclas.filas_persona` haya podido COMPROBAR
+# contra la propia CURP (ver `entidades.nombres`). Sin estas cuatro claves aquí, el
+# nombre se extrae y `construir_entidad` lo tira: la asignación es una allowlist.
+_ASIGNACION = {
+    "curp": "curp", "rfc": "rfc",
+    "apellido1": "apellido1", "apellido2": "apellido2",
+    "nombre1": "nombre1", "nombre2": "nombre2",
+}
 _FUENTES = ("texto_indexable", "campos_extraidos", "nombre", "ruta_original")
 
 

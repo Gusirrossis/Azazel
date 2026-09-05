@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from . import nombres
 from . import normalizadores as N
 
 # Lookarounds para no cortar dentro de una cadena alfanumérica mayor (un hash, un id).
@@ -101,22 +102,37 @@ def filas_persona(anclas: list[Ancla]) -> list[dict[str, str]]:
         (4 letras del nombre + AAMMDD), que es garantía fuerte de misma persona;
       · un RFC que no se asocia a ninguna CURP ancla su propia persona.
     """
-    curps = [a.valor for a in anclas if a.tipo == "curp"]
-    rfcs = [a.valor for a in anclas if a.tipo == "rfc"]
+    por_curp = {a.valor: a for a in anclas if a.tipo == "curp"}
+    por_rfc = {a.valor: a for a in anclas if a.tipo == "rfc"}
+    curps, rfcs = list(por_curp), list(por_rfc)
     filas: list[dict[str, str]] = []
     asociados: set[str] = set()
 
     for c in curps:
         fila = {"curp": c}
+        contextos = [por_curp[c].contexto]
         mismos = [r for r in rfcs if r[:10] == c[:10] and r not in asociados]
         if len(mismos) == 1:
             fila["rfc"] = mismos[0]
             asociados.add(mismos[0])
+            # El nombre se comprueba SIEMPRE contra la CURP —siete letras frente a las
+            # cuatro del RFC— pero se busca también alrededor del RFC: son la misma
+            # persona, y el nombre puede estar junto a uno y no junto al otro.
+            contextos.append(por_rfc[mismos[0]].contexto)
+        for contexto in contextos:
+            partes = nombres.extraer_de_contexto("curp", c, contexto)
+            if partes:
+                fila.update(partes)
+                break
         filas.append(fila)
 
     for r in rfcs:
         if r not in asociados:
-            filas.append({"rfc": r})
+            fila = {"rfc": r}
+            partes = nombres.extraer_de_contexto("rfc", r, por_rfc[r].contexto)
+            if partes:
+                fila.update(partes)
+            filas.append(fila)
     return filas
 
 
