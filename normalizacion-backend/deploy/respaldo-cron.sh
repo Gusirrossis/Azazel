@@ -47,8 +47,16 @@ fi
 
   # El log crece unas líneas por día; recortarlo evita que dentro de dos años haya
   # que abrir un fichero de megas para ver si el respaldo de anoche salió bien.
+  #
+  # Se vacía y se reescribe el MISMO fichero en vez de sustituirlo con `mv`: este
+  # bloque tiene el log abierto en modo append, y un `mv` dejaría ese descriptor
+  # apuntando al inodo viejo ya desenlazado — todo lo que se escribiera después se
+  # perdería sin dar error. Hoy no hay nada detrás, pero no quiero dejar puesta esa
+  # trampa para quien añada una línea al final.
   if [ "$(wc -l <"$LOG" 2>/dev/null || echo 0)" -gt 5000 ]; then
-    tail -n 2000 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    if tail -n 2000 "$LOG" >"$LOG.tmp"; then
+      cat "$LOG.tmp" >"$LOG" && rm -f "$LOG.tmp"
+    fi
   fi
   exit "$codigo"
 } >>"$LOG" 2>&1

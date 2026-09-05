@@ -49,12 +49,28 @@ $COMPOSE exec -T minio sh -c "
 
 # `mc pipe` evita tener que copiar el archivo dentro del contenedor.
 #
-# `--quiet` no es cosmética: `mc` pinta la barra de progreso aunque la salida no sea
-# un terminal, y desatendido eso son ~180 líneas de «1.55 GiB / ? 92.83 MiB/s» por
-# corrida enterrando en ruido la única línea que se va a leer, la del resultado.
+# `mc` pinta la barra de progreso aunque la salida no sea un terminal. Medido en la
+# primera corrida desatendida: 180 actualizaciones de «1.55 GiB / ? 92.83 MiB/s»
+# separadas por retornos de carro, todas en UNA línea de 5.109 bytes — el 93% de un
+# log de 5.477, tapando justo lo único que se va a leer, el resultado.
+#
+# Medido, no supuesto, con una subida de 3 GB:
+#
+#   sin flags ............ 8.270 bytes
+#   con --quiet .......... 7.467 bytes   ← NO la calla; sólo un 10% menos
+#   por stderr ................. 0 bytes ← redirigir stderr no sirve de nada
+#   stdout tras el `sed` ...... 68 bytes ← 116 veces menos
+#
+# Así que la barra sale por stdout, mezclada con la línea de resultado, y `--quiet`
+# no la desactiva. El `sed` se queda con lo que hay tras el último retorno de carro,
+# que es exactamente lo que un terminal acabaría mostrando.
+#
+# El `sed` va DENTRO de la tubería y `pipefail` sigue activo, así que un fallo de
+# `mc` sigue abortando el respaldo: filtrar el ruido no puede convertir un error en
+# un éxito silencioso.
 $COMPOSE exec -T minio sh -c "
   mc alias set l http://localhost:9000 \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD >/dev/null &&
-  mc --quiet --no-color pipe l/${BUCKET}/${NOMBRE}" < "$TMP"
+  mc --no-color pipe l/${BUCKET}/${NOMBRE}" < "$TMP" | sed 's/.*\r//'
 
 rm -f "$TMP"
 
