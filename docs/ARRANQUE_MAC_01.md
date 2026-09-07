@@ -1,11 +1,34 @@
 # Arranque de `mac-01` — el nodo de ingesta
 
-**Para qué:** el VPS (`vps-01`) ya está desplegado y sirviendo. Falta el otro extremo:
-la Mac, que es la que lee los discos físicos y es el **archivo maestro** (donde vive la
+> ## ⚠️ Este documento está DESACTUALIZADO — leer esto primero
+>
+> Se escribió para un VPS que **ya no existe** (163.172.149.0, eliminado) y da por
+> montada infraestructura que en el servidor actual **no está**. Comprobado el
+> 2026-09-05 contra 162.35.188.181:
+>
+> | El documento dice | La realidad |
+> |---|---|
+> | VPS `163.172.149.0`, llave `mawitherock.pem`, alias `mawitherock` | VPS **162.35.188.181**, llave **`azazel_vps2`**, alias **`azazel`** |
+> | `/srv/azazel/mac-01-wg0.conf` ya generada | **No existe** |
+> | Réplica: timer de systemd cada 30 min, activo | **No hay timers**: `systemctl list-timers 'azazel-*'` → *0 timers listed* |
+> | (implícito) el túnel está montado | **No hay interfaz WireGuard** en el VPS |
+> | (implícito) la réplica funciona | **Nunca ha corrido**: no hay cursor de réplica en `control` |
+>
+> Pese a eso, en el alias `archivos` **sí** existe `archivos-mac-01-000001`: los
+> datos de la Mac llegaron al VPS por otra vía, no por esta replicación. Quien
+> retome este arranque tiene que decidir primero si quiere reconstruir el túnel y
+> la réplica, o si el trasvase manual es suficiente.
+>
+> Los pasos de §2 en adelante (Docker Desktop, discos en solo lectura, destino en
+> otro bus) **siguen siendo válidos**: son propiedades de la Mac, no del VPS.
+
+**Para qué:** el VPS (`vps-01`) está desplegado y sirviendo. El otro extremo es
+la Mac, que lee los discos físicos y es el **archivo maestro** (donde vive la
 copia permanente de todo).
 
-**Cómo usar este documento:** copia el bloque de §3 y pégaselo a Claude Code en la Mac.
-Es una sola instrucción; el resto del documento es para que puedas verificar lo que hizo.
+**Cómo usar este documento:** copia el bloque de §3 y pégaselo a Claude Code en la Mac
+—corrigiendo antes la IP y la llave según la tabla de arriba. El resto del documento
+es para que puedas verificar lo que hizo.
 
 ---
 
@@ -13,12 +36,12 @@ Es una sola instrucción; el resto del documento es para que puedas verificar lo
 
 | | |
 |---|---|
-| VPS | `163.172.149.0` · perfil `hibrido-servicio` · nodo `vps-01` |
-| Web | https://163-172-149-0.sslip.io (certificado real de Let's Encrypt) |
-| Acceso SSH | usuario `root`, llave `mawitherock.pem` |
+| VPS | `162.35.188.181` · perfil `hibrido-servicio` · nodo `vps-01` |
+| Web | https://162-35-188-181.sslip.io (certificado real de Let's Encrypt) |
+| Acceso SSH | usuario `root`, llave `azazel_vps2`, alias `azazel` |
 | Secretos | `/srv/azazel/normalizacion-backend/.env.prod` (permisos 600, **nunca salieron del servidor**) |
-| Config WireGuard de la Mac | `/srv/azazel/mac-01-wg0.conf` (ya generada, con su llave privada) |
-| Réplica | timer de systemd cada 30 min, ya activo |
+| Config WireGuard de la Mac | ~~`/srv/azazel/mac-01-wg0.conf`~~ — **no existe en este VPS, hay que generarla** |
+| Réplica | ~~timer de systemd cada 30 min~~ — **no configurada** |
 
 ---
 
@@ -26,8 +49,8 @@ Es una sola instrucción; el resto del documento es para que puedas verificar lo
 
 1. **Docker Desktop** instalado y abierto. En *Settings → Resources*: **16 GB de RAM** y
    **4 CPU** como mínimo.
-2. **La llave SSH.** Cópiala desde este Windows (`~/Downloads/mawitherock.pem`) a la Mac,
-   por ejemplo con AirDrop o un USB, y déjala en `~/.ssh/mawitherock.pem`.
+2. **La llave SSH.** Cópiala desde este Windows (`~/Downloads/azazel_vps2`) a la Mac,
+   por ejemplo con AirDrop o un USB, y déjala en `~/.ssh/azazel_vps2`.
    En macOS **sí** hace falta `chmod 400` (en Windows mandaban las ACL, en Mac manda el
    modo del archivo).
 3. **El repo.** `git pull` y sitúate en la rama `feat/topologia-hibrida`.
@@ -44,13 +67,13 @@ Es una sola instrucción; el resto del documento es para que puedas verificar lo
 Configura esta Mac como el nodo `mac-01` de Azazel (perfil hibrido-ingesta,
 archivo maestro), siguiendo docs/PLAN_TOPOLOGIA.md y docs/ARRANQUE_MAC_01.md.
 
-Contexto: el VPS 163.172.149.0 ya está desplegado como `vps-01` (perfil
-hibrido-servicio). Tengo la llave SSH en ~/.ssh/mawitherock.pem. Falta este
+Contexto: el VPS 162.35.188.181 ya está desplegado como `vps-01` (perfil
+hibrido-servicio). Tengo la llave SSH en ~/.ssh/azazel_vps2. Falta este
 extremo.
 
 Haz esto, verificando cada paso antes de seguir al siguiente:
 
-1. Deja el acceso SSH al VPS con `IdentitiesOnly yes` y alias `mawitherock`
+1. Deja el acceso SSH al VPS con `IdentitiesOnly yes` y alias `azazel`
    (sin esto ssh ofrece todas mis llaves, el servidor corta a los 5 intentos
    y fail2ban banea la IP). Comprueba que entras.
 
@@ -89,11 +112,16 @@ Perfil: hibrido-ingesta  ·  nodo_id: mac-01
   capacidades: ingesta, archivo_maestro, destino_eligible
   sin capacidad: entidades, publico
 
- [OK] Postgres - esquema en 0007
+ [OK] Postgres - esquema en 0011
  [OK] OpenSearch - alias 'archivos': 1 índice(s), 0 docs
  [OK] MinIO - buckets almacen, frio
  [OK] Réplica - último éxito hace 0.0 h — emisor (toma snapshot)
 ```
+
+> La revisión de esquema sube con cada migración; a 2026-09-05 la cabeza es
+> **`0011`**. Si `norm doctor` reporta una anterior, falta correr
+> `alembic upgrade head`. La línea de **Réplica** solo saldrá en [OK] si de verdad
+> configuraste el paso 6 — hoy en el VPS no está.
 
 Fíjate en **`sin capacidad: entidades`**. Es correcto y deliberado: las entidades se
 resuelven **solo en el VPS**. Si las resolvieran los dos nodos, cada uno lo haría sobre
@@ -108,13 +136,13 @@ persona.
 Cuando la Mac haya indexado algo, en el VPS:
 
 ```bash
-ssh mawitherock
+ssh azazel
 cd /srv/azazel/normalizacion-backend
 docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod \
   --profile datos --profile app exec -T api norm replicar
 ```
 
-Debe listar índices `archivos-mac-01-*` restaurados. Y en https://163-172-149-0.sslip.io
+Debe listar índices `archivos-mac-01-*` restaurados. Y en https://162-35-188-181.sslip.io
 las búsquedas ya deberían encontrar archivos que la Mac procesó — **sin que los teras
 hayan viajado**: solo se replica el índice (~4 % del origen), no los archivos.
 

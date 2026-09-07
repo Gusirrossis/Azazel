@@ -131,10 +131,38 @@ usuario. Mientras tanto, la franja gris va a HOT (calibrado a recall).
   facetas y paginación profunda (`search_after` + PIT); descarga del original desde
   el almacén; **pipeline desde el front** con carpeta **origen** y **destino**
   elegibles y **nº de workers** configurable (auto = núcleos − 2); inventario de
-  **preservados sin explorar**; estadísticas. Auth por API key, rate-limit,
-  esquemas `extra="forbid"` (el cliente nunca manda DSL).
+  **preservados sin explorar**; estadísticas. Rate-limit y esquemas
+  `extra="forbid"` (el cliente nunca manda DSL).
 - **Front React + Vite** (tema oscuro): buscador, facetas, resultados con resaltado,
   detalle/descarga, e ingesta con progreso por fase en vivo (filtro ∥ worker).
+
+### Autenticación: personas y máquinas por caminos distintos
+
+Ya no es «auth por API key». Hay dos vías, y **no son intercambiables en permisos**:
+
+- **Personas** — usuario y contraseña (argon2id), sesión como fila en `sesiones` y
+  cookie `HttpOnly`+`Secure`+`SameSite=Strict`. Se puede revocar de verdad y al
+  instante, cosa que un JWT no permite sin montar una lista negra. Tres roles
+  acumulativos: `lector` → `operador` → `admin`. Freno de intentos por IP y
+  limitador por minuto.
+- **Máquinas** — cabecera `X-API-Key`. Las claves **con nombre** (guardadas
+  hasheadas) entran como `lector` y tipo `clave-consumidor`: **buscan, pero no
+  descargan ni exploran el sistema de ficheros** (403 por `_solo_personas`). Las
+  claves **estáticas** de `NORM_API_KEYS` entran como **`admin`** y son el acceso
+  de emergencia.
+
+El rol dice *cuánto* alcanza; el tipo dice *si es una persona*. Confundirlos fue un
+fallo real: usar `autorizada()` —que devuelve `True` cuando no hay ninguna clave
+configurada— como comprobación de identidad convertía cualquier cabecera inventada
+en un `lector` válido. La comprobación correcta es `coincide()`.
+
+### Federación (consumidores externos)
+
+`POST /buscar` acepta `campos` (allowlist de `_source`; medido: 98 % menos tráfico)
+e `incluir_entidades`, y devuelve `origen` para que quien mezcla resultados de
+varios sistemas no cablee el nombre. Las entidades que casan viajan junto a los
+documentos, resueltas por ancla exacta, por nombre, o por las anclas de los
+documentos encontrados.
 
 ---
 
@@ -179,10 +207,14 @@ tope por la memoria. En Docker (Windows/pruebas) ya estaban acotados en el compo
   no competir por RAM); clúster multi-nodo (master-eligible + data HOT/WARM, heap
   ≤31 GB/nodo, tiering hot-warm-cold con ISM); Postgres en su máquina; almacén
   MinIO/Ceph (la línea de hardware más cara). Escalar = añadir máquinas, sin reescribir.
-- **Estado actual:** M1–M6 alcanzados (pipeline completo, búsqueda por nombre y
-  contenido, robustez, workers paralelos). **Fase 2 (entidades) en marcha:**
-  resolución de personas por ancla (CURP/RFC), recetas de proyección por sistema
-  consumidor (incl. el archivo Fz1 completo) y backfill desde el índice ya existente
-  — ver [PLAN_ENTIDADES.md](PLAN_ENTIDADES.md). **Pendiente:** T4 (falta etiquetado),
-  el **piloto en Mac M4** para medir escala real, y de Fase 2: resolución difusa,
-  NER sobre documentos, grafo de relaciones y control de acceso por campo (PII).
+- **Estado actual:** ver [`ESTADO.md`](ESTADO.md), que lleva las cifras medidas y la
+  fecha en que se midieron. En resumen: M1–M6 alcanzados; Fase 2 (entidades)
+  desplegada con 89.652 personas resueltas por ancla; login, caché de extracción y
+  OCR en producción. **Pendiente:** T4 (falta etiquetado), el **piloto en Mac M4**,
+  y de Fase 2 la resolución difusa, el grafo de relaciones y el control de acceso
+  por campo (PII).
+
+> Este documento describe **cómo está construido** el sistema. Lo que cambia con el
+> tiempo —cuántas filas hay, qué corre en qué servidor, qué falta— vive en
+> `ESTADO.md` a propósito: mezclarlos es lo que hace que una arquitectura correcta
+> acabe llena de números falsos.
