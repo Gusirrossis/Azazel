@@ -86,6 +86,45 @@ class TestPresupuesto:
         assert r.texto == "" or "a" in r.texto
 
 
+class TestComodinDeTexto:
+    """`text/*` reclama los tipos de texto que nadie tenía asignados.
+
+    El censo del índice mostraba miles de documentos que son texto puro indexados con
+    cero contenido: no eran ilegibles, es que sin extractor para su mime exacto
+    `extraer` devolvía `sin_extractor_l1` y el archivo quedaba mudo.
+    """
+
+    def test_un_tipo_de_texto_sin_plugin_propio_ahora_tiene_extractor(self) -> None:
+        from normalizacion.ingesta.workers.extractores import extractor_para
+        from normalizacion.ingesta.workers.extractores.texto import extraer_texto
+
+        for tipo in ("text/x-c", "text/x-asm", "text/javascript", "text/x-php", "text/xml"):
+            assert extractor_para(tipo) is extraer_texto, tipo
+
+    def test_sql_y_correo_tambien(self) -> None:
+        """No empiezan por `text/` pero son texto: un dump SQL trae los INSERT con los
+        datos dentro."""
+        from normalizacion.ingesta.workers.extractores import extractor_para
+        from normalizacion.ingesta.workers.extractores.texto import extraer_texto
+
+        assert extractor_para("application/sql") is extraer_texto
+        assert extractor_para("message/rfc822") is extraer_texto
+
+    def test_el_comodin_NO_le_quita_el_csv_al_tabular(self) -> None:
+        """`extractor_para` busca el mime exacto antes que el prefijo. Si esto se
+        rompiera, los CSV perderían su perfil de calidad y sus columnas."""
+        from normalizacion.ingesta.workers.extractores import extractor_para
+
+        assert extractor_para("text/csv") is extraer_tabular
+
+    def test_un_dump_sql_produce_texto_con_sus_datos(self) -> None:
+        from normalizacion.ingesta.workers.extractores.texto import extraer_texto
+
+        dump = f"INSERT INTO padron VALUES (1,'{CURP}','Persona');\n".encode()
+        r = extraer_texto(_ctx(dump, "application/sql"))
+        assert r.texto and CURP in r.texto
+
+
 class TestJson:
     def test_el_json_tambien_vuelca_sus_valores(self) -> None:
         """Un padrón en JSON tenía el mismo problema: claves indexadas, valores no."""
