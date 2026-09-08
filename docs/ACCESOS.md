@@ -15,12 +15,18 @@ siga sirviendo; no se inventa una URL nueva.
 | **Luna storage** | Normaliza `/home` del VPS de almacenamiento | **https://205.209.102.101:8443** |
 | **Luna Lilith** | Normaliza los datos de Lilith sin moverlos | http://162.35.188.166:3000 |
 
-**Credenciales del panel — las mismas en los tres:**
+**Credenciales del panel — las mismas en los tres** (verificado con login + panel en
+cada uno; la anterior da 401 en los tres):
 
 ```
 usuario:     maui
 contraseña:  Maui-S4xqrMk7lk8cws2q
 ```
+
+> Si se rota la contraseña, **se rota en los TRES nodos en la misma pasada**. La primera
+> vez se cambió solo en dos y la matriz se quedó con la vieja durante un día, con este
+> documento afirmando que eran iguales. Cada usuario vive en la base de SU nodo: no hay
+> nada que las sincronice sola.
 
 > El certificado de la luna storage es propio (no de una CA): el navegador avisa la
 > primera vez y hay que aceptar la excepción. Es esperado.
@@ -29,14 +35,24 @@ contraseña:  Maui-S4xqrMk7lk8cws2q
 
 ## Claves de API (header `x-api-key`)
 
+**Una por nodo, y NO son intercambiables.** Comprobado nodo por nodo: la clave de uno
+da 401 en los otros dos.
+
 | Nodo | Clave |
 |---|---|
-| Matriz | `azazel_4745fb35499479e6749feac2e5925edf77c65eccd1460f4a` |
+| Matriz | `gt3xV7QhEBpcMmc1dhCTXaKUkmT5` |
 | Luna storage | `azazel_4745fb35499479e6749feac2e5925edf77c65eccd1460f4a` |
 | Luna Lilith | `azazel_e78d06bf847ba1460c634c0d834b1745f3782eb8eab26015` |
 
+> ⚠️ **La de la matriz no se rota a la ligera: es la que usa Lilith para federar.**
+> Cambiarla deja a Lilith sin poder consultar a Azazel. Si hay que rotarla, se cambia
+> a la vez en el `.env` de Lilith.
+
+Que sean distintas es deliberado: permite revocar la de un consumidor sin dejar sin
+servicio a los demás (es la Fase 1 de `PLAN-FEDERACION-LILITH`).
+
 ```bash
-curl -k -H "x-api-key: <clave>" https://205.209.102.101:8443/api/panel
+curl -k -H "x-api-key: <clave del nodo>" https://205.209.102.101:8443/api/panel
 ```
 
 ---
