@@ -733,6 +733,76 @@ def crear_app(config: Config) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
         )
 
+    @aplicacion.get("/archivo/{archivo_id}/imagen")
+    def get_imagen(
+        archivo_id: str,
+        _: Autorizado,
+        request: Request,
+        max_lado: int = 1600,
+    ) -> dict[str, Any]:
+        """La imagen de un documento, lista para viajar dentro de una respuesta.
+
+        Existe APARTE de `/contenido`, y esa separación es justo su razón de ser:
+        `/contenido` entrega el ORIGINAL de cualquier archivo —un CSV con un padrón
+        entero, por ejemplo— y por eso exige `Persona`. Aquí solo salen imágenes,
+        reescaladas y con tope, que es lo que un consumidor federado necesita para
+        ENSEÑAR una coincidencia sin poder llevarse el corpus.
+
+        Devuelve base64 en JSON en lugar de los bytes: quien consulta ya está pidiendo
+        un JSON con la coincidencia y así se lleva las dos cosas en una sola llamada,
+        que sobre una conexión con 0,6-5,4 s de TLS (medido con Lilith) es la
+        diferencia que importa.
+        """
+        from normalizacion.core import imagen_transporte
+
+        cfg: Config = request.app.state.config
+        doc = busqueda.doc_por_id(_cliente(request), cfg, archivo_id)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="archivo no encontrado")
+        if not imagen_transporte.es_imagen(doc.get("tipo_real"), doc.get("extension")):
+            raise HTTPException(
+                status_code=415,
+                detail=f"no es una imagen (tipo_real={doc.get('tipo_real')})",
+            )
+        if not doc.get("hash_contenido"):
+            raise HTTPException(status_code=404, detail="el documento no tiene contenido asociado")
+
+        try:
+            blob = _almacen(request).leer(doc["hash_contenido"])
+        except FileNotFoundError as exc:
+            # Un nodo sin almacén (perfil luna) conserva el ORIGINAL pero no una copia
+            # direccionable por hash. Se dice dónde vive en vez de un 503 mudo: quien
+            # federa puede enseñar la procedencia aunque no reciba los bytes.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "motivo": "este nodo no guarda copia de los blobs",
+                    "nodo": cfg.despliegue.nodo_id,
+                    "disco_id": doc.get("disco_id"),
+                    "ruta": doc.get("ruta"),
+                    "detalle": str(exc)[:200],
+                },
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="almacén no disponible") from exc
+
+        try:
+            with blob:
+                imagen = imagen_transporte.preparar(blob, max_lado=max(64, min(max_lado, 4000)))
+        except imagen_transporte.ImagenDemasiadoGrande as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except imagen_transporte.NoEsImagen as exc:
+            raise HTTPException(status_code=415, detail=f"no se pudo abrir: {exc}") from exc
+
+        return {
+            "archivo_id": archivo_id,
+            "nombre": doc.get("nombre"),
+            "disco_id": doc.get("disco_id"),
+            "ruta": doc.get("ruta"),
+            "origen": cfg.despliegue.nodo_id,
+            "imagen": imagen.como_dict,
+        }
+
     @aplicacion.get("/estadisticas", response_model=Estadisticas)
     def get_estadisticas(_: Autorizado, request: Request) -> Estadisticas:
         return busqueda.estadisticas(_cliente(request), request.app.state.config)
