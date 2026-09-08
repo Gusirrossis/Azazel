@@ -14,9 +14,42 @@ from typing import Any
 
 import polars as pl
 
+from normalizacion.core import identidad_columnas
+
 from . import ContextoExtraccion, ResultadoExtraccion, registrar
 
 _MAX_COLUMNAS_DETALLE = 100
+#: Columnas que se vuelcan al texto por fila. Con 300 columnas, meterlas todas gasta el
+#: presupuesto en dos filas; con las 40 primeras ORDENADAS POR IDENTIDAD entran cientos.
+_MAX_COLUMNAS_TEXTO = 40
+
+
+def _texto_de_filas(df: pl.DataFrame, presupuesto: int) -> tuple[str, bool]:
+    """Vuelca las filas a texto plano. Devuelve (texto, truncado).
+
+    Esto es lo que hace buscable un padrón. Antes el plugin devolvía columnas y
+    estadísticas pero NINGÚN texto, así que `texto_indexable` quedaba vacío y
+    `anclas.buscar_en_texto` no tenía dónde mirar: 36.657 CSV indexados sin una sola
+    CURP detectada, aunque las tuvieran en cada fila.
+
+    Las columnas van ordenadas por identidad (⚙ `core/identidad_columnas`): si el
+    presupuesto se acaba, que se acabe habiendo escrito la CURP y el nombre, no el
+    campo de observaciones.
+    """
+    if df.height == 0 or df.width == 0:
+        return "", False
+    columnas = identidad_columnas.ordenar_por_identidad(list(df.columns))[:_MAX_COLUMNAS_TEXTO]
+    partes = [" | ".join(columnas)]
+    largo = len(partes[0])
+    truncado = False
+    for fila in df.select(columnas).iter_rows():
+        linea = " | ".join("" if v is None else str(v) for v in fila)
+        if largo + len(linea) > presupuesto:
+            truncado = True
+            break
+        partes.append(linea)
+        largo += len(linea) + 1
+    return "\n".join(partes), truncado
 
 
 def _perfil_calidad(df: pl.DataFrame) -> dict[str, Any]:
@@ -57,7 +90,13 @@ def extraer_tabular(ctx: ContextoExtraccion) -> ResultadoExtraccion:
             campos["claves_raiz"] = sorted(obj.keys())[:50]
         elif isinstance(obj, list):
             campos["elementos"] = len(obj)
-        return ResultadoExtraccion(campos=campos, flags=flags)
+        # El JSON también se vuelca: un padrón en JSON tenía el mismo problema que uno
+        # en CSV — claves indexadas y valores invisibles.
+        texto = json.dumps(obj, ensure_ascii=False, separators=(" ", ": "))
+        if len(texto) > ctx.perillas.extractor_max_chars:
+            texto = texto[: ctx.perillas.extractor_max_chars]
+            flags.append("texto_truncado")
+        return ResultadoExtraccion(campos=campos, texto=texto, flags=flags)
 
     if ctx.tipo_real == "application/x-ndjson":
         df = pl.read_ndjson(io.BytesIO(datos))
@@ -69,5 +108,11 @@ def extraer_tabular(ctx: ContextoExtraccion) -> ResultadoExtraccion:
         "filas": df.height,
         "columnas": df.width,
         "columnas_nombres": df.columns[:50],
+        "tiene_columnas_identidad": identidad_columnas.tiene_identidad(list(df.columns)),
     }
-    return ResultadoExtraccion(campos=campos, perfil_calidad=perfil, flags=flags)
+    texto, truncado = _texto_de_filas(df, ctx.perillas.extractor_max_chars)
+    if truncado:
+        # Se marca en el doc: que no aparezca un nombre aquí no prueba que no esté en
+        # el archivo. Para el 100 % de un tabular grande hace falta trocearlo en lotes.
+        flags.append("texto_truncado")
+    return ResultadoExtraccion(campos=campos, texto=texto, perfil_calidad=perfil, flags=flags)

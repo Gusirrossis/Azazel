@@ -38,18 +38,9 @@ import sqlite3
 import tempfile
 from typing import Any
 
-from . import ContextoExtraccion, ResultadoExtraccion, registrar
+from normalizacion.core import identidad_columnas
 
-#: Columnas cuyo NOMBRE sugiere que contienen identidad. El orden no importa; lo que
-#: importa es que estas van primero al gastar el presupuesto de texto, porque son las
-#: que producen anclas (CURP/RFC) y las que hacen encontrable a una persona.
-_PISTAS_IDENTIDAD = (
-    "curp", "rfc", "nss", "clave_elector", "claveelector", "elector", "ine", "credencial",
-    "nombre", "apellido", "paterno", "materno", "razon_social", "razonsocial",
-    "email", "correo", "telefono", "celular", "movil",
-    "domicilio", "direccion", "calle", "colonia", "municipio", "estado", "cp",
-    "fecha_nac", "nacimiento", "curp_", "folio", "expediente", "cuenta",
-)
+from . import ContextoExtraccion, ResultadoExtraccion, registrar
 
 #: Tablas internas de SQLite y de extensiones: no son datos del usuario.
 _TABLAS_IGNORADAS = re.compile(r"^(sqlite_|_litestream|spatial_ref_sys)", re.I)
@@ -102,14 +93,10 @@ def _columnas(con: sqlite3.Connection, tabla: str) -> list[str]:
     return [f[1] for f in cur.fetchall()]
 
 
-def _puntuar(columna: str) -> int:
-    bajo = columna.lower()
-    return sum(1 for pista in _PISTAS_IDENTIDAD if pista in bajo)
-
-
-def _orden_por_identidad(columnas: list[str]) -> list[str]:
-    """Columnas con identidad primero; el resto conserva su orden original."""
-    return sorted(columnas, key=lambda c: (-_puntuar(c), columnas.index(c)))
+#: Compartidas con el extractor tabular: el mismo dato debe producir el mismo
+#: documento entre en CSV o dentro de una base.
+_puntuar = identidad_columnas.puntuar
+_orden_por_identidad = identidad_columnas.ordenar_por_identidad
 
 
 @registrar("application/vnd.sqlite3")
