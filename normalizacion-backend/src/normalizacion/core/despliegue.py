@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from normalizacion.core.config import Config, PerillasDespliegue
 
@@ -144,6 +145,35 @@ def resolver_disco_id(
     if ya_existe(disco_id):
         return disco_id
     return normalizar_disco_id(config, disco_id)
+
+
+def disco_id_desde_raiz(config: Config, ruta: Path) -> str | None:
+    """`disco_id` derivado de la ruta RELATIVA a la carpeta raíz de la API.
+
+    `exige_disco_id_explicito` prohíbe derivarlo del BASENAME, y con razón: dos
+    carpetas homónimas —en dos nodos, o en dos sitios del mismo— producirían el
+    mismo id y sus `archivo_id` colisionarían.
+
+    La ruta relativa a una raíz FIJA no tiene ese problema: es única dentro del
+    nodo por construcción del filesystem (`a/SAT` y `b/SAT` ya no chocan), y entre
+    nodos la desambigua el prefijo `nodo_id:` que añade `normalizar_disco_id`. Así
+    el operador solo elige carpeta, sin inventarse un identificador que además
+    puede escribir mal y duplicar el disco entero.
+
+    Devuelve None si la ruta NO cuelga de la raíz: fuera de ella no hay unicidad
+    garantizada y el id explícito sigue siendo obligatorio.
+    """
+    raiz_cfg = getattr(config, "api_carpeta_raiz", None)
+    if not raiz_cfg:
+        return None
+    try:
+        relativa = Path(ruta).resolve().relative_to(Path(raiz_cfg).resolve())
+    except (ValueError, OSError):
+        return None
+    partes = relativa.parts
+    if not partes:  # la raíz misma no es un disco
+        return None
+    return "/".join(partes)
 
 
 def exige_disco_id_explicito(config: Config) -> bool:

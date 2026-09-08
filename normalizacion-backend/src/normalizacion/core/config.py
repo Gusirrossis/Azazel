@@ -415,7 +415,11 @@ class Config(BaseSettings):
     minio_bucket: str = "almacen"
 
     # Backend del almacén permanente tras la interfaz agnóstica (PROPUESTA §7.4):
-    # "minio" en despliegues reales; "local" (directorio) para dev/tests sin Docker.
+    # "minio" en despliegues reales; "local" (directorio) para dev/tests sin Docker;
+    # "ninguno" para el nodo que CONSERVA sus originales y solo extrae conocimiento
+    # para mandarlo a otro Azazel — ahí la copia duplicaría el corpus sin comprar
+    # nada, y además deja la puerta en rojo para siempre, que es lo que impide que
+    # `reclamacion.py` borre un origen que es la única copia (ver `AlmacenNulo`).
     almacen_backend: str = "minio"
     almacen_local_raiz: str = "./_almacen_dev"
 

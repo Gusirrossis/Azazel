@@ -63,8 +63,50 @@ class AlmacenLocal:
         return self._ruta(hash_contenido).open("rb")
 
 
+class AlmacenNulo:
+    """No persiste nada: para el nodo cuyo ORIGEN es ya la copia permanente.
+
+    Azazel nació para discos DESECHABLES: se copia el blob al almacén y por eso la
+    puerta puede certificar que el original es prescindible. En un nodo que CONSERVA
+    los originales en su sitio —normaliza para mandar el conocimiento a otro Azazel,
+    no para reemplazar al origen— esa copia duplica el corpus entero sin comprar
+    nada: el mismo byte, dos veces, en el mismo disco.
+
+    Consecuencias, todas buscadas:
+
+      · `existe` siempre False y `guardar` es no-op. El worker sigue leyendo una vez,
+        hasheando al vuelo y extrayendo el contenido; lo único que no ocurre es la
+        escritura del blob. El documento que va al índice es idéntico.
+      · `leer` LANZA. Sin blob no hay descarga por hash (`/archivo/{id}/contenido`),
+        ni re-extracción desde el almacén, ni conjunto de calidad. El archivo sigue
+        intacto en su carpeta: lo que se pierde es servirlo POR HASH, no el dato.
+      · La verificación no puede leer el blob, así que **la puerta nunca da verde**.
+        Ese es el cerrojo que de verdad importa: `reclamacion.py` borra el contenido
+        del origen cuando la puerta da verde, y aquí el origen es la ÚNICA copia.
+        Fail-closed por construcción, no por configuración.
+    """
+
+    def existe(self, hash_contenido: str) -> bool:
+        return False
+
+    def guardar(self, hash_contenido: str, fuente: IO[bytes], tamano: int) -> None:
+        return None
+
+    def leer(self, hash_contenido: str) -> IO[bytes]:
+        # FileNotFoundError y no una excepción propia: es exactamente lo que levanta
+        # `AlmacenLocal.leer` cuando el blob no está, así que quien ya trata el caso
+        # "sin blob" no necesita aprender un error nuevo.
+        raise FileNotFoundError(
+            f"almacén 'ninguno': este nodo no guarda copia de los blobs "
+            f"({hash_contenido[:12]}…). El original sigue en su carpeta de origen; "
+            f"lo que no existe es una copia direccionable por hash."
+        )
+
+
 def crear_almacen(config: Config) -> Almacen:
-    """Fábrica según config (`NORM_ALMACEN_BACKEND=minio|local`)."""
+    """Fábrica según config (`NORM_ALMACEN_BACKEND=minio|local|ninguno`)."""
+    if config.almacen_backend == "ninguno":
+        return AlmacenNulo()
     if config.almacen_backend == "local":
         return AlmacenLocal(Path(config.almacen_local_raiz).expanduser())
     if config.almacen_backend == "minio":

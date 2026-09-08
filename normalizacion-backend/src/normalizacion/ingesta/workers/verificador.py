@@ -33,6 +33,13 @@ log = obtener_logger("verificador")
 
 def crear_almacen_frio(config: Config) -> Almacen:
     """El frío usa la MISMA interfaz, en su propio espacio (bucket/carpeta barata)."""
+    if config.almacen_backend == "ninguno":
+        # Sin copia caliente tampoco hay copia fría: el frío existe para que el COLD
+        # sobreviva al desechado del disco, y este nodo no desecha nada. Copiarlo
+        # duplicaría justo lo más pesado y lo menos consultado.
+        from normalizacion.core.almacen import AlmacenNulo
+
+        return AlmacenNulo()
     if config.almacen_backend == "local":
         from pathlib import Path
 
@@ -63,6 +70,7 @@ def verificar_indexados(
     """Re-lee cada blob INDEXADO y lo compara con su hash esperado (riesgo R1)."""
     almacen = almacen if almacen is not None else crear_almacen(config)
     verificados = fallidos = transitorios = 0
+    sin_copia = config.almacen_backend == "ninguno"
 
     with psycopg.connect(config.postgres_dsn) as conn:
         while True:
@@ -80,6 +88,21 @@ def verificar_indexados(
             if not filas:
                 break
             for fila in filas:
+                if sin_copia:
+                    # No hay blob que releer. Esta verificación existe para cazar
+                    # corrupción silenciosa DE LA COPIA (R1); sin copia no hay nada
+                    # que cotejar, y el original está donde siempre estuvo.
+                    #
+                    # Cerrar la fila aquí no relaja la garantía, la MUEVE: dejarla en
+                    # INDEXADO la haría reintentar en cada corrida hasta agotar
+                    # `intentos_max` y morir en ERROR —trabajo infinito y un panel que
+                    # miente—, mientras que la condición que de verdad protege el dato
+                    # (¿es seguro desechar el origen?) la resuelve la puerta, que con
+                    # este backend NUNCA da verde.
+                    cola.transicionar(conn, fila.archivo_id, Estado.INDEXADO, Estado.VERIFICADO)
+                    cola.transicionar(conn, fila.archivo_id, Estado.VERIFICADO, Estado.HECHO)
+                    verificados += 1
+                    continue
                 esperado = fila.hash_contenido
                 if not esperado:
                     cola.marcar_error(
@@ -283,6 +306,14 @@ def evaluar_puerta(config: Config, disco_id: str) -> EstadoPuerta:
         motivo: str | None = None
         if not seguro:
             motivo = "sin_catalogar" if total == 0 else "datos_sin_poner_a_salvo"
+        elif config.almacen_backend == "ninguno":
+            # Sin almacén no existe segunda copia: el origen ES el dato. Que todas
+            # las filas estén HECHO significa "extraído e indexado", no "a salvo" —
+            # el índice guarda texto y metadatos, no los bytes del original.
+            # Verde aquí autorizaría a `reclamacion.py` a vaciar la carpeta y el
+            # archivo no existiría en ningún otro sitio. Fail-closed, sin override.
+            seguro = False
+            motivo = "sin_copia_el_origen_es_la_unica"
         elif not despliegue.de_config(config).es_archivo_maestro:
             # Todo está a salvo EN ESTE NODO, pero este nodo no es el archivo: sus
             # blobs deben haber llegado al maestro antes de tocar el origen.

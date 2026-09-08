@@ -218,9 +218,16 @@ def iniciar_corrida(
     if not ruta.is_dir():
         raise ValueError(f"no es una carpeta: {ruta}")
     if disco_id is None and despliegue.exige_disco_id_explicito(config):
+        # Antes de exigírselo al operador: si la carpeta cuelga de la raíz fija de
+        # este nodo, su ruta relativa YA es un id único (y el prefijo `nodo_id:` lo
+        # separa del resto de nodos). Pedirlo entonces sería pedir que se invente
+        # algo que el sistema puede deducir sin riesgo — y que escrito distinto en
+        # dos corridas duplicaría el disco entero.
+        disco_id = despliegue.disco_id_desde_raiz(config, ruta)
+    if disco_id is None and despliegue.exige_disco_id_explicito(config):
         raise ValueError(
-            "en modo híbrido el disco_id es obligatorio: derivarlo del nombre de la"
-            f" carpeta ('{ruta.name}') provoca colisiones entre nodos"
+            "en modo híbrido el disco_id es obligatorio para carpetas fuera de la"
+            f" raíz de datos: derivarlo del nombre ('{ruta.name}') provoca colisiones"
         )
     id_pedido = disco_id or ruta.name
     with psycopg.connect(config.postgres_dsn) as conn:
