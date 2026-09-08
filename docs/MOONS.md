@@ -256,7 +256,7 @@ subió solo a 8 workers para 3,5 cores.
 | **`indexado_en` en el mapping** | Haría el backfill incremental por tiempo en vez de rescan completo por hash (§3.5 de `PLAN_TOPOLOGIA.md`). Hoy cada réplica dispara un barrido entero del índice |
 | **El front no sabe que es una luna** | `/archivo/{id}/contenido` falla con `FileNotFoundError` y la UI lo pinta como error genérico, cuando la respuesta correcta es "este nodo no guarda copia" |
 | **Migrar el script de transporte al repo** | `replicar_a_matriz.sh` vive sólo en `/srv/azazel` del nodo. Debería versionarse en `deploy/` |
-| **El freno del centinela depende de lo que se cuelga** | Frena con `docker exec … norm pausar`, o sea **a través del contenedor que suele ser el problema**. Medido en `vps-storage-01`: el disco llegó al 99 % y `FRENO ACTIVADO` no aparece ni una vez en el log. Si el exec falla, no pausa y tampoco avisa de que no pudo |
+| **`centinela.sh` no está versionado** | Vive sólo en el nodo (`/srv/azazel/` o `/opt/azazel-luna/`) y las tres copias divergen. Ya lleva lógica que costó un incidente —el freno— y no hay forma de revisarla, ni de saber si los tres nodos tienen la misma. Debería estar en `deploy/` con lo específico de cada nodo en variables |
 | **La caché de extracción es por PROCESO** | Con 4 workers, un 7z de 130 GB puede llegar a ocupar ~520 GB en `/tmp` a la vez. Cabe en este nodo (5,4 TB libres) y no en uno más chico. Una caché compartida entre workers, o un tope que cuente el total y no lo de cada proceso, lo acotaría |
 
 ### El 7z que paró la luna 16 horas (BCJ2)
@@ -298,8 +298,37 @@ un transitorio en reintento no cuenta como error.
 Cubierto por `tests/unit/test_contenedores.py::TestSieteZCodecNoSoportado` (4 casos,
 verificados quitando el arreglo: los 4 fallan sin él).
 
+### El freno que frenaba a través de lo que se rompe
+
+El centinela pausa la ingesta al 93 % de disco. Lo hacía así:
+
+```bash
+if docker exec normalizacion-api-1 norm pausar >/dev/null 2>&1; then
+  alerta "FRENO ACTIVADO: ..."
+fi          # ← sin `else`: si el exec falla, silencio absoluto
+```
+
+Dos fallos en tres líneas. El freno **atravesaba el contenedor del API**, que es
+justo el que se cuelga cuando hay problemas; y el `if` sin `else` se tragaba el
+fallo. Resultado medido en `vps-storage-01`: el disco llegó al **99 %** con la
+ingesta corriendo y en `centinela-alertas.log` **no hay una sola línea `FRENO`**.
+El freno no existía y nadie podía saberlo.
+
+Ahora la pausa se escribe **directa en Postgres** (`control.pausado = 'true'`, que es
+lo que `norm pausar` hace por dentro), y un freno fallido **genera su propia alerta**.
+
+> Verificado con las tres ramas, en el nodo y sin tocar la bandera real (clave de
+> juguete): con Postgres accesible activa y el `true` llega a la tabla; con Postgres
+> inalcanzable avisa `FRENO FALLO … LA INGESTA SIGUE CORRIENDO`; y el código viejo,
+> ante el mismo fallo, no escribe **nada**.
+
+Aplicado en los tres nodos. **Un freno que falla en silencio es peor que no tener
+freno**, porque das por hecho que está puesto.
+
 ### Ya resuelto
 
+- ~~El freno del centinela no saltaba y no avisaba de que no saltaba~~ → pausa
+  directa en Postgres + alerta cuando el freno falla (arriba).
 - ~~Un 7z con BCJ2 dejaba la luna en bucle infinito~~ → fallback a `unar` +
   `ContenedorIlegible` como fallo permanente (arriba).
 - ~~`restaurar_ajenos` restauraba el snapshot más antiguo~~ → arreglado en `replicacion.py`,
