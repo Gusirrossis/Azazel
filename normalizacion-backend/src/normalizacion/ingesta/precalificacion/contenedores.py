@@ -64,6 +64,16 @@ class ContenedorInseguro(Exception):
     """Una entrada violó los límites al materializarla (defensa en profundidad)."""
 
 
+class ContenedorIlegible(Exception):
+    """El contenedor no se puede abrir con NINGUNA de las herramientas disponibles.
+
+    Es PERMANENTE, y por eso no viaja como `OSError`: reintentarlo re-descomprime
+    el archivo ENTERO para volver a fallar en la misma entrada. Medido en
+    `vps-storage-01`: un 7z con filtro BCJ2 dejó una corrida 3 h sin procesar un
+    solo archivo, quemando un núcleo y escribiendo 104 GB en reintentos.
+    """
+
+
 @dataclass(frozen=True)
 class EntradaContenedor:
     """Una entrada interna, descrita SIN haberla extraído."""
@@ -491,6 +501,34 @@ def _abrir_lectura_arbol(raiz: Path) -> None:
                 pass
 
 
+def _extraer_7z_con_unar(ruta_fs: Path, destino: Path) -> None:
+    """Extracción COMPLETA con The Unarchiver, para los filtros que py7zr no trae.
+
+    `-no-directory` es obligatorio: por defecto unar añade una carpeta contenedora
+    cuando el archivo tiene más de una entrada en la raíz, y entonces el árbol
+    quedaría anidado un nivel de más respecto a lo que py7zr produce. `_paso_7z`
+    resuelve `dir_ex / entrada` con las rutas guardadas en el 7z, así que ese nivel
+    extra haría fallar TODAS las entradas — el mismo síntoma que se viene de curar.
+    """
+    proc = subprocess.run(
+        [
+            _unar_bin(),
+            "-quiet",
+            "-force-overwrite",
+            "-no-directory",
+            "-output-directory",
+            str(destino),
+            str(ruta_fs),
+        ],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        detalle = (proc.stderr or proc.stdout).decode("utf-8", "replace").strip()[:200]
+        raise OSError(f"unar salió con {proc.returncode}: {detalle}")
+    if not any(destino.iterdir()):
+        raise OSError("unar terminó con éxito pero no extrajo nada")
+
+
 def _dir_7z_extraido(ruta_fs: Path) -> Path:
     """Extrae el 7z COMPLETO una sola vez (cacheado por proceso) y devuelve el
     directorio temporal. Todas las entradas se sirven de ahí — O(N), no O(N²)."""
@@ -509,9 +547,23 @@ def _dir_7z_extraido(ruta_fs: Path) -> Path:
         try:
             with py7zr.SevenZipFile(ruta_fs, mode="r") as sz:
                 sz.extractall(path=destino)
-        except Exception:
+        except Exception as exc_py7zr:
+            # py7zr no implementa todos los filtros de 7-Zip (BCJ2 entre ellos) y
+            # falla A MITAD de la extracción, tras descomprimir casi todo. `unar`
+            # sí los soporta y YA es la vía para los RAR, así que se reintenta con
+            # él una vez, en vez de dar por perdido un archivo que sí es legible.
             shutil.rmtree(destino, ignore_errors=True)
-            raise
+            destino = Path(tempfile.mkdtemp(prefix="norm7z_"))
+            try:
+                _extraer_7z_con_unar(ruta_fs, destino)
+            except Exception as exc_unar:
+                shutil.rmtree(destino, ignore_errors=True)
+                raise ContenedorIlegible(
+                    f"7z ilegible ({ruta_fs.name}): py7zr={exc_py7zr}; unar={exc_unar}"
+                ) from exc_py7zr
+            log.warning(
+                "7z_extraido_con_unar", archivo=str(ruta_fs), motivo_py7zr=str(exc_py7zr)[:200]
+            )
         _abrir_lectura_arbol(destino)
 
         tam = _tam_arbol(destino)
@@ -760,7 +812,9 @@ def abrir_entrada(
             ruta_fs_actual = None
         fobj.seek(0)
         return fobj
-    except ContenedorInseguro:
+    except (ContenedorInseguro, ContenedorIlegible):
+        # Ambas son PERMANENTES y viajan tal cual: envolverlas en `OSError` las
+        # mandaría a la rama de reintentos del precalificador.
         fobj.close()
         raise
     except Exception as exc:

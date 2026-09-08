@@ -321,3 +321,120 @@ class TestAbrirEntrada:
                 umbral_memoria=1024,
                 limite_bytes=10_000,
             )
+
+
+class TestSieteZCodecNoSoportado:
+    """Incidente real en `vps-storage-01` (2026-09-08): un 7z con filtro BCJ2 dejó
+    una corrida 3 h sin procesar un solo archivo. py7zr no implementa BCJ2 y falla
+    tras descomprimir casi todo; el fallo viajaba como `OSError`, que el
+    precalificador trata como TRANSITORIO → reintento → re-extraer los 2 GB →
+    fallar igual. 104 GB escritos, un núcleo al 100 %, cero avance."""
+
+    def _crear_7z(self, destino: Path, entradas: dict[str, bytes]) -> Path:
+        import py7zr
+
+        with py7zr.SevenZipFile(destino, "w") as sz:
+            for nombre, datos in entradas.items():
+                sz.writestr(datos, nombre)
+        return destino
+
+    def _py7zr_revienta(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import py7zr
+
+        def _extractall(self: object, path: object = None) -> None:
+            raise ValueError("BCJ2 filter is not supported by py7zr.")
+
+        monkeypatch.setattr(py7zr.SevenZipFile, "extractall", _extractall)
+
+    def test_codec_no_soportado_cae_a_unar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si py7zr no sabe el codec, se reintenta con unar EN VEZ de dar el
+        archivo por perdido: `lsar` lista ese mismo 7z sin problema."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        ruta = self._crear_7z(tmp_path / "bcj2.7z", {"docs/a.txt": b"contenido real"})
+        C._limpiar_cache_7z()
+        self._py7zr_revienta(monkeypatch)
+
+        def _unar_ok(ruta_fs: Path, destino: Path) -> None:
+            (destino / "docs").mkdir(parents=True, exist_ok=True)
+            (destino / "docs" / "a.txt").write_bytes(b"contenido real")
+
+        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_ok)
+        try:
+            dir_ex = C._dir_7z_extraido(ruta)
+            assert (dir_ex / "docs" / "a.txt").read_bytes() == b"contenido real"
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_ilegible_por_ambos_no_es_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LA INVARIANTE que evita el bucle: cuando NINGÚN descompresor abre el
+        archivo, el fallo es permanente y NO un `OSError` — el precalificador manda
+        los `OSError` a reintentos, y cada reintento re-descomprime el archivo
+        entero para fallar exactamente igual."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        ruta = self._crear_7z(tmp_path / "roto.7z", {"a.txt": b"x"})
+        C._limpiar_cache_7z()
+        self._py7zr_revienta(monkeypatch)
+
+        def _unar_falla(ruta_fs: Path, destino: Path) -> None:
+            raise OSError("unar salió con 1: Couldn't open archive.")
+
+        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falla)
+        try:
+            with pytest.raises(C.ContenedorIlegible) as exc:
+                C._dir_7z_extraido(ruta)
+            assert not isinstance(exc.value, OSError)
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_unar_nunca_crea_carpeta_contenedora(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`-no-directory` no es cosmético: sin él unar anida un nivel de más
+        cuando el archivo tiene varias entradas en la raíz, y entonces
+        `dir_ex / entrada` no resuelve NINGUNA — el mismo síntoma que se cura."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        destino = tmp_path / "salida"
+        destino.mkdir()
+        (destino / "ya_hay_algo.txt").write_bytes(b"x")
+        visto: dict[str, list[str]] = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def _run(argv: list[str], **kwargs: object) -> _Proc:
+            visto["argv"] = argv
+            return _Proc()
+
+        monkeypatch.setattr(C, "_unar_bin", lambda: "/usr/bin/unar")
+        monkeypatch.setattr(C.subprocess, "run", _run)
+        C._extraer_7z_con_unar(tmp_path / "x.7z", destino)
+        assert "-no-directory" in visto["argv"]
+
+    def test_unar_que_no_extrae_nada_no_pasa_por_bueno(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Código de salida 0 con un árbol vacío es un falso OK: serviría un
+        directorio sin entradas y cada archivo fallaría por separado."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        destino = tmp_path / "vacio"
+        destino.mkdir()
+
+        class _Proc:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        monkeypatch.setattr(C, "_unar_bin", lambda: "/usr/bin/unar")
+        monkeypatch.setattr(C.subprocess, "run", lambda argv, **kw: _Proc())
+        with pytest.raises(OSError):
+            C._extraer_7z_con_unar(tmp_path / "x.7z", destino)

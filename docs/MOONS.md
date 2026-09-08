@@ -184,6 +184,32 @@ el planeta.**
 
 5. **Cron** con el script de replicación.
 
+### ⚠ El compose vive tras `profiles:` y exige `--env-file`
+
+Dos trampas que juntas convierten un despliegue de dos minutos en media hora:
+
+- Los servicios están **detrás de perfiles**: `postgres`, `opensearch` y `minio` en
+  `datos`; `api`, `exportador` y `front` en `app`. Sin `--profile` compose no ve
+  **ninguno** y responde `no such service: minio` — un mensaje que hace pensar en un
+  fichero mal escrito cuando el fichero está perfecto. Peor: `config --services`
+  devuelve **lista vacía con código de salida 0**, así que parece que todo va bien.
+- Hace falta `--env-file ../.env.prod`. Sin él, la interpolación muere con
+  `required variable NORM_MINIO_ROOT_USER is missing a value`.
+
+La invocación que funciona, desde `deploy/`:
+
+```bash
+docker-compose -f docker-compose.prod.yml -f ../docker-compose.override.yml \
+  --env-file ../.env.prod --profile app --profile datos -p normalizacion \
+  build api    # y luego: up -d --no-deps --force-recreate api
+```
+
+> **Los dos ficheros, siempre.** El override es donde vive
+> `NORM_ALMACEN_BACKEND: "ninguno"`. Recrear `api` solo con `docker-compose.prod.yml`
+> deja la luna con almacén real: empezaría a copiar blobs y la puerta daría verde
+> sobre la ÚNICA copia que existe. Tras recrear, compruébalo:
+> `docker exec normalizacion-api-1 env | grep ALMACEN`.
+
 ### ⚠ Docker se salta el firewall
 
 En `vps-storage-01`, `ufw` permite sólo 22, 80, 443 y 68 — y sin embargo **3000 y 8000
@@ -230,9 +256,52 @@ subió solo a 8 workers para 3,5 cores.
 | **`indexado_en` en el mapping** | Haría el backfill incremental por tiempo en vez de rescan completo por hash (§3.5 de `PLAN_TOPOLOGIA.md`). Hoy cada réplica dispara un barrido entero del índice |
 | **El front no sabe que es una luna** | `/archivo/{id}/contenido` falla con `FileNotFoundError` y la UI lo pinta como error genérico, cuando la respuesta correcta es "este nodo no guarda copia" |
 | **Migrar el script de transporte al repo** | `replicar_a_matriz.sh` vive sólo en `/srv/azazel` del nodo. Debería versionarse en `deploy/` |
+| **El freno del centinela depende de lo que se cuelga** | Frena con `docker exec … norm pausar`, o sea **a través del contenedor que suele ser el problema**. Medido en `vps-storage-01`: el disco llegó al 99 % y `FRENO ACTIVADO` no aparece ni una vez en el log. Si el exec falla, no pausa y tampoco avisa de que no pudo |
+| **La caché de extracción es por PROCESO** | Con 4 workers, un 7z de 130 GB puede llegar a ocupar ~520 GB en `/tmp` a la vez. Cabe en este nodo (5,4 TB libres) y no en uno más chico. Una caché compartida entre workers, o un tope que cuente el total y no lo de cada proceso, lo acotaría |
+
+### El 7z que paró la luna 16 horas (BCJ2)
+
+**Síntoma:** `vps-storage-01` con una corrida `EN_CURSO` que no procesaba **ni un solo
+archivo**. Un núcleo al 100 %, los cuatro workers con 24 s de CPU cada uno, 104 GB
+escritos y `/tmp` oscilando entre 1,2 y 2 GB porque el directorio se recreaba cada 80 s.
+La corrida anterior estuvo así 13 horas y llenó el disco al 99 %.
+
+**Causa:** `PROGRAMA + DB PREPARATORIA.7z` usa el filtro **BCJ2**, que `py7zr` no
+implementa (`method_names=['LZMA2', 'LZMA', 'BCJ2*']`). El bucle era:
+
+```
+extraer 2 GB → reventar en la entrada BCJ2 → rmtree de lo extraído
+   → el fallo viaja como OSError → el precalificador lo trata como TRANSITORIO
+   → reintentar → extraer 2 GB otra vez → ...
+```
+
+Con 37.623 entradas dentro de ese archivo y `intentos_max=3`, eran ~39 días de trabajo
+para no indexar nada. Y **sin un solo error visible**: `errores: 0` en el panel, porque
+un transitorio en reintento no cuenta como error.
+
+**Arreglo, en dos mitades — las dos hacen falta:**
+
+1. `_dir_7z_extraido` cae a **`unar`** cuando py7zr no sabe el codec. `unar` ya era la
+   vía para los RAR y sí soporta BCJ2: extrajo 15.103 ficheros del mismo archivo.
+   Va con `-no-directory`, porque por defecto unar añade una carpeta contenedora
+   cuando hay varias entradas en la raíz y entonces `dir_ex / entrada` no resuelve
+   **ninguna** — el mismo síntoma que se venía de curar.
+2. Cuando **ningún** descompresor lo abre, se lanza `ContenedorIlegible`, que **no
+   es un `OSError`**. Esa es la línea que rompe el bucle: el precalificador manda los
+   `OSError` a reintentos, y aquí reintentar es re-descomprimir el archivo entero para
+   fallar exactamente igual.
+
+> **La lección general:** un codec no soportado es PERMANENTE. Clasificarlo como
+> transitorio no cuesta un reintento barato — cuesta re-descomprimir gigabytes, y el
+> panel dice que todo va bien mientras el nodo no avanza.
+
+Cubierto por `tests/unit/test_contenedores.py::TestSieteZCodecNoSoportado` (4 casos,
+verificados quitando el arreglo: los 4 fallan sin él).
 
 ### Ya resuelto
 
+- ~~Un 7z con BCJ2 dejaba la luna en bucle infinito~~ → fallback a `unar` +
+  `ContenedorIlegible` como fallo permanente (arriba).
 - ~~`restaurar_ajenos` restauraba el snapshot más antiguo~~ → arreglado en `replicacion.py`,
   con `--refrescar` para la replicación periódica.
 - ~~Sin tests~~ → `tests/unit/test_moons.py`, 19 casos. Verificados **quitando cada arreglo**:

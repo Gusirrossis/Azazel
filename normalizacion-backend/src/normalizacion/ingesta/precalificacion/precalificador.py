@@ -213,6 +213,13 @@ def precalificar_pendientes(
                     cola.marcar_error(conn, fila.archivo_id, Estado.PENDIENTE, f"contenedor: {exc}")
                     errores += 1
                     continue
+                except contenedores.ContenedorIlegible as exc:  # PERMANENTE
+                    # Ningún descompresor disponible abre este contenedor. Reintentarlo
+                    # re-descomprime el archivo ENTERO para fallar igual: es la forma de
+                    # que una corrida se quede horas sin avanzar sin un solo error visible.
+                    cola.marcar_error(conn, fila.archivo_id, Estado.PENDIENTE, f"ilegible: {exc}")
+                    errores += 1
+                    continue
                 except OSError as exc:  # TRANSITORIO con tope (disco intermitente)
                     en_reintento = cola.fallo_transitorio(
                         conn,
