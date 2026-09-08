@@ -193,4 +193,4 @@ def extraer(
 
 
 # Importar los plugins puebla el registro (al final: evita el ciclo de imports)
-from . import documentos, hoja, imagen, tabular, texto  # noqa: E402,F401
+from . import documentos, hoja, imagen, sqlite, tabular, texto  # noqa: E402,F401
