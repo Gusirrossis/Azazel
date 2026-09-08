@@ -106,6 +106,31 @@ class TestDiscoIdDesdeRaiz:
         assert una != otra
 
 
+# ------------------------------------------------------------------ el destino no puede reactivar la copia
+
+
+class TestDestinoNoReactivaLaCopia:
+    """Elegir carpeta de destino conmuta el almacén a backend `local`. En una luna eso
+    sería una puerta trasera: reactiva la copia del corpus entero Y devuelve la puerta
+    al verde, con `reclamacion.py` autorizado a vaciar el origen."""
+
+    def test_con_almacen_nulo_el_destino_se_ignora(self, tmp_path: Path) -> None:
+        from normalizacion.ingesta.pipeline import config_con_destino
+
+        efectiva = config_con_destino(_cfg(almacen_backend="ninguno"), str(tmp_path))
+        assert efectiva.almacen_backend == "ninguno"
+        assert not (tmp_path / "almacen").exists(), "ni siquiera debe plantar las carpetas"
+
+    def test_con_almacen_de_verdad_el_destino_sigue_funcionando(self, tmp_path: Path) -> None:
+        """El cerrojo no puede romper el flujo canónico: quien sí guarda copia sigue
+        pudiendo elegir dónde."""
+        from normalizacion.ingesta.pipeline import config_con_destino
+
+        efectiva = config_con_destino(_cfg(almacen_backend="minio"), str(tmp_path))
+        assert efectiva.almacen_backend == "local"
+        assert (tmp_path / "almacen").is_dir()
+
+
 # ------------------------------------------------------------------ el cerrojo
 
 

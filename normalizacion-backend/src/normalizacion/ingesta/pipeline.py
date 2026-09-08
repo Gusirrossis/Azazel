@@ -77,6 +77,18 @@ def config_con_destino(config: Config, destino: str | None) -> Config:
     (OpenSearch) y la cola (Postgres) no cambian de lugar."""
     if destino is None:
         return config
+    if config.almacen_backend == "ninguno":
+        # Este nodo NO guarda copia (ver `AlmacenNulo`): el destino sirve para elegir
+        # dónde viven el almacén HOT y el frío, y aquí no se escribe ninguno de los
+        # dos. Conmutar a backend "local" por traer un `destino` reactivaría la copia
+        # del corpus entero —justo lo que este perfil existe para evitar— y, peor,
+        # devolvería la puerta al verde: `reclamacion.py` quedaría autorizado a vaciar
+        # un origen que es la única copia.
+        #
+        # Se ignora AQUÍ, en el único sitio donde se decide el almacén de la corrida,
+        # y no sólo en la validación de la API: así el CLI y cualquier llamador futuro
+        # heredan la garantía sin tener que acordarse de ella.
+        return config
     base = Path(destino).expanduser().resolve()
     (base / "almacen").mkdir(parents=True, exist_ok=True)
     (base / "frio").mkdir(parents=True, exist_ok=True)

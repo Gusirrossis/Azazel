@@ -753,6 +753,13 @@ def crear_app(config: Config) -> FastAPI:
         return cfg.api_carpeta_destino_raiz if ambito == "destino" else cfg.api_carpeta_raiz
 
     def _destino_eligible(cfg: Config) -> bool:
+        # Sin almacén no hay nada que ubicar: el destino elige DÓNDE viven el almacén
+        # HOT y el frío, y con backend "ninguno" no se escribe ningún blob. Ofrecer el
+        # selector le pediría al operador una decisión sin efecto —y que además suena a
+        # que sí se guarda algo ahí—, así que el front lo oculta. `config_con_destino`
+        # ignora el destino por su cuenta: esto es la ergonomía, no la garantía.
+        if cfg.almacen_backend == "ninguno":
+            return False
         # ⚙K16: el nodo que REPLICA sus blobs al archivo maestro necesita un almacén
         # único y direccionable. Con el selector, cada corrida puede dejar el almacén
         # en una carpeta distinta (`config_con_destino` conmuta a backend `local`),
