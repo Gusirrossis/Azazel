@@ -544,7 +544,15 @@ def doctor() -> None:
 
 
 @app.command()
-def replicar() -> None:
+def replicar(
+    refrescar: bool = typer.Option(
+        False,
+        "--refrescar",
+        help="Receptor: sustituye la copia local de cada índice ajeno por la del"
+        " snapshot más reciente. Necesario en replicación periódica; sin esto un"
+        " índice ya presente se salta y lo nuevo del emisor no entra.",
+    ),
+) -> None:
     """⚙K16 — replica lo que le toca a este nodo (snapshot o restore del índice).
 
     El archivo maestro TOMA snapshot de sus índices; el nodo de servicio RESTAURA
@@ -553,7 +561,7 @@ def replicar() -> None:
     from normalizacion.core import replicacion
 
     config = cargar_config()
-    r = replicacion.replicar(config)
+    r = replicacion.replicar(config, refrescar=refrescar)
     typer.echo(f"Nodo '{config.despliegue.nodo_id}' — acción: {r.accion}")
     if r.snapshot:
         typer.echo(f"  snapshot: {r.snapshot}")

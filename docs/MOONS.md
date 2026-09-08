@@ -124,23 +124,28 @@ cada 15 min, con log en `/srv/azazel/replica.log`:
    → restore + backfill de entidades
 ```
 
-### Dos trampas que el canal tiene que sortear
+### La trampa que costó 22 documentos
 
-**a) El snapshot no ve el translog.** OpenSearch fotografía los segmentos **en disco**.
-Lo recién indexado vive en el translog y **no entra en el snapshot**. Sin un `flush`
-previo, cada ciclo deja fuera lo más nuevo, en silencio.
-
-**b) `restaurar_ajenos` restaura el snapshot MÁS ANTIGUO.**
-`replicacion.py:218` recorre los snapshots ordenados **ascendente** y da el índice por
-restaurado en el primero que lo contiene. Con snapshots repetidos del mismo nodo, eso
-significa restaurar siempre el más viejo: **los datos nuevos no llegan jamás**.
+**`restaurar_ajenos` restauraba el snapshot MÁS ANTIGUO.** Recorría los snapshots
+ordenados **ascendente** y daba el índice por restaurado en el primero que lo contenía.
+Con un emisor que fotografía su índice cada ciclo, eso significa restaurar siempre el
+más viejo: **los datos nuevos no llegan jamás, y sin error** — que es lo peor.
 
 > Síntoma real: la luna tenía 24 documentos y el planeta recibía 2.
 
-El script lo sortea eligiendo explícitamente el snapshot más reciente de cada índice y
-borrando la copia vieja antes de restaurar (un restore sobre un índice abierto falla).
-**El bug sigue en el código**: quien llame a `norm replicar` en un nodo receptor lo
-arrastra. Arreglarlo en `replicacion.py` está pendiente (§6).
+**Arreglado en el código** (`replicacion.py`): de cada índice ajeno se elige el snapshot
+más reciente, y los snapshots no-`SUCCESS` se descartan (uno fallido y reciente
+secuestraría el restore). Cubierto por `tests/unit/test_moons.py`.
+
+Además, un índice ya presente se salta salvo `refrescar=True` (`norm replicar
+--refrescar`): un restore sobre un índice abierto falla y retirarlo es destructivo, así
+que la replicación periódica lo pide explícitamente y nunca ocurre por sorpresa.
+
+> **Sobre el `flush` del paso 0:** el script hace `flush` antes del snapshot porque
+> OpenSearch fotografía los segmentos en disco. Es **defensivo**: durante el diagnóstico
+> se sospechó que el translog era la causa de los documentos perdidos y **no lo era** —
+> añadirlo no cambió nada; lo que faltaba era lo de arriba. Se conserva por barato, no
+> porque esté demostrado que haga falta.
 
 ### Por qué el planeta NO cambia de perfil
 
@@ -179,6 +184,22 @@ el planeta.**
 
 5. **Cron** con el script de replicación.
 
+### ⚠ Docker se salta el firewall
+
+En `vps-storage-01`, `ufw` permite sólo 22, 80, 443 y 68 — y sin embargo **3000 y 8000
+respondían desde internet**. No es un fallo de ufw: Docker escribe sus propias reglas en
+la cadena `DOCKER` de iptables, que se evalúa **antes** que las de ufw. Todo puerto
+publicado con `ports:` queda expuesto aunque el firewall diga lo contrario.
+
+Consecuencias para una luna, que ingiere material sensible:
+
+- Publicar sólo lo imprescindible. Los servicios de datos van a `127.0.0.1:` en el
+  compose (Postgres, OpenSearch, MinIO), y eso sí los mantiene fuera de internet.
+- El puerto **8000 del API sigue expuesto en claro**; el acceso bueno es el 8443 con TLS.
+  Cerrarlo requiere quitar su `ports:` o filtrarlo en la cadena `DOCKER-USER` — ufw no basta.
+- Un puerto que nginx abre (como el 8443) **sí** obedece a ufw y hay que autorizarlo
+  explícitamente: si no, `nginx -t` valida, el proceso escucha y desde fuera no responde nada.
+
 ### Techos de recursos
 
 Una luna suele compartir máquina con otras cosas. Sin `cpus:` los workers se llevan
@@ -205,12 +226,31 @@ subió solo a 8 workers para 3,5 cores.
 
 | Qué | Por qué importa |
 |---|---|
-| **Arreglar `restaurar_ajenos` en el código** (§4b) | Hoy el arreglo vive en un script. `norm replicar` sigue roto para cualquier receptor |
-| **Tests** de `AlmacenNulo`, puerta fail-closed y `disco_id_desde_raiz` | Los tres cambios se validaron a mano contra el nodo real, no en CI |
-| **Medir con volumen grande** | `PT2` son 115.358 entradas sobre HDD SATA (~150 IOPS). El cuello será el **I/O**, y los techos de CPU no protegen de eso |
-| **TLS en la luna** | El panel va por HTTP plano con la cookie sin `Secure`. Caddy está parado (peleaba por el :80 con nginx) |
-| **Rotar secretos** | Los de `vps-storage-01` (MinIO, Postgres, OpenSearch) son provisionales |
-| **`indexado_en` en el mapping** | Haría el backfill incremental por tiempo en vez de rescan completo por hash (§3.5 de `PLAN_TOPOLOGIA.md`) |
+| **Medir con volumen grande** | `PT2` son 115.358 entradas sobre HDD SATA (~150 IOPS). El cuello será el **I/O**, y los techos de CPU no protegen de eso: Postgres y MySQL pelean por el mismo disco |
+| **`indexado_en` en el mapping** | Haría el backfill incremental por tiempo en vez de rescan completo por hash (§3.5 de `PLAN_TOPOLOGIA.md`). Hoy cada réplica dispara un barrido entero del índice |
+| **El front no sabe que es una luna** | `/archivo/{id}/contenido` falla con `FileNotFoundError` y la UI lo pinta como error genérico, cuando la respuesta correcta es "este nodo no guarda copia" |
+| **Migrar el script de transporte al repo** | `replicar_a_matriz.sh` vive sólo en `/srv/azazel` del nodo. Debería versionarse en `deploy/` |
+
+### Ya resuelto
+
+- ~~`restaurar_ajenos` restauraba el snapshot más antiguo~~ → arreglado en `replicacion.py`,
+  con `--refrescar` para la replicación periódica.
+- ~~Sin tests~~ → `tests/unit/test_moons.py`, 19 casos. Verificados **quitando cada arreglo**:
+  sin el cerrojo de la puerta y sin la elección del snapshot reciente fallan exactamente los
+  4 tests que deben fallar, y los otros 15 siguen pasando.
+- ~~TLS~~ → nginx termina TLS en **:8443** con certificado propio (SAN por IP y por
+  sslip.io) y hace proxy al front. La cookie de sesión **vuelve a llevar `Secure`**, que
+  era el arreglo de verdad: antes viajaba en claro. Comprobado que por HTTP plano el
+  cliente ya no guarda la sesión.
+- ~~Secretos~~ → rotados el usuario del panel, la API key, Postgres y MinIO, con prueba
+  diferencial (lo viejo da 401, lo nuevo 200) y el ciclo de réplica funcionando después.
+
+**La contraseña de admin de OpenSearch NO se rotó, a propósito.**
+`OPENSEARCH_INITIAL_ADMIN_PASSWORD` sólo actúa en la **primera** inicialización del
+clúster: cambiarla en el entorno no cambia la del nodo, deja al API autenticando con una
+que ya no existe y tumba el índice entero. Rotarla de verdad exige regenerar el hash en
+`internal_users.yml` y pasar `securityadmin.sh`. Escucha sólo en `127.0.0.1`, así que el
+riesgo de dejarla no compensa el de romper el nodo por sorpresa.
 
 ---
 

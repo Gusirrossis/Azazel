@@ -181,19 +181,29 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
 # ------------------------------------------------------------------ restore (receptor)
 
 
-def restaurar_ajenos(config: Config, cliente: Any | None = None) -> ResumenReplica:
+def restaurar_ajenos(
+    config: Config, cliente: Any | None = None, *, refrescar: bool = False
+) -> ResumenReplica:
     """Restaura los índices de los OTROS nodos y los añade al alias como lectura.
 
-    Tres precauciones, cada una por un fallo concreto:
+    Cuatro precauciones, cada una por un fallo concreto:
 
     1. `include_aliases=False` — el índice del snapshot trae su alias con
        `is_write_index: true`. Restaurarlo daría dos índices de escritura para el
        mismo alias y OpenSearch rechazaría toda escritura de este nodo.
     2. Sólo se restauran índices que NO son de este nodo: restaurar el propio lo
        sobrescribiría con una copia vieja. Es el fallo más caro y más silencioso.
-    3. Los índices ya presentes se saltan (un restore sobre un índice abierto
-       falla); para refrescarlos hace falta cerrarlos o borrarlos primero, y eso
-       es una decisión del operador, no un efecto colateral."""
+    3. De cada índice se restaura el snapshot **más reciente** que lo contiene.
+       Recorrer los snapshots en orden y dar el índice por restaurado en el primero
+       que lo trae dejaba SIEMPRE el más ANTIGUO: contra un emisor que fotografía su
+       índice cada ciclo —el caso normal de una luna— lo nuevo no llegaba nunca, sin
+       error ni aviso. Síntoma observado: el emisor con 24 documentos y el receptor
+       recibiendo 2.
+    4. Un índice ya presente se salta salvo `refrescar=True`, porque un restore
+       sobre un índice abierto falla y retirarlo es destructivo. Con replicación
+       continua hace falta refrescar (la versión nueva sustituye a la vieja); en un
+       restore puntual, no. Por eso se pide explícitamente y no ocurre por sorpresa.
+    """
     from normalizacion.core.indexador.opensearch import crear_cliente
 
     r = ResumenReplica(accion="restore")
@@ -215,31 +225,47 @@ def restaurar_ajenos(config: Config, cliente: Any | None = None) -> ResumenRepli
     with contextlib.suppress(Exception):
         existentes = set(cliente.indices.get_alias(index=f"{config.indice_alias}-*").keys())
 
-    for snap in sorted(snapshots, key=lambda s: str(s.get("snapshot", ""))):
-        ajenos = [
-            i
-            for i in snap.get("indices", [])
-            if not i.startswith(propio) and i not in existentes
-        ]
-        if not ajenos:
-            continue
+    # Índice ajeno → el snapshot MÁS RECIENTE que lo contiene. El nombre lleva
+    # `<nodo>-<AAAAMMDD-HHMMSS>`, así que ordena bien como cadena (precaución 3).
+    ultimo_por_indice: dict[str, str] = {}
+    for snap in snapshots:
+        if snap.get("state") not in (None, "SUCCESS"):
+            continue  # un snapshot a medias o fallido no es una fuente válida
+        nombre = str(snap.get("snapshot", ""))
+        for indice in snap.get("indices", []):
+            if indice.startswith(propio):
+                continue
+            if nombre > ultimo_por_indice.get(indice, ""):
+                ultimo_por_indice[indice] = nombre
+
+    for indice, nombre in sorted(ultimo_por_indice.items()):
+        if indice in existentes:
+            if not refrescar:
+                continue
+            # Un restore sobre un índice abierto falla, así que la copia vieja se
+            # retira primero. Sólo bajo `refrescar` (precaución 4).
+            try:
+                cliente.indices.delete(index=indice)
+            except Exception as exc:
+                r.motivo = f"{type(exc).__name__}: {exc}"[:250]
+                log.warning("refresco_sin_borrar", indice=indice, error=r.motivo)
+                continue
         try:
             cliente.transport.perform_request(
                 "POST",
-                f"/_snapshot/{REPOSITORIO}/{snap['snapshot']}/_restore",
+                f"/_snapshot/{REPOSITORIO}/{nombre}/_restore",
                 params={"wait_for_completion": "true"},
-                body={"indices": ",".join(ajenos), "include_aliases": False},
+                body={"indices": indice, "include_aliases": False},
             )
-            for indice in ajenos:
-                # NO-escritura: el índice de escritura de este alias es el propio.
-                cliente.indices.put_alias(
-                    index=indice, name=config.indice_alias, body={"is_write_index": False}
-                )
-                existentes.add(indice)
-                r.indices.append(indice)
+            # NO-escritura: el índice de escritura de este alias es el propio.
+            cliente.indices.put_alias(
+                index=indice, name=config.indice_alias, body={"is_write_index": False}
+            )
+            existentes.add(indice)
+            r.indices.append(indice)
         except Exception as exc:
             r.motivo = f"{type(exc).__name__}: {exc}"[:250]
-            log.warning("restore_parcial", snapshot=snap.get("snapshot"), error=r.motivo)
+            log.warning("restore_parcial", snapshot=nombre, indice=indice, error=r.motivo)
             continue
 
     r.ok = r.motivo is None
@@ -293,8 +319,12 @@ def _invalidar_cursor_backfill(config: Config, r: ResumenReplica) -> None:
         log.info("cursor_backfill_invalidado", indices_restaurados=len(r.indices))
 
 
-def replicar(config: Config) -> ResumenReplica:
-    """La acción que le toca a ESTE nodo, según su papel en la topología."""
+def replicar(config: Config, *, refrescar: bool = False) -> ResumenReplica:
+    """La acción que le toca a ESTE nodo, según su papel en la topología.
+
+    `refrescar` sólo pinta en el receptor: sustituye la copia local de un índice
+    ajeno por la del snapshot más reciente. Es lo que necesita una replicación
+    periódica; en un restore puntual sobra."""
     if despliegue.de_config(config).es_archivo_maestro:
         return tomar_snapshot(config)
-    return restaurar_ajenos(config)
+    return restaurar_ajenos(config, refrescar=refrescar)
