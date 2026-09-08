@@ -130,6 +130,19 @@ class TestDestinoNoReactivaLaCopia:
         assert efectiva.almacen_backend == "local"
         assert (tmp_path / "almacen").is_dir()
 
+    def test_el_panel_no_anuncia_un_almacen_que_no_existe(self) -> None:
+        """`destinos` es la pantalla donde el operador comprueba dónde quedó su dato.
+        Decir 'minio://…/almacen' cuando no se guarda nada le haría creer que el
+        origen ya es prescindible — que es exactamente la decisión peligrosa."""
+        from normalizacion.ingesta.pipeline import destinos
+
+        d = destinos(_cfg(almacen_backend="ninguno"))
+        assert "minio://" not in d["originales_hot"]
+        assert "sin copia" in d["originales_hot"]
+        assert d["frio_reversible"] == d["originales_hot"]
+        # El índice y la cola SÍ existen y deben seguir anunciándose.
+        assert "alias" in d["indice_metadatos"]
+
 
 # ------------------------------------------------------------------ el cerrojo
 

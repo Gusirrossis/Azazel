@@ -31,7 +31,12 @@ FASES = ("catalogo", "precalificacion", "worker", "mover_frio", "verificacion", 
 
 def destinos(config: Config) -> dict[str, str]:
     """DÓNDE queda todo lo procesado (visible en el front y en `norm pipeline`)."""
-    if config.almacen_backend == "local":
+    if config.almacen_backend == "ninguno":
+        # Este nodo no guarda copia: el original se queda donde estaba. Anunciar un
+        # bucket aquí sería mentir en la única pantalla donde el operador comprueba
+        # dónde quedó su dato, y le haría creer que el origen ya es prescindible.
+        almacen = frio = "sin copia — el original permanece en su carpeta de origen"
+    elif config.almacen_backend == "local":
         almacen = str(Path(config.almacen_local_raiz).expanduser().resolve())
         frio = str(Path(config.almacen_frio_local_raiz).expanduser().resolve())
     else:
