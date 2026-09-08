@@ -91,6 +91,15 @@ CONTENEDORES: frozenset[str] = frozenset(
         "application/x-bzip2",
         "application/x-tar",
         "application/x-xz",
+        # Una base SQLite es un contenedor de FILAS. Como documento único entraba
+        # topada a `extractor_max_chars`: de una tabla de 346.748 filas se indexaban
+        # ~200 y el resto era invisible para la búsqueda. Explorada, cada lote de filas
+        # es su propia entrada y la base entra ENTERA (ver `tabla_lotes`).
+        #
+        # No pierde su documento propio: el contenedor también se procesa como archivo,
+        # así que el extractor de SQLite le sigue sacando el esquema. Uno responde
+        # "¿qué tablas hay?" y los otros "¿dónde está esta persona?".
+        "application/vnd.sqlite3",
         # Imágenes de disco: pueden traer un filesystem completo de información →
         # se preservan ÍNTEGRAS en el almacén (formato_no_soportado) hasta que
         # exista exploración interna; jamás van a frío

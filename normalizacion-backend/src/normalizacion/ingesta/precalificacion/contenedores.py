@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import atexit
 import bz2
+import contextlib
 import gzip
 import lzma
 import os
@@ -379,6 +380,36 @@ def _explorar_flujo(
 # ------------------------------------------------------------------ despacho
 
 
+def _explorar_sqlite(
+    perillas: PerillasFiltro, fuente: Path | IO[bytes]
+) -> ResultadoExploracion:
+    """Una base como contenedor: cada LOTE de filas es una entrada (ver `tabla_lotes`).
+
+    Sin esto una base entra como un único documento con el texto topado, es decir, una
+    muestra: en una tabla de 346.748 filas se indexaban ~200. Troceada, entra entera.
+    """
+    from . import tabla_lotes
+
+    inicio = time.monotonic()
+    ruta, es_copia = _ruta_temporal_de(fuente)
+    try:
+        mtime_ns = int(Path(ruta).stat().st_mtime * 1_000_000_000)
+        crudas, motivo = tabla_lotes.explorar(perillas, ruta, mtime_ns)
+    finally:
+        if es_copia:
+            with contextlib.suppress(OSError):
+                os.unlink(ruta)
+
+    if motivo:
+        return ResultadoExploracion(False, motivo, (), "sqlite")
+    entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
+    # Los guards comunes también aquí: una base con millones de lotes es, a efectos
+    # del pipeline, exactamente el mismo problema que una zip-bomb.
+    if fallo := _validar_guards(perillas, entradas, [], inicio, "sqlite"):
+        return fallo
+    return ResultadoExploracion(True, None, tuple(entradas), "sqlite")
+
+
 _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoExploracion]] = {
     "application/zip": _explorar_zip,
     "application/x-7z-compressed": _explorar_7z,
@@ -387,6 +418,7 @@ _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoE
     "application/gzip": lambda p, f: _explorar_flujo(p, f, "gz"),
     "application/x-bzip2": lambda p, f: _explorar_flujo(p, f, "bz2"),
     "application/x-xz": lambda p, f: _explorar_flujo(p, f, "xz"),
+    "application/vnd.sqlite3": _explorar_sqlite,
 }
 
 
@@ -653,6 +685,33 @@ def _paso_flujo(fobj: IO[bytes], formato: str, entrada: str, umbral: int, limite
     return spool
 
 
+def _paso_sqlite(
+    fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None
+) -> IO[bytes]:
+    """Sirve un LOTE de filas como NDJSON (ver `tabla_lotes`).
+
+    `sqlite3` necesita un archivo, no un stream. Si la base está en el filesystem
+    —el caso normal— se lee en sitio y no se copian sus GB; solo cuando viene anidada
+    dentro de otro contenedor hay que materializarla.
+    """
+    from . import tabla_lotes
+
+    ruta = ruta_fs
+    temporal: str | None = None
+    if ruta is None:
+        ruta_txt, es_copia = _ruta_temporal_de(fobj)
+        ruta = Path(ruta_txt)
+        temporal = ruta_txt if es_copia else None
+    try:
+        return tabla_lotes.servir_lote(
+            ruta, entrada, umbral_memoria=umbral, limite_bytes=limite
+        )
+    finally:
+        if temporal:
+            with contextlib.suppress(OSError):
+                os.unlink(temporal)
+
+
 def abrir_entrada(
     raiz: Path, cadena: list[str], *, umbral_memoria: int, limite_bytes: int
 ) -> IO[bytes]:
@@ -690,6 +749,10 @@ def abrir_entrada(
                     siguiente = _paso_tar(fobj, entrada, umbral_memoria, limite_bytes)
             elif len(cab) >= 262 and cab[257:262] == b"ustar":
                 siguiente = _paso_tar(fobj, entrada, umbral_memoria, limite_bytes)
+            elif cab.startswith(b"SQLite format 3\x00"):
+                siguiente = _paso_sqlite(
+                    fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
+                )
             else:
                 raise OSError(f"paso de cadena con formato no soportado: {entrada}")
             fobj.close()
