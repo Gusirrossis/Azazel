@@ -28,6 +28,22 @@ contraseña:  Maui-S4xqrMk7lk8cws2q
 > documento afirmando que eran iguales. Cada usuario vive en la base de SU nodo: no hay
 > nada que las sincronice sola.
 
+> **Rotar no es cambiar la contraseña: es cerrar la cuenta vieja.** Hasta el
+> 2026-09-08 la línea de arriba era **falsa en la matriz**. Se creó `maui` en los tres
+> nodos, pero el usuario `admin` original **siguió activo en la matriz** con su
+> contraseña de siempre: daba 401 en las dos lunas y **200 con rol admin en el
+> planeta**, que es el nodo que sirve a Lilith y tiene el conocimiento completo.
+> Nadie lo detectó porque este documento afirmaba lo contrario, y un documento que
+> declara muerta una credencial viva es peor que no tenerlo: nadie vuelve a mirar.
+>
+> `admin` está **desactivado**, no borrado (`norm usuarios desactivar admin`), para
+> conservar la traza de lo que hizo; se revierte con `norm usuarios activar admin`.
+> Al desactivarlo se cerraron **16 sesiones**, así que estaba en uso real.
+>
+> Comprobado en los tres nodos con prueba diferencial —la credencial vieja da 401 y la
+> nueva 200—, que es la única forma de saberlo: mirar la lista de usuarios no basta,
+> porque una cuenta puede figurar y no autenticar, o figurar y sí hacerlo.
+
 > El certificado de la luna storage es propio (no de una CA): el navegador avisa la
 > primera vez y hay que aceptar la excepción. Es esperado.
 
