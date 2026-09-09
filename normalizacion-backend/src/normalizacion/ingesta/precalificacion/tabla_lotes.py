@@ -44,10 +44,15 @@ log = obtener_logger("tabla_lotes")
 #: gigantes que hay que traer enteros en cada acierto.
 FILAS_POR_LOTE = 500
 
-#: Tope de lotes por BASE. Sin esto, una base de 50 M de filas genera 100 000 entradas
-#: ella sola y el resto del corpus no avanza. Al llegar al tope se marca la base como
-#: parcial en vez de reventar: es la misma política que los guards anti zip-bomb.
-MAX_LOTES_POR_BASE = 20_000
+#: Tope de lotes por BASE. Sólo es el valor por omisión de las llamadas directas: en el
+#: pipeline manda `PerillasFiltro.t3_sqlite_lotes_max`.
+#:
+#: Era 20 000 —10 M de filas— y eso NO era un detalle de implementación: medido en la
+#: luna de Lilith, dejaba fuera 276.606.467 filas (el 58 % del corpus) mientras la base
+#: seguía figurando como HECHO. Un tope que corta datos tiene que verse en la fila, no
+#: sólo en un log que desaparece al recrear el contenedor — por eso `explorar` devuelve
+#: ahora si topó, y el precalificador lo escribe en las señales.
+MAX_LOTES_POR_BASE = 1_000_000
 
 _IGNORADAS = ("sqlite_", "_litestream")
 
@@ -94,8 +99,25 @@ def _tiene_rowid(con: sqlite3.Connection, tabla: str) -> bool:
         return False  # WITHOUT ROWID, o una vista
 
 
-def planificar(ruta: str | Path, *, filas_por_lote: int = FILAS_POR_LOTE) -> list[Lote]:
-    """Los lotes en que se trocea la base. No lee ni una fila de datos."""
+def planificar(
+    ruta: str | Path,
+    *,
+    filas_por_lote: int = FILAS_POR_LOTE,
+    max_lotes: int | None = None,
+) -> list[Lote]:
+    """Los lotes en que se trocea la base. No lee ni una fila de datos.
+
+    `max_lotes` sólo TRUNCA la lista: el `paso` se calcula del rango de rowid y de
+    `filas_por_lote`, nunca del tope. Por eso subirlo añade la cola que faltaba sin
+    mover un solo lote existente — mismos límites, mismo `ruta_interna`, mismo
+    `archivo_id`. Re-planificar con un tope mayor es incremental, no duplica nada.
+
+    `None` resuelve a `MAX_LOTES_POR_BASE` AQUÍ, no en la firma: un valor por omisión
+    se fija al definir la función, así que ponerlo arriba haría que sustituir la
+    constante (en pruebas, o desde fuera) dejara de tener efecto sin avisar.
+    """
+    if max_lotes is None:
+        max_lotes = MAX_LOTES_POR_BASE
     lotes: list[Lote] = []
     con = _abrir(ruta)
     try:
@@ -118,20 +140,20 @@ def planificar(ruta: str | Path, *, filas_por_lote: int = FILAS_POR_LOTE) -> lis
                 # falta que los lotes salgan iguales, solo que cubran TODO el rango.
                 paso = max(1, (int(hi) - int(lo) + 1) * filas_por_lote // max(total, 1))
                 inicio = int(lo)
-                while inicio <= int(hi) and len(lotes) < MAX_LOTES_POR_BASE:
+                while inicio <= int(hi) and len(lotes) < max_lotes:
                     fin = min(inicio + paso - 1, int(hi))
                     lotes.append(Lote(tabla, "rowid", inicio, fin))
                     inicio = fin + 1
             else:
                 desplazamiento = 0
-                while desplazamiento < total and len(lotes) < MAX_LOTES_POR_BASE:
+                while desplazamiento < total and len(lotes) < max_lotes:
                     lotes.append(
                         Lote(tabla, "offset", desplazamiento, desplazamiento + filas_por_lote)
                     )
                     desplazamiento += filas_por_lote
 
-            if len(lotes) >= MAX_LOTES_POR_BASE:
-                log.warning("sqlite_lotes_topados", tabla=tabla, tope=MAX_LOTES_POR_BASE)
+            if len(lotes) >= max_lotes:
+                log.warning("sqlite_lotes_topados", tabla=tabla, tope=max_lotes)
                 break
     finally:
         con.close()
@@ -193,20 +215,29 @@ def estimar_bytes(filas_por_lote: int = FILAS_POR_LOTE) -> int:
 
 def explorar(
     perillas: PerillasFiltro, ruta_fs: str | Path, mtime_ns: int
-) -> tuple[list[tuple[str, str, int, int]], str | None]:
-    """Entradas `(ruta_interna, nombre, tamano, mtime_ns)` + motivo si no se pudo.
+) -> tuple[list[tuple[str, str, int, int]], str | None, bool]:
+    """Entradas `(ruta_interna, nombre, tamano, mtime_ns)`, motivo si no se pudo, y si
+    la base quedó TOPADA (troceada a medias porque se alcanzó el tope de lotes).
+
+    Ese tercer valor existe porque topar es una pérdida de datos silenciosa: la base
+    se explora "bien", entra en HECHO, y nadie sabe que le falta la cola. Quien llama
+    lo propaga a las señales de la fila para que sea consultable, no sólo registrable.
 
     Devuelve tuplas y no `EntradaContenedor` para no crear un import circular con
     `contenedores`, que es quien tiene ese tipo y quien llama aquí.
     """
     try:
-        lotes = planificar(ruta_fs)
+        lotes = planificar(ruta_fs, max_lotes=perillas.t3_sqlite_lotes_max)
     except sqlite3.DatabaseError as exc:
         log.warning("sqlite_no_explorable", error=str(exc)[:150])
-        return [], "contenedor_corrupto"
+        return [], "contenedor_corrupto", False
     if not lotes:
-        return [], None
+        return [], None, False
     if len(lotes) > perillas.t3_entradas_max:
-        return [], "guard_entradas"
+        return [], "guard_entradas", False
+    topado = len(lotes) >= perillas.t3_sqlite_lotes_max
+    if topado:
+        log.warning("sqlite_base_topada", ruta=str(ruta_fs), tope=perillas.t3_sqlite_lotes_max)
     tam = estimar_bytes()
-    return [(lt.ruta_interna, f"{lt.tabla}-{lt.desde}.ndjson", tam, mtime_ns) for lt in lotes], None
+    entradas = [(lt.ruta_interna, f"{lt.tabla}-{lt.desde}.ndjson", tam, mtime_ns) for lt in lotes]
+    return entradas, None, topado

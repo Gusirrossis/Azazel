@@ -138,6 +138,12 @@ def _procesar_fila(
             perillas, fuente_fs or fuente, resultado.tipo_real or ""
         )
         senales["formato"] = exploracion.formato
+        if exploracion.topado:
+            # Se exploró bien pero INCOMPLETO: se alcanzó el tope y la cola no se
+            # enumeró. Sin esta señal el contenedor entra en HECHO como cualquier otro
+            # y su copia parcial es indistinguible de una entera — que es exactamente
+            # como 276.606.467 filas de Lilith quedaron fuera sin que nadie lo supiera.
+            senales["contenedor_topado"] = True
         if not exploracion.ok:
             if exploracion.motivo and exploracion.motivo.startswith("guard_"):
                 # Zip-bomb sospechoso: flag + COLD. NUNCA cuelga al worker (riesgo F3/R8).

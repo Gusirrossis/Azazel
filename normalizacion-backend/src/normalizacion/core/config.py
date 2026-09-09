@@ -172,6 +172,13 @@ class PerillasFiltro(BaseModel):
     t3_entradas_max: int = 1_000_000
     t3_timeout_s: float = 1800.0  # listar un 7z sólido de 15 GB puede tardar minutos
 
+    # Lotes máximos por BASE SQLite. Era una constante de 20 000 en `tabla_lotes`, o sea
+    # 10 M de filas: medido en la luna de Lilith, dejaba fuera 276.606.467 filas — el
+    # 58 % del corpus — y la base seguía figurando como HECHO. Un tope de capacidad
+    # disfrazado de detalle de implementación. Ahora es perilla, y alta: el guard real
+    # es `t3_entradas_max`, para no tener dos límites que se pisen.
+    t3_sqlite_lotes_max: int = 1_000_000
+
     # K5 - tamano del head en T2 (mas = mejores senales, mas I/O por miles de millones)
     head_t2_bytes: int = Field(default=65_536, ge=8_192)
 

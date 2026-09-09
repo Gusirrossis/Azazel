@@ -90,6 +90,11 @@ class ResultadoExploracion:
     motivo: str | None  # guard_* | contenedor_corrupto | formato_no_soportado | None
     entradas: tuple[EntradaContenedor, ...]
     formato: str
+    #: El contenedor se exploró BIEN pero incompleto: se alcanzó un tope y la cola no
+    #: se enumeró. `ok` sigue siendo True —lo listado es válido— pero la copia es
+    #: parcial, y eso tiene que llegar a la fila: si no, una base a medias es
+    #: indistinguible de una entera. Opcional para no tocar a los demás formatos.
+    topado: bool = False
 
 
 def _mtime_ns(dt: datetime | None) -> int:
@@ -404,7 +409,7 @@ def _explorar_sqlite(
     ruta, es_copia = _ruta_temporal_de(fuente)
     try:
         mtime_ns = int(Path(ruta).stat().st_mtime * 1_000_000_000)
-        crudas, motivo = tabla_lotes.explorar(perillas, ruta, mtime_ns)
+        crudas, motivo, topado = tabla_lotes.explorar(perillas, ruta, mtime_ns)
     finally:
         if es_copia:
             with contextlib.suppress(OSError):
@@ -417,7 +422,7 @@ def _explorar_sqlite(
     # del pipeline, exactamente el mismo problema que una zip-bomb.
     if fallo := _validar_guards(perillas, entradas, [], inicio, "sqlite"):
         return fallo
-    return ResultadoExploracion(True, None, tuple(entradas), "sqlite")
+    return ResultadoExploracion(True, None, tuple(entradas), "sqlite", topado=topado)
 
 
 _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoExploracion]] = {

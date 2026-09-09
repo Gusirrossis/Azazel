@@ -124,9 +124,44 @@ class TestGuards:
     def test_explorar_marca_corrupto_sin_lanzar(self, tmp_path: Path) -> None:
         malo = tmp_path / "roto.db"
         malo.write_bytes(b"SQLite format 3\x00" + b"basura" * 200)
-        entradas, motivo = tabla_lotes.explorar(PerillasFiltro(), malo, 0)
+        entradas, motivo, topado = tabla_lotes.explorar(PerillasFiltro(), malo, 0)
         assert entradas == []
         assert motivo == "contenedor_corrupto"
+        assert topado is False
+
+    def test_topar_se_reporta_no_solo_se_registra(self, tmp_path: Path) -> None:
+        """El tope corta DATOS. Si sólo se escribe en un log, la base entra en HECHO
+        con la cola sin enumerar y su copia parcial es indistinguible de una entera:
+        así se quedaron fuera 276.606.467 filas de Lilith sin que nadie lo supiera."""
+        # 5.000 filas / 500 por lote = 10 lotes; con el tope en 5 se corta por la mitad
+        ruta = _base(tmp_path / "topada.db", 5000)
+        perillas = PerillasFiltro(t3_sqlite_lotes_max=5)
+        entradas, motivo, topado = tabla_lotes.explorar(perillas, ruta, 0)
+        assert motivo is None  # se exploró BIEN, sólo que incompleto
+        assert len(entradas) == 5
+        assert topado is True, "topar tiene que ser visible para quien llama"
+
+    def test_no_topar_no_marca_nada(self, tmp_path: Path) -> None:
+        """El control negativo: sin tope alcanzado, `topado` es False."""
+        ruta = _base(tmp_path / "entera.db", 100)
+        entradas, motivo, topado = tabla_lotes.explorar(
+            PerillasFiltro(t3_sqlite_lotes_max=10_000), ruta, 0
+        )
+        assert motivo is None
+        assert 0 < len(entradas) < 10_000
+        assert topado is False
+
+    def test_subir_el_tope_no_mueve_los_lotes_existentes(self, tmp_path: Path) -> None:
+        """Lo que hace que re-planificar sea INCREMENTAL: el `paso` sale del rango de
+        rowid y de `filas_por_lote`, nunca del tope. Si el tope moviera los límites,
+        cambiarían los `ruta_interna` y con ellos los `archivo_id`: el corpus entero
+        se duplicaría al subir la perilla."""
+        ruta = _base(tmp_path / "i.db", 1000)
+        cortos = tabla_lotes.planificar(ruta, filas_por_lote=10, max_lotes=5)
+        largos = tabla_lotes.planificar(ruta, filas_por_lote=10, max_lotes=1000)
+        assert len(cortos) == 5
+        assert len(largos) > 5
+        assert [lt.ruta_interna for lt in largos[:5]] == [lt.ruta_interna for lt in cortos]
 
     def test_no_modifica_la_base(self, tmp_path: Path) -> None:
         """Son datos de otro sistema: `mode=ro` + `immutable=1`."""
