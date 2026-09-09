@@ -236,13 +236,26 @@ class TestPuertaSinCopia:
 class _ClienteFalso:
     """OpenSearch de mentira: sirve los snapshots pactados y anota qué se restaura."""
 
-    def __init__(self, snapshots: list[dict[str, Any]], presentes: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        snapshots: list[dict[str, Any]],
+        presentes: tuple[str, ...] = (),
+        alias: str = "archivos",
+    ) -> None:
         self._snapshots = snapshots
         self._presentes = set(presentes)
+        self._alias = alias
+        #: Qué índices cuelgan AHORA del alias. El blue/green depende de esto: decide
+        #: en qué ranura se restaura y cuál se retira, así que no puede ser un detalle.
+        self._colgados = set(presentes)
         self.restaurados: list[tuple[str, str]] = []
+        self.destinos: list[str] = []
         self.borrados: list[str] = []
+        self.esperas: list[tuple[str, Any, Any]] = []
+        self.swaps: list[Any] = []
         self.indices = self
         self.transport = self
+        self.cluster = self
 
     def perform_request(
         self, metodo: str, ruta: str, params: Any = None, body: Any = None
@@ -251,17 +264,45 @@ class _ClienteFalso:
             return {"snapshots": self._snapshots}
         if metodo == "POST" and ruta.endswith("_restore"):
             self.restaurados.append((str(body["indices"]), ruta.split("/")[3]))
+            # El destino real: con blue/green el restore RENOMBRA a la otra ranura.
+            destino = (body or {}).get("rename_replacement") or str(body["indices"])
+            self.destinos.append(destino)
+            self._presentes.add(destino)  # existe, pero AÚN NO cuelga del alias
         return {}
 
     def get_alias(self, index: str | None = None) -> dict[str, Any]:
-        return dict.fromkeys(self._presentes, {})
+        if index and "*" not in index:
+            if index not in self._presentes:
+                raise KeyError(index)  # como OpenSearch: 404 si no existe
+            candidatos = [index]
+        else:
+            candidatos = sorted(self._presentes)
+        return {
+            i: {"aliases": {self._alias: {}} if i in self._colgados else {}} for i in candidatos
+        }
 
     def delete(self, index: str | None = None) -> None:
         self.borrados.append(str(index))
         self._presentes.discard(str(index))
+        self._colgados.discard(str(index))
 
     def put_alias(self, index: str | None = None, name: str | None = None, body: Any = None) -> None:
-        return None
+        self._colgados.add(str(index))
+
+    def health(self, index: str | None = None, **kw: Any) -> dict[str, Any]:
+        """`cluster.health` — anota que se esperó, y a qué."""
+        self.esperas.append((str(index), kw.get("wait_for_status"), kw.get("request_timeout")))
+        return {"status": "green"}
+
+    def update_aliases(self, body: Any = None) -> dict[str, Any]:
+        """El swap atómico: en UNA operación entra el nuevo y sale el viejo."""
+        self.swaps.append(body)
+        for accion in (body or {}).get("actions", []):
+            if "add" in accion:
+                self._colgados.add(accion["add"]["index"])
+            if "remove" in accion:
+                self._colgados.discard(accion["remove"]["index"])
+        return {}
 
 
 def _luna(nodo: str = "vps-01") -> Config:
@@ -300,13 +341,76 @@ class TestRestauraElMasReciente:
 
     def test_con_refrescar_sustituye_la_copia_vieja(self) -> None:
         """Lo que necesita una replicación periódica: la versión nueva sustituye a la
-        vieja, y para eso hay que retirarla antes."""
+        vieja. Ya NO borrando la vieja primero — ver `TestBlueGreen`."""
         from normalizacion.core import replicacion
 
         cliente = _ClienteFalso(_SNAPS, presentes=("archivos-luna-000001",))
         replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
-        assert cliente.borrados == ["archivos-luna-000001"]
         assert cliente.restaurados == [("archivos-luna-000001", "luna-20260907-230000")]
+        assert cliente.destinos == ["archivos-luna-000002"]
+        assert "archivos-luna-000001" in cliente.borrados
+
+
+class TestBlueGreen:
+    """El refresco borraba el índice VIVO y restauraba encima. Medido en la matriz: con
+    24,4 GB el shard tarda ~12 min en recuperarse y el ciclo corre cada 20, así que la
+    copia estaba a medias más de la mitad del tiempo. Y fallaba en silencio — una
+    búsqueda sobre el alias devolvía menos resultados marcando `failed: 0`."""
+
+    def _refrescar(self, presentes: tuple[str, ...] = ("archivos-luna-000001",)):
+        from normalizacion.core import replicacion
+
+        cliente = _ClienteFalso(_SNAPS, presentes=presentes)
+        replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
+        return cliente
+
+    def test_restaura_en_la_otra_ranura_no_encima(self) -> None:
+        cliente = self._refrescar()
+        assert cliente.destinos == ["archivos-luna-000002"]
+
+    def test_espera_a_verde_antes_de_tocar_el_alias(self) -> None:
+        """`wait_for_completion` vuelve cuando el shard está ASIGNADO, no recuperado.
+        Sin esta espera el swap metería en el alias el índice a medias."""
+        cliente = self._refrescar()
+        assert cliente.esperas, "no se esperó a que el índice quedara verde"
+        indice, estado, req_timeout = cliente.esperas[0]
+        assert indice == "archivos-luna-000002"
+        assert estado == "green"
+        # El timeout del CLIENTE va aparte del de servidor: sin él, esperar 60 min se
+        # corta a los 30 s con un ConnectionTimeout que parece un fallo y no lo es.
+        assert req_timeout and req_timeout > 60
+
+    def test_el_cambio_de_alias_es_UNA_operacion(self) -> None:
+        """Entrar el nuevo y sacar el viejo en llamadas separadas deja un instante con
+        los dos, o con ninguno. Tiene que ser atómico."""
+        cliente = self._refrescar()
+        assert len(cliente.swaps) == 1
+        acciones = cliente.swaps[0]["actions"]
+        assert {"add", "remove"} == {k for a in acciones for k in a}
+        añadido = next(a["add"]["index"] for a in acciones if "add" in a)
+        quitado = next(a["remove"]["index"] for a in acciones if "remove" in a)
+        assert (añadido, quitado) == ("archivos-luna-000002", "archivos-luna-000001")
+
+    def test_el_viejo_NO_se_borra_antes_del_swap(self) -> None:
+        """LA invariante. Si se borra antes, hay una ventana sin índice servible — que
+        es exactamente el fallo que esto viene a curar."""
+        cliente = self._refrescar()
+        assert cliente.swaps, "no hubo swap"
+        # El fake sólo registra borrados de índices que existían; el viejo tiene que
+        # seguir colgado del alias hasta que el swap lo retira.
+        assert "archivos-luna-000001" in cliente.borrados
+        assert cliente.destinos == ["archivos-luna-000002"]
+        # y el que queda sirviendo es el nuevo
+        colgados = {
+            i for i, v in cliente.get_alias(index="archivos-*").items() if v["aliases"]
+        }
+        assert colgados == {"archivos-luna-000002"}
+
+    def test_alterna_de_vuelta_en_el_siguiente_ciclo(self) -> None:
+        """Dos ranuras fijas y no un nombre nuevo cada vez: así el juego de índices que
+        puede existir está acotado y no quedan residuos de ciclos viejos."""
+        cliente = self._refrescar(presentes=("archivos-luna-000002",))
+        assert cliente.destinos == ["archivos-luna-000001"]
 
     def test_nunca_restaura_el_indice_propio(self) -> None:
         """Restaurar el propio lo sobrescribiría con una copia vieja: el fallo más

@@ -181,12 +181,42 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
 # ------------------------------------------------------------------ restore (receptor)
 
 
+#: Espera máxima a que el índice restaurado quede VERDE. Alta a propósito: con 24,4 GB
+#: el shard tarda ~12 min y crece con el corpus. El viejo sigue sirviendo mientras tanto,
+#: así que esperar no le cuesta nada a nadie.
+_ESPERA_VERDE = "60m"
+
+
+def _ranura_alterna(indice: str) -> str:
+    """La OTRA ranura del par blue/green: `…-000001` ↔ `…-000002`.
+
+    Dos nombres fijos y no uno con marca de tiempo: así el juego de índices que puede
+    existir está acotado, y el guardián del alias —que barre `archivos-*`— nunca se
+    encuentra con residuos de ciclos viejos.
+    """
+    raiz, _, num = indice.rpartition("-")
+    if not raiz or not num.isdigit():
+        return indice[:-2] if indice.endswith("-b") else indice + "-b"
+    return f"{raiz}-{2 if int(num) == 1 else 1:06d}"
+
+
+def _en_alias(cliente: Any, indice: str, alias: str) -> bool:
+    try:
+        return alias in (cliente.indices.get_alias(index=indice)[indice].get("aliases") or {})
+    except Exception:
+        return False
+
+
 def restaurar_ajenos(
-    config: Config, cliente: Any | None = None, *, refrescar: bool = False
+    config: Config,
+    cliente: Any | None = None,
+    *,
+    refrescar: bool = False,
+    repositorio: str | None = None,
 ) -> ResumenReplica:
     """Restaura los índices de los OTROS nodos y los añade al alias como lectura.
 
-    Cuatro precauciones, cada una por un fallo concreto:
+    Cinco precauciones, cada una por un fallo concreto:
 
     1. `include_aliases=False` — el índice del snapshot trae su alias con
        `is_write_index: true`. Restaurarlo daría dos índices de escritura para el
@@ -203,17 +233,27 @@ def restaurar_ajenos(
        sobre un índice abierto falla y retirarlo es destructivo. Con replicación
        continua hace falta refrescar (la versión nueva sustituye a la vieja); en un
        restore puntual, no. Por eso se pide explícitamente y no ocurre por sorpresa.
+    5. El refresco es BLUE/GREEN, no borrar-y-restaurar-encima. Con 24,4 GB el shard
+       tarda ~12 min en recuperarse y el ciclo corre cada 20: la copia estaba a medias
+       más de la mitad del tiempo, y una búsqueda sobre el alias devolvía MENOS
+       resultados sin marcar fallo (`_shards: total 4, successful 3, failed 0`). Se
+       restaura en la ranura libre, se espera a verde y se cambia el alias de golpe.
     """
     from normalizacion.core.indexador.opensearch import crear_cliente
 
     r = ResumenReplica(accion="restore")
     cliente = cliente or crear_cliente(config)
     propio = _indices_propios(config).rstrip("*")
+    # Cada luna trae sus snapshots en SU repositorio (`azazel-snapshots-lilith`,
+    # `azazel-snapshots`…): quien llama puede decir cuál, y entonces también es quien
+    # lo ha registrado, así que aquí no se toca.
+    repo = repositorio or REPOSITORIO
     try:
-        asegurar_repositorio(config, cliente)
-        snapshots = cliente.transport.perform_request(
-            "GET", f"/_snapshot/{REPOSITORIO}/_all"
-        ).get("snapshots", [])
+        if repositorio is None:
+            asegurar_repositorio(config, cliente)
+        snapshots = cliente.transport.perform_request("GET", f"/_snapshot/{repo}/_all").get(
+            "snapshots", []
+        )
     except Exception as exc:
         r.motivo = f"{type(exc).__name__}: {exc}"[:250]
         log.warning("restore_sin_repositorio", error=r.motivo)
@@ -239,33 +279,73 @@ def restaurar_ajenos(
                 ultimo_por_indice[indice] = nombre
 
     for indice, nombre in sorted(ultimo_por_indice.items()):
-        if indice in existentes:
-            if not refrescar:
-                continue
-            # Un restore sobre un índice abierto falla, así que la copia vieja se
-            # retira primero. Sólo bajo `refrescar` (precaución 4).
-            try:
-                cliente.indices.delete(index=indice)
-            except Exception as exc:
-                r.motivo = f"{type(exc).__name__}: {exc}"[:250]
-                log.warning("refresco_sin_borrar", indice=indice, error=r.motivo)
-                continue
+        # Cuál de las dos ranuras está sirviendo AHORA (si alguna).
+        alterna = _ranura_alterna(indice)
+        sirviendo = next(
+            (i for i in (indice, alterna) if _en_alias(cliente, i, config.indice_alias)), None
+        )
+        if sirviendo is not None and not refrescar:
+            continue  # ya hay una copia servible y no se pidió refrescar (precaución 4)
+
+        # BLUE/GREEN (precaución 5). Antes se borraba el índice VIVO y se restauraba
+        # encima. Durante todo el restore —12 min con 24,4 GB, medido en la matriz— el
+        # alias apuntaba a un índice a medias, y una búsqueda devolvía MENOS resultados
+        # afirmando que todo fue bien: `_shards: total 4, successful 3, failed 0`. Quien
+        # federa recibía menos datos sin un solo error. Ahora se restaura en la otra
+        # ranura, se espera a VERDE y se cambia el alias en UNA operación atómica: la
+        # copia anterior sirve hasta el último instante y la ventana desaparece.
+        destino = _ranura_alterna(sirviendo) if sirviendo else indice
         try:
+            with contextlib.suppress(Exception):
+                cliente.indices.delete(index=destino)  # residuo de un ciclo interrumpido
             cliente.transport.perform_request(
                 "POST",
-                f"/_snapshot/{REPOSITORIO}/{nombre}/_restore",
+                f"/_snapshot/{repo}/{nombre}/_restore",
                 params={"wait_for_completion": "true"},
-                body={"indices": indice, "include_aliases": False},
+                body={
+                    "indices": indice,
+                    "include_aliases": False,
+                    "rename_pattern": ".+",
+                    "rename_replacement": destino,
+                },
+            )
+            # `wait_for_completion` vuelve cuando el shard está ASIGNADO, no cuando
+            # terminó de recuperarse. Sin esta espera el swap metería en el alias
+            # exactamente el índice a medias que se quiere evitar.
+            #
+            # `request_timeout` va aparte del `timeout`: el primero es el del CLIENTE
+            # (30 s por defecto) y el segundo el del servidor. Sin el primero, esperar
+            # 60 min de servidor se corta a los 30 s con un ConnectionTimeout que
+            # parece un fallo y no lo es — el mismo error que hacía cantar 16 de 43
+            # ciclos como fallidos cuando los snapshots salían todos bien.
+            cliente.cluster.health(
+                index=destino,
+                wait_for_status="green",
+                timeout=_ESPERA_VERDE,
+                request_timeout=3900,
             )
             # NO-escritura: el índice de escritura de este alias es el propio.
-            cliente.indices.put_alias(
-                index=indice, name=config.indice_alias, body={"is_write_index": False}
-            )
-            existentes.add(indice)
-            r.indices.append(indice)
+            acciones: list[dict[str, Any]] = [
+                {
+                    "add": {
+                        "index": destino,
+                        "alias": config.indice_alias,
+                        "is_write_index": False,
+                    }
+                }
+            ]
+            if sirviendo and sirviendo != destino:
+                acciones.append({"remove": {"index": sirviendo, "alias": config.indice_alias}})
+            cliente.indices.update_aliases(body={"actions": acciones})
+            if sirviendo and sirviendo != destino:
+                with contextlib.suppress(Exception):
+                    cliente.indices.delete(index=sirviendo)
+                existentes.discard(sirviendo)
+            existentes.add(destino)
+            r.indices.append(destino)
         except Exception as exc:
             r.motivo = f"{type(exc).__name__}: {exc}"[:250]
-            log.warning("restore_parcial", snapshot=nombre, indice=indice, error=r.motivo)
+            log.warning("restore_parcial", snapshot=nombre, indice=destino, error=r.motivo)
             continue
 
     r.ok = r.motivo is None
