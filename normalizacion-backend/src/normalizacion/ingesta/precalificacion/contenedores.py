@@ -465,7 +465,36 @@ def explorar(perillas: PerillasFiltro, fuente: Path | IO[bytes], tipo: str) -> R
 _CACHE_7Z_LOCK = threading.Lock()
 _CACHE_7Z: OrderedDict[tuple[str, int, int], tuple[Path, int]] = OrderedDict()
 _CACHE_7Z_BYTES = 0
-_CACHE_7Z_MAX_BYTES = int(os.environ.get("NORM_T3_CACHE_DISCO_BYTES", str(5 * 1024**3)))
+_MINIMO_CACHE = 5 * 1024**3
+
+
+def _tope_cache_por_defecto() -> int:
+    """Sin tope explícito, la caché se dimensiona por el DISCO LIBRE, no por una
+    constante.
+
+    Eran 5 GB fijos (20 en algún nodo), y esto es un normalizador masivo: en
+    `vps-storage-01` dos contenedores de la misma carpeta descomprimen 132 GB entre
+    los dos. Con la caché por debajo del conjunto de trabajo, y las entradas de la
+    cola entremezcladas —se reclaman por `archivo_id`, que es un hash—, cada salto de
+    un contenedor al otro desalojaba 130 GB y los volvía a extraer. Medido: DIEZ HORAS
+    sin indexar un solo documento, con el disco y la CPU al máximo. Un tope que no
+    llega al conjunto de trabajo no limita: bloquea.
+
+    Un tope sigue haciendo falta —sin ninguno se llena el disco, y este nodo ya llegó
+    al 99 % una vez— pero tiene que salir de lo que hay, no de un número inventado.
+    """
+    try:
+        libre = shutil.disk_usage(tempfile.gettempdir()).free
+    except OSError:  # pragma: no cover - sin acceso al temporal
+        return _MINIMO_CACHE
+    # La mitad de lo libre: deja sitio de sobra para la ingesta y para el resto del
+    # sistema, y aun así cabe un corpus comprimido entero varias veces.
+    return max(_MINIMO_CACHE, int(libre * 0.5))
+
+
+_CACHE_7Z_MAX_BYTES = int(
+    os.environ.get("NORM_T3_CACHE_DISCO_BYTES") or _tope_cache_por_defecto()
+)
 
 
 def _limpiar_cache_7z() -> None:
@@ -582,6 +611,17 @@ def _dir_7z_extraido(ruta_fs: Path) -> Path:
             _CACHE_7Z.popitem(last=False)
             _CACHE_7Z_BYTES -= viejo_tam
             shutil.rmtree(viejo_dir, ignore_errors=True)
+            # Desalojar TIENE que verse. Si el conjunto de trabajo no cabe, esto ocurre
+            # en cada salto entre contenedores y lo que se ve desde fuera es un nodo
+            # con el disco al máximo que no avanza — sin un solo error. Diez horas así
+            # en `vps-storage-01` antes de que nadie supiera por qué.
+            log.warning(
+                "cache_extraccion_desalojada",
+                desalojado=str(vieja_clave[0]),
+                bytes_desalojados=viejo_tam,
+                tope=_CACHE_7Z_MAX_BYTES,
+                pista="si se repite, el tope no llega al conjunto de trabajo",
+            )
         return destino
 
 

@@ -438,3 +438,56 @@ class TestSieteZCodecNoSoportado:
         monkeypatch.setattr(C.subprocess, "run", lambda argv, **kw: _Proc())
         with pytest.raises(OSError):
             C._extraer_7z_con_unar(tmp_path / "x.7z", destino)
+
+
+class TestTopeDeCacheExtraccion:
+    """El tope de la caché era una constante de 5 GB. En un normalizador masivo eso no
+    limita: bloquea. Medido en `vps-storage-01` — dos contenedores de la misma carpeta
+    descomprimen 132 GB entre los dos, y con la caché por debajo del conjunto de
+    trabajo cada salto entre ellos desalojaba 130 GB y los re-extraía. DIEZ HORAS sin
+    indexar un documento, con disco y CPU al máximo y sin un solo error."""
+
+    def test_el_defecto_sale_del_disco_libre_no_de_una_constante(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil as sh
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        class _Uso:
+            total = 20 * 1024**4
+            used = 5 * 1024**4
+            free = 15 * 1024**4  # 15 TiB libres
+
+        monkeypatch.setattr(sh, "disk_usage", lambda _p: _Uso())
+        tope = C._tope_cache_por_defecto()
+        assert tope == int(_Uso.free * 0.5)
+        assert tope > 100 * 1024**3, "con 15 TiB libres el tope no puede ser de gigabytes sueltos"
+
+    def test_nunca_baja_del_minimo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un disco casi lleno no puede dejar la caché en cero: sin caché, un 7z sólido
+        se re-descomprime por cada entrada, que es O(N²)."""
+        import shutil as sh
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        class _Uso:
+            total = 100 * 1024**3
+            used = 99 * 1024**3
+            free = 1 * 1024**3
+
+        monkeypatch.setattr(sh, "disk_usage", lambda _p: _Uso())
+        assert C._tope_cache_por_defecto() == C._MINIMO_CACHE
+
+    def test_sin_poder_mirar_el_disco_cae_al_minimo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil as sh
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        def _revienta(_p):
+            raise OSError("no se puede mirar el temporal")
+
+        monkeypatch.setattr(sh, "disk_usage", _revienta)
+        assert C._tope_cache_por_defecto() == C._MINIMO_CACHE
