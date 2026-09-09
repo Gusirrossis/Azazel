@@ -151,6 +151,11 @@ def test_ninguna_escritura_se_queda_en_lector(rutas: dict[tuple[str, str], str |
         # porque escriba nada: `/buscar` es de solo lectura y tiene que estar al
         # alcance de un lector — es la razón de ser del rol.
         ("/buscar", "post"),
+        # Mismo caso que `/buscar`: POST porque la lista de contenedores viaja en el
+        # CUERPO —una llamada por búsqueda, no una por base— y no porque escriba nada.
+        # Sólo LEE el estado de la cola para responder "¿la tengo entera?", y quien
+        # pregunta es justo un consumidor externo con clave de lector.
+        ("/cobertura", "post"),
         # Cualquiera gestiona lo SUYO propio: su contraseña y sus sesiones. Lo que no
         # puede es tocar las de los demás, y eso vive en `/auth/usuarios` (admin).
         ("/auth/contrasena", "post"),

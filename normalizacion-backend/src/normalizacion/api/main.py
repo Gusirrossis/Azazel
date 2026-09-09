@@ -30,6 +30,7 @@ from normalizacion.api.esquemas import (
     RespuestaBusqueda,
     RespuestaCarpetas,
     RespuestaClaveGenerada,
+    RespuestaCobertura,
     RespuestaColaArchivos,
     RespuestaEntidades,
     RespuestaFiltro,
@@ -44,6 +45,7 @@ from normalizacion.api.esquemas import (
     SolicitudCambioContrasena,
     SolicitudCarpetaNueva,
     SolicitudClaveBusqueda,
+    SolicitudCobertura,
     SolicitudDestino,
     SolicitudFiltro,
     SolicitudLogin,
@@ -1050,6 +1052,33 @@ def crear_app(config: Config) -> FastAPI:
         filtro = filtro_efectivo(cfg, overrides)
         return RespuestaTablero.model_validate(
             tablero(cfg, umbral_cold=filtro.umbral_cold, umbral_hot=filtro.umbral_hot)
+        )
+
+    @aplicacion.post("/cobertura", response_model=RespuestaCobertura)
+    def post_cobertura(
+        solicitud: SolicitudCobertura, _: Autorizado, request: Request
+    ) -> RespuestaCobertura:
+        """¿Qué contenedores tengo indexados ENTEROS y al día?
+
+        Para quien ya tiene los datos en origen —Lilith, sobre sus propias bases— y
+        quiere dejar de recorrerlos cuando aquí ya están normalizados. Responde por
+        lote: una llamada con todos los candidatos, porque en la federación el coste
+        que domina es abrir la conexión, no la consulta.
+
+        **Vive en el nodo que INGIERE, no en la matriz.** La replicación copia el
+        índice de OpenSearch, no la cola de Postgres: la matriz no sabe qué lleva
+        ingerido cada luna. Comprobado — su tabla `archivos` sólo conoce sus tres
+        discos propios, ninguno de una luna. Preguntar allí daría "no la tengo" para
+        todo, que es la respuesta segura pero inútil.
+        """
+        from normalizacion.ingesta.pipeline import cobertura_de_bases
+
+        cfg: Config = request.app.state.config
+        return RespuestaCobertura.model_validate(
+            {
+                "origen": cfg.despliegue.nodo_id,
+                "bases": cobertura_de_bases(cfg, [b.model_dump() for b in solicitud.bases]),
+            }
         )
 
     # ------------------------------------------------------ explorador de cola

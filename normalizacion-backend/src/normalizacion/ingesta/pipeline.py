@@ -561,6 +561,91 @@ _COLUMNAS_COLA = (
 )
 
 
+def _a_utc(valor: Any) -> datetime | None:
+    """Acepta datetime (con o sin zona) o ISO-8601. Ingenuo → se asume UTC."""
+    if isinstance(valor, datetime):
+        return valor if valor.tzinfo else valor.replace(tzinfo=UTC)
+    if isinstance(valor, str):
+        try:
+            fecha = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return fecha if fecha.tzinfo else fecha.replace(tzinfo=UTC)
+    return None
+
+
+def cobertura_de_bases(config: Config, consultas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """¿Está este contenedor indexado ENTERO y al día? Para quien ya tiene los datos
+    en origen y quiere no recorrerlos otra vez (ver `docs/PLAN-FEDERACION-LILITH.md`).
+
+    **Booleanos, no conteos, y es deliberado.** Contar las entradas de cada contenedor
+    es O(N): medido en la luna de Lilith, 403 ms para 5 bases de 20.000 lotes, y crece
+    con ellas. Preguntar `NOT EXISTS (... estado <> HECHO)` corta en la PRIMERA entrada
+    sin terminar — 206 ms para las mismas 5, y no empeora al crecer la base. Quien
+    pregunta esto lo hace en cada búsqueda; el conteo exacto ya lo da `/panel`.
+
+    **`version_coincide` es FAIL-CLOSED.** Si no se mandan `tamano` y `mtime` no hay
+    forma de saber si el fichero cambió desde que se indexó, y la respuesta es `False`.
+    Saltarse un barrido confiando en una copia vieja es perder resultados en silencio,
+    que es exactamente lo que este endpoint existe para evitar.
+
+    `nombre` es la ruta relativa a la raíz de datos del nodo (en un directorio plano,
+    el nombre del fichero). Se compara contra `ruta`, que es lo que tiene índice.
+    """
+    por_ruta = {str(c["nombre"]): c for c in consultas if c.get("nombre")}
+    if not por_ruta:
+        return []
+    with psycopg.connect(config.postgres_dsn) as conn:
+        filas = conn.execute(
+            "SELECT c.ruta, c.tamano, c.mtime, c.actualizado_en,"
+            " (c.senales->>'contenedor_topado') IS NOT NULL,"
+            " NOT EXISTS (SELECT 1 FROM archivos h"
+            "   WHERE h.origen_contenedor->>'contenedor_archivo_id' = c.archivo_id"
+            "     AND h.estado <> 'HECHO')"
+            " FROM archivos c"
+            " WHERE c.origen_contenedor IS NULL AND c.ruta = ANY(%s)",
+            (list(por_ruta),),
+        ).fetchall()
+
+    vistas: dict[str, dict[str, Any]] = {}
+    for ruta, tamano, mtime, actualizado, topada, completa in filas:
+        pedido = por_ruta[ruta]
+        pedido_mt = _a_utc(pedido.get("mtime"))
+        # Tolerancia de 2 s: el mtime cruza sistemas de ficheros y serializaciones, y
+        # un desfase de milisegundos no significa que el contenido cambiara. Errar
+        # aquí sólo provoca un barrido local de más, nunca un resultado de menos.
+        coincide = bool(
+            pedido.get("tamano") is not None
+            and int(pedido["tamano"]) == int(tamano or 0)
+            and pedido_mt is not None
+            and mtime is not None
+            and abs((pedido_mt - _a_utc(mtime)).total_seconds()) < 2  # type: ignore[operator]
+        )
+        vistas[ruta] = {
+            "nombre": ruta,
+            "indexada": True,
+            "completa": bool(completa),
+            "topada": bool(topada),
+            "version_coincide": coincide,
+            "actualizado_en": actualizado,
+        }
+    # Las que no conocemos se responden explícitamente: el que pregunta necesita
+    # distinguir "no la tengo" de "no me contestaste por ella".
+    for nombre in por_ruta:
+        vistas.setdefault(
+            nombre,
+            {
+                "nombre": nombre,
+                "indexada": False,
+                "completa": False,
+                "topada": False,
+                "version_coincide": False,
+                "actualizado_en": None,
+            },
+        )
+    return [vistas[n] for n in por_ruta]
+
+
 def listar_archivos_cola(
     config: Config,
     *,

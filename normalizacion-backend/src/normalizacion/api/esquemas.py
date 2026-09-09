@@ -6,6 +6,7 @@ el servidor construye la consulta (allowlist implícita, PROPUESTA §9).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -409,6 +410,46 @@ class DiscoTablero(BaseModel):
     bytes: int
     hechos: int
     errores: int
+
+
+# ------------------------------------------------------------------ cobertura
+
+
+class BaseConsultada(BaseModel):
+    """Un contenedor por el que pregunta quien federa, antes de recorrerlo él mismo."""
+
+    nombre: str = Field(
+        ..., max_length=1024, description="Ruta relativa a la raíz de datos del nodo"
+    )
+    #: Sin `tamano` Y `mtime` no se puede saber si el fichero cambió desde que se
+    #: indexó, y `version_coincide` sale False. Es a propósito: fail-closed.
+    tamano: int | None = Field(default=None, ge=0)
+    mtime: datetime | None = None
+
+
+class SolicitudCobertura(BaseModel):
+    """UNA llamada con TODOS los contenedores candidatos, no una por contenedor: el
+    coste que domina en la federación es abrir la conexión, no la consulta."""
+
+    bases: list[BaseConsultada] = Field(..., max_length=500)
+
+
+class CoberturaBase(BaseModel):
+    nombre: str
+    indexada: bool  # la conocemos
+    completa: bool  # TODAS sus entradas en HECHO
+    topada: bool  # se alcanzó el tope de entradas: la copia es PARCIAL por diseño
+    version_coincide: bool  # el tamaño y mtime indexados siguen siendo los del fichero
+    actualizado_en: datetime | None = None
+
+
+class RespuestaCobertura(BaseModel):
+    """Sólo se puede dejar de recorrer un contenedor si `completa AND NOT topada AND
+    version_coincide`. Cualquier otra combinación significa recorrerlo: una copia
+    parcial que se da por entera pierde resultados sin que nadie lo note."""
+
+    origen: str  # nodo_id de quien responde
+    bases: list[CoberturaBase]
 
 
 class CorridaMini(BaseModel):
