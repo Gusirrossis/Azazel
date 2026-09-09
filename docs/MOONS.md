@@ -246,6 +246,38 @@ subió solo a 8 workers para 3,5 cores.
 > Si toca `mem_limit`, toca también `memswap_limit`. El compose base los fija iguales a
 > propósito (sin swap: el cgroup mata al proceso que se pasa y el box sigue vivo).
 
+### Que el avance se VEA mientras ocurre
+
+Dos ajustes que no cambian lo que el nodo hace, solo cuándo se nota. Nacen de una
+queja concreta: «tiene 200k indexados y hasta que no terminen los pendientes no lo
+puedo visualizar».
+
+**1. `norm verificar` en cron — el contador `hechos` mentía.** En el panel,
+`hechos` cuenta **sólo** el estado `HECHO`, y en una luna `INDEXADO → HECHO` ocurre
+únicamente en la fase de verificación, **al final de la corrida**. Medido en Lilith:
+**25 hechos** en el panel con **254.605 documentos ya indexados**, de los cuales
+**237.631 ya se buscaban en la matriz**. El trabajo estaba hecho y era visible en
+búsqueda; el número que dice «hecho» no se movía.
+
+En una luna verificar es casi gratis —`almacen_backend = "ninguno"` no relee ningún
+blob, sólo hace dos transiciones de estado—, así que va en cron:
+
+```cron
+*/10 * * * * flock -n /tmp/norm-verificar.lock docker exec normalizacion-api-1 norm verificar >> .../verificar.log 2>&1
+```
+
+`flock` importa: si una pasada tarda más de 10 min, la siguiente se salta en vez de
+solaparse. Tras la primera pasada, Lilith pasó de **25** a **259.130** hechos.
+
+> **Sólo en lunas.** En la matriz, que sí tiene almacén, `norm verificar` relee cada
+> blob para cotejar su hash: ahí es caro y no se pone en cron.
+
+**2. `NORM_WORKER__LOTE_CLAIM=100`** (por defecto 500). El worker reclama un lote y
+**no confirma la transacción hasta terminarlo**: hasta ese commit, nada de lo hecho
+existe para nadie más. Con 500 filas lentas eso son horas de trabajo invisible — y
+ventanas de bloqueo igual de largas, que es lo que hace que un `UPDATE` desde fuera
+se quede esperando sin explicación. Con 100, el avance se ve cinco veces antes.
+
 ---
 
 ## 6. Lo que falta
