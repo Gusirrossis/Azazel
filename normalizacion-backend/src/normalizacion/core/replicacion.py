@@ -302,10 +302,21 @@ def restaurar_ajenos(
         # federa recibía menos datos sin un solo error. Ahora se restaura en la otra
         # ranura, se espera a VERDE y se cambia el alias en UNA operación atómica: la
         # copia anterior sirve hasta el último instante y la ventana desaparece.
-        destino = _ranura_alterna(sirviendo) if sirviendo else indice
+        if sirviendo:
+            destino = _ranura_alterna(sirviendo)
+        else:
+            # Sin copia sirviendo, el nombre propio suele estar libre. Pero puede haber
+            # un HUÉRFANO de un ciclo roto: restaurar sobre él falla con
+            # "an open index with same name already exists" y el ciclo entero muere.
+            destino = (
+                indice if not cliente.indices.exists(index=indice) else _ranura_alterna(indice)
+            )
         try:
-            with contextlib.suppress(Exception):
-                cliente.indices.delete(index=destino)  # residuo de un ciclo interrumpido
+            # Sin `suppress`: si la ranura no se puede liberar, el restore va a fallar
+            # de todas formas y con un error que no dice por qué. Antes esto se tragaba
+            # el fallo y la excepción aparecía tres líneas después, desorientando.
+            if cliente.indices.exists(index=destino):
+                cliente.indices.delete(index=destino)
             # `wait_for_completion=false`: la petición vuelve en cuanto el restore se
             # ACEPTA. Con `true` la conexión se queda abierta mientras dura —minutos
             # con decenas de GB— y el cliente la corta a los 30 s con un

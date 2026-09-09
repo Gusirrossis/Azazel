@@ -472,3 +472,41 @@ class TestBlueGreen:
         cliente = _ClienteFalso(mezcla)
         replicacion.restaurar_ajenos(_luna(), cliente)
         assert cliente.restaurados == [("archivos-luna-000001", "luna-20260907-100000")]
+
+
+class TestHuerfanos:
+    """Un ciclo roto deja índices sueltos. Restaurar sobre uno de ellos falla con
+    `an open index with same name already exists` y mata el ciclo entero — pasó en
+    producción y dejó la copia de una luna a medias."""
+
+    def test_no_restaura_sobre_un_huerfano_suelto(self) -> None:
+        from normalizacion.core import replicacion
+
+        snaps = [
+            {
+                "snapshot": "luna-20260909-170004",
+                "state": "SUCCESS",
+                "indices": ["archivos-luna-000001"],
+            }
+        ]
+        # El huérfano EXISTE pero no cuelga del alias: es el estado que rompía.
+        cliente = _ClienteFalso(snaps)
+        cliente._presentes.add("archivos-luna-000001")
+        replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
+        assert cliente.destinos == ["archivos-luna-000001-r"], (
+            "con el nombre propio ocupado hay que ir a la ranura, no restaurar encima"
+        )
+
+    def test_si_el_nombre_esta_libre_se_usa(self) -> None:
+        from normalizacion.core import replicacion
+
+        snaps = [
+            {
+                "snapshot": "luna-20260909-170004",
+                "state": "SUCCESS",
+                "indices": ["archivos-luna-000001"],
+            }
+        ]
+        cliente = _ClienteFalso(snaps)
+        replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
+        assert cliente.destinos == ["archivos-luna-000001"]
