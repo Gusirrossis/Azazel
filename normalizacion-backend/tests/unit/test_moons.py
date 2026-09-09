@@ -281,6 +281,9 @@ class _ClienteFalso:
             i: {"aliases": {self._alias: {}} if i in self._colgados else {}} for i in candidatos
         }
 
+    def exists(self, index: str | None = None) -> bool:
+        return str(index) in self._presentes
+
     def delete(self, index: str | None = None) -> None:
         self.borrados.append(str(index))
         self._presentes.discard(str(index))

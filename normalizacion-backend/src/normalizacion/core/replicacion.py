@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -298,10 +299,16 @@ def restaurar_ajenos(
         try:
             with contextlib.suppress(Exception):
                 cliente.indices.delete(index=destino)  # residuo de un ciclo interrumpido
+            # `wait_for_completion=false`: la petición vuelve en cuanto el restore se
+            # ACEPTA. Con `true` la conexión se queda abierta mientras dura —minutos
+            # con decenas de GB— y el cliente la corta a los 30 s con un
+            # ConnectionTimeout que parece un fallo y no lo es. Medido: el ciclo de la
+            # luna de Lilith moría así con el índice a medio restaurar. Quien espera de
+            # verdad es `cluster.health` de abajo, que sí lleva su `request_timeout`.
             cliente.transport.perform_request(
                 "POST",
                 f"/_snapshot/{repo}/{nombre}/_restore",
-                params={"wait_for_completion": "true"},
+                params={"wait_for_completion": "false"},
                 body={
                     "indices": indice,
                     "include_aliases": False,
@@ -318,6 +325,12 @@ def restaurar_ajenos(
             # 60 min de servidor se corta a los 30 s con un ConnectionTimeout que
             # parece un fallo y no lo es — el mismo error que hacía cantar 16 de 43
             # ciclos como fallidos cuando los snapshots salían todos bien.
+            # El restore ya fue aceptado, pero el índice puede tardar un instante en
+            # aparecer. Se espera a que EXISTA comprobándolo, no durmiendo a ciegas.
+            for _ in range(12):
+                if cliente.indices.exists(index=destino):
+                    break
+                time.sleep(5)
             cliente.cluster.health(
                 index=destino,
                 wait_for_status="green",
