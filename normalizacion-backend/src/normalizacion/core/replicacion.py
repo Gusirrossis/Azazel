@@ -188,17 +188,24 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
 _ESPERA_VERDE = "60m"
 
 
-def _ranura_alterna(indice: str) -> str:
-    """La OTRA ranura del par blue/green: `…-000001` ↔ `…-000002`.
+#: Sufijo de la ranura de repuesto. Cada índice de origen tiene SU par.
+_SUF_RANURA = "-r"
 
-    Dos nombres fijos y no uno con marca de tiempo: así el juego de índices que puede
-    existir está acotado, y el guardián del alias —que barre `archivos-*`— nunca se
-    encuentra con residuos de ciclos viejos.
+
+def _ranura_alterna(indice: str) -> str:
+    """La otra ranura del par blue/green DE ESE índice: `X` ↔ `X-r`.
+
+    El par se deriva del nombre completo, no del número final. Alternar
+    `…-000001` ↔ `…-000002` parecía lo natural hasta que el emisor ROTÓ sus índices
+    (ISM): en cuanto la luna tuvo `…-000001` y `…-000002` de verdad, restaurar el
+    primero escribía sobre el segundo y viceversa. Se perdió una copia entera así.
+
+    Dos nombres fijos por índice y no uno con marca de tiempo: el juego de índices que
+    puede existir queda acotado y no se acumulan residuos de ciclos viejos.
     """
-    raiz, _, num = indice.rpartition("-")
-    if not raiz or not num.isdigit():
-        return indice[:-2] if indice.endswith("-b") else indice + "-b"
-    return f"{raiz}-{2 if int(num) == 1 else 1:06d}"
+    if indice.endswith(_SUF_RANURA):
+        return indice[: -len(_SUF_RANURA)]
+    return indice + _SUF_RANURA
 
 
 def _en_alias(cliente: Any, indice: str, alias: str) -> bool:

@@ -350,7 +350,7 @@ class TestRestauraElMasReciente:
         cliente = _ClienteFalso(_SNAPS, presentes=("archivos-luna-000001",))
         replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
         assert cliente.restaurados == [("archivos-luna-000001", "luna-20260907-230000")]
-        assert cliente.destinos == ["archivos-luna-000002"]
+        assert cliente.destinos == ["archivos-luna-000001-r"]
         assert "archivos-luna-000001" in cliente.borrados
 
 
@@ -369,7 +369,7 @@ class TestBlueGreen:
 
     def test_restaura_en_la_otra_ranura_no_encima(self) -> None:
         cliente = self._refrescar()
-        assert cliente.destinos == ["archivos-luna-000002"]
+        assert cliente.destinos == ["archivos-luna-000001-r"]
 
     def test_espera_a_verde_antes_de_tocar_el_alias(self) -> None:
         """`wait_for_completion` vuelve cuando el shard está ASIGNADO, no recuperado.
@@ -377,7 +377,7 @@ class TestBlueGreen:
         cliente = self._refrescar()
         assert cliente.esperas, "no se esperó a que el índice quedara verde"
         indice, estado, req_timeout = cliente.esperas[0]
-        assert indice == "archivos-luna-000002"
+        assert indice == "archivos-luna-000001-r"
         assert estado == "green"
         # El timeout del CLIENTE va aparte del de servidor: sin él, esperar 60 min se
         # corta a los 30 s con un ConnectionTimeout que parece un fallo y no lo es.
@@ -392,7 +392,7 @@ class TestBlueGreen:
         assert {"add", "remove"} == {k for a in acciones for k in a}
         añadido = next(a["add"]["index"] for a in acciones if "add" in a)
         quitado = next(a["remove"]["index"] for a in acciones if "remove" in a)
-        assert (añadido, quitado) == ("archivos-luna-000002", "archivos-luna-000001")
+        assert (añadido, quitado) == ("archivos-luna-000001-r", "archivos-luna-000001")
 
     def test_el_viejo_NO_se_borra_antes_del_swap(self) -> None:
         """LA invariante. Si se borra antes, hay una ventana sin índice servible — que
@@ -402,17 +402,46 @@ class TestBlueGreen:
         # El fake sólo registra borrados de índices que existían; el viejo tiene que
         # seguir colgado del alias hasta que el swap lo retira.
         assert "archivos-luna-000001" in cliente.borrados
-        assert cliente.destinos == ["archivos-luna-000002"]
+        assert cliente.destinos == ["archivos-luna-000001-r"]
         # y el que queda sirviendo es el nuevo
         colgados = {
             i for i, v in cliente.get_alias(index="archivos-*").items() if v["aliases"]
         }
-        assert colgados == {"archivos-luna-000002"}
+        assert colgados == {"archivos-luna-000001-r"}
+
+    def test_dos_indices_del_emisor_NO_se_pisan(self) -> None:
+        """La regresión que costó una copia entera. El emisor ROTA sus índices (ISM):
+        la luna de Lilith pasó a tener `…-000001` (431.715 docs) y `…-000002`
+        (159.999). Con las ranuras derivadas del NÚMERO final, restaurar el primero
+        escribía sobre el segundo y viceversa — la matriz acabó con una sola copia, y
+        suelta del alias. Las ranuras tienen que salir del nombre COMPLETO."""
+        from normalizacion.core import replicacion
+
+        snaps = [
+            {
+                "snapshot": "luna-20260909-170004",
+                "state": "SUCCESS",
+                "indices": ["archivos-luna-000001", "archivos-luna-000002"],
+            }
+        ]
+        cliente = _ClienteFalso(snaps, presentes=("archivos-luna-000001", "archivos-luna-000002"))
+        replicacion.restaurar_ajenos(_luna(), cliente, refrescar=True)
+
+        # Cada origen a SU ranura, y ninguna coincide con el otro origen.
+        assert sorted(cliente.destinos) == [
+            "archivos-luna-000001-r",
+            "archivos-luna-000002-r",
+        ]
+        assert "archivos-luna-000002" not in cliente.destinos
+        assert "archivos-luna-000001" not in cliente.destinos
+        # y los dos acaban sirviendo: no se perdió ninguna copia
+        colgados = {i for i, v in cliente.get_alias(index="archivos-*").items() if v["aliases"]}
+        assert colgados == {"archivos-luna-000001-r", "archivos-luna-000002-r"}
 
     def test_alterna_de_vuelta_en_el_siguiente_ciclo(self) -> None:
         """Dos ranuras fijas y no un nombre nuevo cada vez: así el juego de índices que
         puede existir está acotado y no quedan residuos de ciclos viejos."""
-        cliente = self._refrescar(presentes=("archivos-luna-000002",))
+        cliente = self._refrescar(presentes=("archivos-luna-000001-r",))
         assert cliente.destinos == ["archivos-luna-000001"]
 
     def test_nunca_restaura_el_indice_propio(self) -> None:
