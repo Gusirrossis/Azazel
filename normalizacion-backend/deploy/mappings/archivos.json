@@ -46,7 +46,10 @@
         "archivo_id": { "type": "keyword" },
         "disco_id": { "type": "keyword" },
         "nombre": { "type": "wildcard" },
-        "ruta_original": { "type": "wildcard" },
+        "ruta_original": {
+          "type": "wildcard",
+          "fields": { "exacta": { "type": "keyword", "ignore_above": 8192 } }
+        },
         "extension": { "type": "keyword" },
         "tipo_real": { "type": "keyword" },
         "tamano": { "type": "long" },

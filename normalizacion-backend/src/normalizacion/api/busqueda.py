@@ -161,11 +161,15 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
     if solicitud.disco_id:
         filtros.append({"term": {"disco_id": solicitud.disco_id}})
     if solicitud.ruta_prefijo:
-        # `prefix` y no `wildcard`: el valor viaja LITERAL, sin `*` ni `?` que
-        # interpretar, así que quien pregunta no puede colar un patrón que barra el
-        # índice entero. Es la misma disciplina que el resto de filtros — el texto del
-        # usuario siempre como valor, nunca como sintaxis.
-        filtros.append({"prefix": {"ruta_original": solicitud.ruta_prefijo}})
+        # `prefix` sobre el sub-campo KEYWORD `ruta_original.exacta`, NO sobre el campo
+        # `wildcard`. El `wildcard` sin doc_values saca a TODOS los candidatos por
+        # n-gramas y verifica uno a uno: para un prefijo de base (`<ULID>.db!`) eso es
+        # 16-30 s y un 500 que quien federa no distingue de "Azazel caído" (medido).
+        # El keyword camina el diccionario de términos ordenado (FST): 0,018 s, mismo
+        # conjunto de resultados. Sigue siendo un valor LITERAL —sin `*`/`?` que
+        # interpretar—, así que nadie puede colar un patrón que barra el índice.
+        # `.exacta` es el multi-field que espeja `ruta_original` (lo deriva OpenSearch).
+        filtros.append({"prefix": {"ruta_original.exacta": solicitud.ruta_prefijo}})
     if solicitud.puntaje_min is not None:
         filtros.append({"range": {"puntaje": {"gte": solicitud.puntaje_min}}})
     if solicitud.tamano_min is not None or solicitud.tamano_max is not None:

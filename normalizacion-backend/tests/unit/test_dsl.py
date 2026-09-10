@@ -238,7 +238,8 @@ class TestFiltroPorContenedor:
     def test_acota_por_prefijo_de_ruta(self) -> None:
         s = SolicitudBusqueda(ruta_prefijo="01M028PW0W1ET094X9DA6PCH5V.db!")
         filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
-        assert {"prefix": {"ruta_original": "01M028PW0W1ET094X9DA6PCH5V.db!"}} in filtros
+        # Sobre el sub-campo KEYWORD, no el wildcard: mismo prefijo, índice rápido.
+        assert {"prefix": {"ruta_original.exacta": "01M028PW0W1ET094X9DA6PCH5V.db!"}} in filtros
 
     def test_sin_el_filtro_no_aparece(self) -> None:
         cuerpo = construir_consulta(SolicitudBusqueda(), pagina_max=500)
@@ -249,13 +250,13 @@ class TestFiltroPorContenedor:
         barrer el índice entero. Misma disciplina que el resto de filtros."""
         s = SolicitudBusqueda(ruta_prefijo="*.db!")
         filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
-        assert {"prefix": {"ruta_original": "*.db!"}} in filtros
+        assert {"prefix": {"ruta_original.exacta": "*.db!"}} in filtros
         assert not any("wildcard" in str(f) for f in filtros)
 
     def test_se_combina_con_los_demas_filtros(self) -> None:
         s = SolicitudBusqueda(ruta_prefijo="X.db!", disco_id="lilith-luna-01:bases")
         filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
-        assert {"prefix": {"ruta_original": "X.db!"}} in filtros
+        assert {"prefix": {"ruta_original.exacta": "X.db!"}} in filtros
         assert {"term": {"disco_id": "lilith-luna-01:bases"}} in filtros
 
 
