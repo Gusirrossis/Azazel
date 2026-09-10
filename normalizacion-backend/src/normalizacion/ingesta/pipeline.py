@@ -589,6 +589,13 @@ def cobertura_de_bases(config: Config, consultas: list[dict[str, Any]]) -> list[
     Saltarse un barrido confiando en una copia vieja es perder resultados en silencio,
     que es exactamente lo que este endpoint existe para evitar.
 
+    **`completa` también es FAIL-CLOSED, y por la misma razón.** No basta "ningún hijo
+    a medias": un `.db` recién catalogado está PENDIENTE y todavía no tiene hijos, así
+    que "ningún hijo no-HECHO" es cierto DE VACÍO y la base se reportaba completa con
+    cero normalizado. Medido en la luna de Lilith: 7 bases en ese estado. La consulta
+    exige además que el contenedor esté HECHO y que TENGA hijos (la exploración los
+    encola en la misma transacción en que el contenedor deja PENDIENTE).
+
     `nombre` es la ruta relativa a la raíz de datos del nodo (en un directorio plano,
     el nombre del fichero). Se compara contra `ruta`, que es lo que tiene índice.
     """
@@ -599,9 +606,21 @@ def cobertura_de_bases(config: Config, consultas: list[dict[str, Any]]) -> list[
         filas = conn.execute(
             "SELECT c.ruta, c.tamano, c.mtime, c.actualizado_en,"
             " (c.senales->>'contenedor_topado') IS NOT NULL,"
-            " NOT EXISTS (SELECT 1 FROM archivos h"
-            "   WHERE h.origen_contenedor->>'contenedor_archivo_id' = c.archivo_id"
-            "     AND h.estado <> 'HECHO')"
+            # `completa` es FAIL-CLOSED. Exige TRES cosas, no una:
+            #   1) el contenedor TERMINÓ (estado HECHO). Un `.db` recién catalogado
+            #      está PENDIENTE y aún no se exploró.
+            #   2) TIENE hijos. La exploración encola los lotes en la MISMA
+            #      transacción en que el contenedor deja PENDIENTE, así que "0 hijos"
+            #      == "sin explorar". Sin este EXISTS, `NOT EXISTS(hijo no-HECHO)` es
+            #      TRUE vacuo para una base sin hijos y se reportaba COMPLETA con cero
+            #      normalizado: Lilith la saltaría y perdería la base entera.
+            #   3) NINGÚN hijo sigue a medias.
+            " (c.estado = 'HECHO'"
+            "  AND EXISTS (SELECT 1 FROM archivos h"
+            "    WHERE h.origen_contenedor->>'contenedor_archivo_id' = c.archivo_id)"
+            "  AND NOT EXISTS (SELECT 1 FROM archivos h"
+            "    WHERE h.origen_contenedor->>'contenedor_archivo_id' = c.archivo_id"
+            "      AND h.estado <> 'HECHO'))"
             " FROM archivos c"
             " WHERE c.origen_contenedor IS NULL AND c.ruta = ANY(%s)",
             (list(por_ruta),),

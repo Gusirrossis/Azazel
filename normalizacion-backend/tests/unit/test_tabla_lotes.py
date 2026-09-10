@@ -151,6 +151,29 @@ class TestGuards:
         assert 0 < len(entradas) < 10_000
         assert topado is False
 
+    def test_tabla_ilegible_cuenta_como_parcial(self, tmp_path: Path) -> None:
+        """Una tabla/vista que revienta el count NO se puede trocear: sus filas nunca
+        entran al índice. Tiene que verse como exploración PARCIAL (topado), o la base
+        entra en HECHO con esas filas fuera y la federación la saltaría sin saberlo —
+        el mismo agujero silencioso que el tope de lotes, por otra causa."""
+        ruta = tmp_path / "con_tabla_rota.db"
+        con = sqlite3.connect(ruta)
+        con.execute("CREATE TABLE buena (id INTEGER PRIMARY KEY, curp TEXT)")
+        con.execute("INSERT INTO buena VALUES (1, 'CURP000001')")
+        # Una vista sobre una tabla inexistente: SQLite la crea, pero count(*) revienta.
+        con.execute("CREATE VIEW rota AS SELECT * FROM no_existe")
+        con.commit()
+        con.close()
+
+        omitidas: list[str] = []
+        lotes = tabla_lotes.planificar(ruta, tablas_omitidas=omitidas)
+        assert "rota" in omitidas, "la tabla ilegible tiene que registrarse, no desaparecer"
+        assert any(lt.tabla == "buena" for lt in lotes), "la tabla buena sí se trocea"
+
+        entradas, motivo, topado = tabla_lotes.explorar(PerillasFiltro(), ruta, 0)
+        assert motivo is None, "la base se explora, sólo que incompleta"
+        assert topado is True, "una tabla ilegible = parcial; sin esto se salta el barrido"
+
     def test_subir_el_tope_no_mueve_los_lotes_existentes(self, tmp_path: Path) -> None:
         """Lo que hace que re-planificar sea INCREMENTAL: el `paso` sale del rango de
         rowid y de `filas_por_lote`, nunca del tope. Si el tope moviera los límites,

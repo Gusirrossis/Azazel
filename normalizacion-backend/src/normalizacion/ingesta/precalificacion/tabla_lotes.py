@@ -104,6 +104,7 @@ def planificar(
     *,
     filas_por_lote: int = FILAS_POR_LOTE,
     max_lotes: int | None = None,
+    tablas_omitidas: list[str] | None = None,
 ) -> list[Lote]:
     """Los lotes en que se trocea la base. No lee ni una fila de datos.
 
@@ -125,6 +126,13 @@ def planificar(
             try:
                 total = con.execute(f"SELECT count(*) FROM {_cita(tabla)}").fetchone()[0] or 0
             except sqlite3.Error:
+                # Una tabla/vista que revienta el count NO se puede trocear: sus filas
+                # no entran al índice NUNCA. Se registra para que `explorar` lo propague
+                # como exploración PARCIAL; sin eso la base entra en HECHO con esa tabla
+                # fuera y su copia parcial es indistinguible de una entera — el mismo
+                # agujero silencioso que el tope de lotes.
+                if tablas_omitidas is not None:
+                    tablas_omitidas.append(tabla)
                 continue
             if total == 0:
                 continue
@@ -135,6 +143,10 @@ def planificar(
                 ).fetchone()
                 lo, hi = (fila or (None, None))
                 if lo is None:
+                    # count>0 pero sin rango de rowid utilizable: las filas quedarían
+                    # fuera del troceo. También es exploración parcial, no un cero limpio.
+                    if tablas_omitidas is not None:
+                        tablas_omitidas.append(tabla)
                     continue
                 # Paso por rango, no por conteo: el rowid puede tener huecos y no hace
                 # falta que los lotes salgan iguales, solo que cubran TODO el rango.
@@ -217,27 +229,42 @@ def explorar(
     perillas: PerillasFiltro, ruta_fs: str | Path, mtime_ns: int
 ) -> tuple[list[tuple[str, str, int, int]], str | None, bool]:
     """Entradas `(ruta_interna, nombre, tamano, mtime_ns)`, motivo si no se pudo, y si
-    la base quedó TOPADA (troceada a medias porque se alcanzó el tope de lotes).
+    la base quedó PARCIAL (troceada a medias: se alcanzó el tope de lotes, O una tabla
+    no se pudo leer y sus filas no entran al índice).
 
-    Ese tercer valor existe porque topar es una pérdida de datos silenciosa: la base
-    se explora "bien", entra en HECHO, y nadie sabe que le falta la cola. Quien llama
-    lo propaga a las señales de la fila para que sea consultable, no sólo registrable.
+    Ese tercer valor existe porque una exploración parcial es una pérdida de datos
+    silenciosa: la base se explora "bien", entra en HECHO, y nadie sabe que le falta
+    una tabla o la cola. Quien llama lo propaga a las señales de la fila para que sea
+    consultable, no sólo registrable — es lo que impide que la federación se salte el
+    barrido de una base a la que le falta contenido.
 
     Devuelve tuplas y no `EntradaContenedor` para no crear un import circular con
     `contenedores`, que es quien tiene ese tipo y quien llama aquí.
     """
+    omitidas: list[str] = []
     try:
-        lotes = planificar(ruta_fs, max_lotes=perillas.t3_sqlite_lotes_max)
+        lotes = planificar(
+            ruta_fs, max_lotes=perillas.t3_sqlite_lotes_max, tablas_omitidas=omitidas
+        )
     except sqlite3.DatabaseError as exc:
         log.warning("sqlite_no_explorable", error=str(exc)[:150])
         return [], "contenedor_corrupto", False
-    if not lotes:
+    if not lotes and not omitidas:
         return [], None, False
     if len(lotes) > perillas.t3_entradas_max:
         return [], "guard_entradas", False
-    topado = len(lotes) >= perillas.t3_sqlite_lotes_max
+    # `topado` = PARCIAL por cualquier causa: el tope de lotes, o una tabla ilegible.
+    # En los dos casos la base entra en HECHO con filas sin indexar, así que quien
+    # federa NO puede saltarse el barrido — la misma pérdida silenciosa que el tope.
+    topado = len(lotes) >= perillas.t3_sqlite_lotes_max or bool(omitidas)
     if topado:
-        log.warning("sqlite_base_topada", ruta=str(ruta_fs), tope=perillas.t3_sqlite_lotes_max)
+        log.warning(
+            "sqlite_base_parcial",
+            ruta=str(ruta_fs),
+            tope=perillas.t3_sqlite_lotes_max,
+            lotes=len(lotes),
+            tablas_omitidas=omitidas[:20],
+        )
     tam = estimar_bytes()
     entradas = [(lt.ruta_interna, f"{lt.tabla}-{lt.desde}.ndjson", tam, mtime_ns) for lt in lotes]
     return entradas, None, topado
