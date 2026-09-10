@@ -99,9 +99,24 @@ def extraer_tabular(ctx: ContextoExtraccion) -> ResultadoExtraccion:
         return ResultadoExtraccion(campos=campos, texto=texto, flags=flags)
 
     if ctx.tipo_real == "application/x-ndjson":
-        df = pl.read_ndjson(io.BytesIO(datos))
+        # `infer_schema_length=None` escanea TODAS las filas para inferir el esquema.
+        # Sin esto (polars mira ~100 por defecto), una columna nula en las primeras
+        # filas del lote se tipa `Null` y un valor NO nulo posterior revienta con
+        # `ComputeError: got non-null value for NULL-typed column`. El lote ENTERO
+        # fallaba y se indexaba SIN texto (flag `extraccion_fallida`), en HECHO: una
+        # pérdida silenciosa. Medido en la luna de Lilith: 52.255 lotes (~26 M filas
+        # de las bases grandes) invisibles así. Con el escaneo completo, una columna
+        # mezclada (int+str, típico del tipado dinámico de SQLite) se coacciona a
+        # String en vez de reventar. Coste acotado: `datos` ya viene topado a
+        # `calidad_max_bytes`.
+        df = pl.read_ndjson(io.BytesIO(datos), infer_schema_length=None)
     else:  # text/csv
-        df = pl.read_csv(io.BytesIO(datos), ignore_errors=True, truncate_ragged_lines=True)
+        df = pl.read_csv(
+            io.BytesIO(datos),
+            ignore_errors=True,
+            truncate_ragged_lines=True,
+            infer_schema_length=None,  # misma disciplina: esquema sobre TODAS las filas
+        )
 
     perfil = _perfil_calidad(df)
     campos = {

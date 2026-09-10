@@ -136,3 +136,25 @@ class TestJson:
         lineas = b'{"curp":"' + CURP.encode() + b'","nombre":"P"}\n{"curp":"X","nombre":"Q"}\n'
         r = extraer_tabular(_ctx(lineas, "application/x-ndjson"))
         assert r.texto and CURP in r.texto
+
+    def test_ndjson_columna_nula_al_principio_no_pierde_el_valor_tardio(self) -> None:
+        """El bug medido en producción: una columna nula en las primeras filas del lote
+        se tipa `Null` (polars infiere el esquema con ~100 filas), y un valor NO nulo
+        posterior reventaba `read_ndjson` con ComputeError. El lote ENTERO se indexaba
+        SIN texto (flag `extraccion_fallida`) y entraba en HECHO — pérdida silenciosa:
+        52.255 lotes (~26 M filas de las bases grandes de Lilith). Con
+        `infer_schema_length=None` el valor tardío llega al texto."""
+        filas = [{"curp": f"X{i:05d}", "obs": None} for i in range(120)]
+        filas.append({"curp": "tardia", "obs": CURP})  # la CURP aparece tras 120 nulos
+        lineas = ("\n".join(json.dumps(f) for f in filas)).encode()
+        r = extraer_tabular(_ctx(lineas, "application/x-ndjson"))
+        assert r.texto, "un lote no puede quedar sin texto por una columna nula al principio"
+        assert CURP in r.texto, "el valor que llega tarde tiene que entrar igual"
+
+    def test_ndjson_columna_de_tipo_mezclado_no_revienta(self) -> None:
+        """SQLite es de tipado dinámico: una columna puede traer int y string. Con el
+        escaneo completo, polars coacciona a String en vez de reventar el lote."""
+        filas = [{"curp": CURP, "n": 5}, {"curp": "X", "n": "no-numerico"}]
+        lineas = ("\n".join(json.dumps(f) for f in filas)).encode()
+        r = extraer_tabular(_ctx(lineas, "application/x-ndjson"))
+        assert r.texto and CURP in r.texto
