@@ -24,6 +24,16 @@ class SolicitudBusqueda(BaseModel):
     tipo_real: str | None = Field(default=None, max_length=120)
     extension: str | None = Field(default=None, max_length=20)
     disco_id: str | None = Field(default=None, max_length=120)
+    ruta_prefijo: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "Prefijo de `ruta_original`, para acotar a UN contenedor concreto:"
+            " `01M0….db!`. `disco_id` no sirve para esto — identifica el nodo y la"
+            " carpeta, no el archivo. Quien federa lo necesita para pedir los bloques"
+            " de una base que ya tiene en local y abrirlos fila a fila."
+        ),
+    )
     puntaje_min: int | None = Field(default=None, ge=0, le=100)
     tamano_min: int | None = Field(default=None, ge=0)
     tamano_max: int | None = Field(default=None, ge=0)

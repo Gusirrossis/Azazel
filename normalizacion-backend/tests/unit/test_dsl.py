@@ -228,3 +228,57 @@ class TestCamposYEntidadesNoSePelean:
         from normalizacion.entidades.coincidencias import _FUENTES_DOC
 
         assert set(_FUENTES_ANCLA) == set(_FUENTES_DOC)
+
+
+class TestFiltroPorContenedor:
+    """Quien federa necesita pedir los bloques de UN contenedor concreto: ya tiene esa
+    base en local y quiere abrir sus filas con su propia semántica. `disco_id` no
+    sirve — identifica el nodo y la carpeta, no el archivo."""
+
+    def test_acota_por_prefijo_de_ruta(self) -> None:
+        s = SolicitudBusqueda(ruta_prefijo="01M028PW0W1ET094X9DA6PCH5V.db!")
+        filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
+        assert {"prefix": {"ruta_original": "01M028PW0W1ET094X9DA6PCH5V.db!"}} in filtros
+
+    def test_sin_el_filtro_no_aparece(self) -> None:
+        cuerpo = construir_consulta(SolicitudBusqueda(), pagina_max=500)
+        assert "prefix" not in str(cuerpo)
+
+    def test_los_comodines_viajan_como_VALOR_no_como_patron(self) -> None:
+        """`prefix` y no `wildcard`: un `*` en el valor se busca literalmente en vez de
+        barrer el índice entero. Misma disciplina que el resto de filtros."""
+        s = SolicitudBusqueda(ruta_prefijo="*.db!")
+        filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
+        assert {"prefix": {"ruta_original": "*.db!"}} in filtros
+        assert not any("wildcard" in str(f) for f in filtros)
+
+    def test_se_combina_con_los_demas_filtros(self) -> None:
+        s = SolicitudBusqueda(ruta_prefijo="X.db!", disco_id="lilith-luna-01:bases")
+        filtros = construir_consulta(s, pagina_max=500)["query"]["bool"]["filter"]
+        assert {"prefix": {"ruta_original": "X.db!"}} in filtros
+        assert {"term": {"disco_id": "lilith-luna-01:bases"}} in filtros
+
+
+class TestPaginaDe500:
+    """Un lote de una base son 500 filas. Con el tope en 100 hacían falta cinco viajes
+    para el mismo bloque."""
+
+    def test_500_cabe_en_una_pagina(self) -> None:
+        cuerpo = construir_consulta(SolicitudBusqueda(tamano_pagina=500), pagina_max=500)
+        assert cuerpo["size"] == 500
+
+    def test_el_tope_del_servidor_sigue_mandando(self) -> None:
+        cuerpo = construir_consulta(SolicitudBusqueda(tamano_pagina=99999), pagina_max=500)
+        assert cuerpo["size"] == 500
+
+    def test_el_defecto_no_cambia(self) -> None:
+        """Subir el tope no puede engordar las respuestas de quien no pidió nada."""
+        assert SolicitudBusqueda().tamano_pagina == 20
+
+    def test_el_tope_POR_DEFECTO_del_servidor_llega_a_500(self) -> None:
+        """Lo que de verdad cambia: sin tocar el .env de ningún nodo, el servidor ya
+        acepta pedir un lote entero. Con `api_pagina_max=100` un bloque de 500 filas
+        exigía cinco viajes."""
+        from normalizacion.core.config import Config
+
+        assert Config(_env_file=None).api_pagina_max >= 500

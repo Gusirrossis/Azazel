@@ -160,6 +160,12 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
         filtros.append({"term": {"extension": solicitud.extension.lower()}})
     if solicitud.disco_id:
         filtros.append({"term": {"disco_id": solicitud.disco_id}})
+    if solicitud.ruta_prefijo:
+        # `prefix` y no `wildcard`: el valor viaja LITERAL, sin `*` ni `?` que
+        # interpretar, así que quien pregunta no puede colar un patrón que barra el
+        # índice entero. Es la misma disciplina que el resto de filtros — el texto del
+        # usuario siempre como valor, nunca como sintaxis.
+        filtros.append({"prefix": {"ruta_original": solicitud.ruta_prefijo}})
     if solicitud.puntaje_min is not None:
         filtros.append({"range": {"puntaje": {"gte": solicitud.puntaje_min}}})
     if solicitud.tamano_min is not None or solicitud.tamano_max is not None:

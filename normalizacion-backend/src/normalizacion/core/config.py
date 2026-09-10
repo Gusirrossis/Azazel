@@ -468,7 +468,12 @@ class Config(BaseSettings):
     # Raíz para elegir la CARPETA DE DESTINO desde el front (en Docker: el volumen
     # /destino, montado con escritura). None = sin confinar (dev nativo).
     api_carpeta_destino_raiz: str | None = None
-    api_pagina_max: int = 100  # límite DURO de tamaño de página
+    # Límite DURO de tamaño de página. Eran 100, y quien federa lee los bloques de un
+    # contenedor para abrirlos fila a fila: un lote son 500 filas, así que con 100 hacían
+    # falta cinco viajes para el mismo bloque. Subirlo no cambia nada por omisión —
+    # `tamano_pagina` sigue en 20— y quien pide 500 puede acotar con `campos` para no
+    # arrastrar `texto_indexable`, que es el 59 % de la respuesta.
+    api_pagina_max: int = 500
     api_autocompletar_max: int = 20
     api_solicitudes_por_minuto: int = 120  # rate-limit por llave/cliente
 
