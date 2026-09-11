@@ -199,6 +199,13 @@ class TestDescartePorConfianza:
     def test_umbral_cero_desactiva_el_descarte(self) -> None:
         assert self._descartar(0.0, 5.0).texto == "algo leido"
 
+    def test_por_defecto_no_se_descarta_nada(self) -> None:
+        """El default ahora es 0: se indexa TODO el OCR (cobertura). Un escaneo apenas
+        borroso —una INE a confianza 39— deja de quedar mudo; el texto dudoso solo se
+        marca `ocr_confianza_baja` (por `ocr_confianza_min`), no se tira."""
+        assert PerillasFiltro().ocr_confianza_descarte == 0.0
+        assert self._descartar(PerillasFiltro().ocr_confianza_descarte, 15.0).texto == "algo leido"
+
 
 class TestConfianzaCero:
     """Una página donde Tesseract no se cree NINGUNA palabra devolvía confianza

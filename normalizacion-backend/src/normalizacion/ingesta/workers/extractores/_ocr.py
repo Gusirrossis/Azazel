@@ -170,7 +170,10 @@ def ocr_imagen(
         # No se descarta aquí: el que decide qué hacer con un texto dudoso es el
         # llamador (el plugin), que sabe si tiene alternativas. Aquí solo se marca.
         flags.append("ocr_confianza_baja")
-    return texto[: perillas.extractor_max_chars], flags, confianza
+    # Sin recorte: el texto OCR de UNA imagen ya está acotado por lo que produce tesseract
+    # de un solo cuadro; recortarlo a `extractor_max_chars` solo tiraba texto real de un
+    # escaneo denso. No hay lote que trocear aquí (es un documento por imagen).
+    return texto, flags, confianza
 
 
 def _texto_y_confianza(datos: dict[str, Any]) -> tuple[str, float | None]:

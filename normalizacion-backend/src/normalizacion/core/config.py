@@ -112,10 +112,13 @@ class PerillasFiltro(BaseModel):
     # "ninguna"  → OCR solo en PDFs escaneados, nunca en `image/*`
     ocr_politica_imagen: str = "escaneo"
     # Confianza media por debajo de la cual el texto OCR NO va a `texto_indexable`.
-    # Un texto inventado es peor que ningún texto: contamina la búsqueda y mete anclas
-    # falsas en la resolución de entidades. El texto se conserva aparte para poder
-    # reprocesarlo. 0 = no descartar nada.
-    ocr_confianza_descarte: float = 40.0
+    # 0 = no descartar NADA (por omisión ahora): un descarte por confianza tira texto
+    # REAL de un escaneo apenas borroso (una INE a confianza 39 quedaba muda, sin sus
+    # nombres/CURP buscables). El texto dudoso NO queda sin marcar: `ocr_confianza_min`
+    # le pone el flag `ocr_confianza_baja`, con el que la resolución de entidades puede
+    # excluirlo de las anclas si quiere —cobertura sin inventar personas—. Un nodo que
+    # prefiera el corte duro lo sube por `NORM_FILTRO__OCR_CONFIANZA_DESCARTE`.
+    ocr_confianza_descarte: float = 0.0
     # px: por debajo de esto una imagen es un ícono/avatar/miniatura, no un documento.
     # Muy por encima de `worker.ocr_min_lado` (64), que solo evita OCR-ear un favicon:
     # una página escaneada de verdad no baja de ~600 px ni al peor escáner.
@@ -261,7 +264,12 @@ class PerillasWorker(BaseModel):
     # OCR de PDFs ESCANEADOS (Fase 2): si el texto nativo del PDF es menor a
     # `ocr_pdf_umbral_chars`, se rasterizan sus páginas (pypdfium2) y se les hace OCR.
     ocr_pdf_umbral_chars: int = 20      # < esto de texto nativo ⇒ se trata como escaneado
-    ocr_pdf_max_paginas: int = 20       # tope de páginas a rasterizar+OCR (acota tiempo)
+    # Páginas a rasterizar+OCR. Era 20: un PDF escaneado de 100 páginas solo OCR-eaba las
+    # primeras 20 y las 80 restantes quedaban SIN texto buscable. Las páginas se rasterizan
+    # de una en una (RAM acotada por `ocr_max_lado`), así que subir el techo no revienta
+    # memoria; el coste es tiempo, acotado por `extractor_timeout_s`. Alto para no recortar
+    # documentos reales.
+    ocr_pdf_max_paginas: int = 100_000
     # 4.2 ≈ 300 dpi, que es el punto donde Tesseract está calibrado. Con el 3.0
     # anterior (~216 dpi) se leía por debajo de sus posibilidades; `ocr_max_lado`
     # sigue topando el coste en páginas grandes.
