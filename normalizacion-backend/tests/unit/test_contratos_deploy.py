@@ -32,9 +32,14 @@ class TestMappingArchivos:
             assert campo in props, f"falta {campo} en el mapping"
         assert props["puntaje"]["type"] == "short"
 
-    def test_dynamic_templates_para_campos_extraidos(self) -> None:
-        mappings = _cargar("deploy/mappings/archivos.json")["template"]["mappings"]
-        assert any("campos_extraidos" in str(t) for t in mappings["dynamic_templates"])
+    def test_campos_extraidos_es_flat_object(self) -> None:
+        """flat_object: todas las claves de campos_extraidos viven bajo UN campo y NO
+        cuentan hacia total_fields. Con el dynamic_template anterior (~2 campos por clave
+        distinta), el doc que introducía el campo 2001 lo RECHAZABA OpenSearch →
+        dead-letter permanente, docs enteros perdidos. Se lee del _source igual; nada lo
+        consulta por clave."""
+        props = _cargar("deploy/mappings/archivos.json")["template"]["mappings"]["properties"]
+        assert props["campos_extraidos"]["type"] == "flat_object"
 
 
 class TestPoliticaIsm:
