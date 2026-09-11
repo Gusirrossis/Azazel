@@ -563,11 +563,74 @@ def _extraer_7z_con_unar(ruta_fs: Path, destino: Path) -> None:
         raise OSError("unar terminó con éxito pero no extrajo nada")
 
 
+def _extraer_7z_con_7zz(ruta_fs: Path, destino: Path) -> None:
+    """Extracción COMPLETA con el binario 7zz (7-Zip nativo), en STREAMING a disco.
+
+    A diferencia de `py7zr.extractall`, que descomprime el BLOQUE SOLID en RAM: sobre
+    un 7z grande la memoria trepa hasta que el contenedor OOM-MATA el proceso ANTES de
+    lanzar excepción —medido en `vps-storage-01`, los .7z de INE llevaban la RAM a los
+    16 GB del contenedor sin procesar un solo lote, y por eso el fallback a `unar` no
+    llegaba a correr—. 7zz descomprime incremental a disco: memoria acotada.
+
+    `x` = extraer con rutas; `-y` = sí a todo; `-bd` = sin barra de progreso;
+    `-o` fija el destino; `--` cierra las opciones (rutas que empiezan por `-`).
+    """
+    proc = subprocess.run(
+        [_7zz_bin(), "x", "-y", "-bd", f"-o{destino}", "--", str(ruta_fs)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        detalle = (proc.stderr or proc.stdout).decode("utf-8", "replace").strip()[:200]
+        raise OSError(f"7zz salió con {proc.returncode}: {detalle}")
+    if not any(destino.iterdir()):
+        raise OSError("7zz terminó con éxito pero no extrajo nada")
+
+
+def _extraer_7z_a_disco(ruta_fs: Path, destino: Path) -> None:
+    """Extrae el 7z entero a `destino`, probando extractores por orden de SEGURIDAD DE
+    MEMORIA:
+
+      1. `7zz` (7-Zip nativo) y 2. `unar` — STREAMING a disco, memoria ACOTADA.
+      3. `py7zr` — último recurso, SOLO para entornos sin esos binarios (dev/tests):
+         su `extractall` descomprime el bloque solid en RAM y sobre un 7z grande
+         dispara el OOM del contenedor (medido en INE, `vps-storage-01`). En producción
+         no se llega a py7zr porque 7zz está y va primero.
+
+    Si los tres fallan, el archivo es de verdad ilegible → `ContenedorIlegible`.
+    """
+
+    def _via_py7zr(rf: Path, dst: Path) -> None:
+        import py7zr
+
+        with py7zr.SevenZipFile(rf, mode="r") as sz:
+            sz.extractall(path=dst)
+
+    intentos = (("7zz", _extraer_7z_con_7zz), ("unar", _extraer_7z_con_unar), ("py7zr", _via_py7zr))
+    errores: list[str] = []
+    for i, (nombre, extraer) in enumerate(intentos):
+        for p in destino.iterdir():  # empezar de cero tras un intento fallido
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+        try:
+            extraer(ruta_fs, destino)
+        except Exception as exc:
+            errores.append(f"{nombre}={str(exc)[:150]}")
+            continue
+        if i:  # no fue el primario: dejar rastro de que se usó un fallback
+            log.warning("7z_extraido_fallback", archivo=str(ruta_fs), via=nombre, previos=errores)
+        return
+    raise ContenedorIlegible(f"7z ilegible ({ruta_fs.name}): " + "; ".join(errores))
+
+
 def _dir_7z_extraido(ruta_fs: Path) -> Path:
     """Extrae el 7z COMPLETO una sola vez (cacheado por proceso) y devuelve el
-    directorio temporal. Todas las entradas se sirven de ahí — O(N), no O(N²)."""
-    import py7zr
+    directorio temporal. Todas las entradas se sirven de ahí — O(N), no O(N²).
 
+    Extrae con 7zz (streaming a disco), NO con py7zr: su `extractall` descomprime el
+    bloque solid en RAM y dispara el OOM del contenedor sobre archivos grandes.
+    """
     st = ruta_fs.stat()
     clave = (str(ruta_fs.resolve()), st.st_size, st.st_mtime_ns)
     global _CACHE_7Z_BYTES
@@ -579,25 +642,10 @@ def _dir_7z_extraido(ruta_fs: Path) -> Path:
 
         destino = Path(tempfile.mkdtemp(prefix="norm7z_"))
         try:
-            with py7zr.SevenZipFile(ruta_fs, mode="r") as sz:
-                sz.extractall(path=destino)
-        except Exception as exc_py7zr:
-            # py7zr no implementa todos los filtros de 7-Zip (BCJ2 entre ellos) y
-            # falla A MITAD de la extracción, tras descomprimir casi todo. `unar`
-            # sí los soporta y YA es la vía para los RAR, así que se reintenta con
-            # él una vez, en vez de dar por perdido un archivo que sí es legible.
+            _extraer_7z_a_disco(ruta_fs, destino)
+        except ContenedorIlegible:
             shutil.rmtree(destino, ignore_errors=True)
-            destino = Path(tempfile.mkdtemp(prefix="norm7z_"))
-            try:
-                _extraer_7z_con_unar(ruta_fs, destino)
-            except Exception as exc_unar:
-                shutil.rmtree(destino, ignore_errors=True)
-                raise ContenedorIlegible(
-                    f"7z ilegible ({ruta_fs.name}): py7zr={exc_py7zr}; unar={exc_unar}"
-                ) from exc_py7zr
-            log.warning(
-                "7z_extraido_con_unar", archivo=str(ruta_fs), motivo_py7zr=str(exc_py7zr)[:200]
-            )
+            raise
         _abrir_lectura_arbol(destino)
 
         tam = _tam_arbol(destino)
