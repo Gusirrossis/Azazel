@@ -491,3 +491,65 @@ class TestTopeDeCacheExtraccion:
 
         monkeypatch.setattr(sh, "disk_usage", _revienta)
         assert C._tope_cache_por_defecto() == C._MINIMO_CACHE
+
+
+class TestContenedorTabularPlano:
+    """Un CSV/NDJSON de disco se explora en LOTES (como SQLite) y cada lote se sirve como
+    NDJSON. Y el guard que impide la recursión infinita del BFS."""
+
+    def test_csv_de_disco_se_explora_en_lotes_y_cubre_todo(self, tmp_path: Path) -> None:
+        import json
+
+        cab = "id,curp,nombre\n"
+        filas = [f"{i},C{i:05d},P{i}" for i in range(120)]
+        ruta = tmp_path / "padron.csv"
+        ruta.write_bytes((cab + "\n".join(filas) + "\n").encode())
+
+        r = explorar(PERILLAS, ruta, "text/csv")
+        assert r.ok and r.formato == "csv" and r.entradas
+        recogidos = []
+        for e in r.entradas:
+            fobj = abrir_entrada(
+                tmp_path, ["padron.csv", e.ruta_interna], umbral_memoria=1 << 20, limite_bytes=1 << 30
+            )
+            recogidos += [json.loads(x) for x in fobj.read().decode().splitlines() if x.strip()]
+        assert len(recogidos) == 120
+        assert recogidos[0] == {"id": "0", "curp": "C00000", "nombre": "P0"}
+        assert len({x["curp"] for x in recogidos}) == 120  # el 100 %, sin duplicar
+
+    def test_csv_dentro_de_zip_se_sirve_sin_materializar(self, tmp_path: Path) -> None:
+        import json
+
+        from normalizacion.ingesta.precalificacion import tabla_plana
+
+        contenido = (b"id,curp\n" + b"\n".join(f"{i},C{i:05d}".encode() for i in range(60)) + b"\n")
+        _zip(tmp_path / "caja.zip", {"datos.csv": contenido})
+        stream = abrir_entrada(
+            tmp_path, ["caja.zip", "datos.csv"], umbral_memoria=1 << 20, limite_bytes=1 << 30
+        )
+        ents, motivo, _ = tabla_plana.explorar(PERILLAS, stream, "csv", 0)
+        assert motivo is None and ents
+        fobj = abrir_entrada(
+            tmp_path, ["caja.zip", "datos.csv", ents[0][0]], umbral_memoria=1 << 20, limite_bytes=1 << 30
+        )
+        recs = [json.loads(x) for x in fobj.read().decode().splitlines() if x.strip()]
+        assert recs[0] == {"id": "0", "curp": "C00000"}
+
+    def test_anti_recursion_un_lote_servido_no_se_reexplora(self) -> None:
+        """EL guard: un lote (NDJSON) precalificado con `hoja` NO es contenedor; el mismo
+        contenido como archivo de ORIGEN SÍ. Sin esto, los lotes de SQLite/CSV se
+        re-explorarían en bucle infinito."""
+        from normalizacion.ingesta.precalificacion.reglas import precalificar_contenido
+
+        ndjson = b'{"id":"1","curp":"C00001"}\n{"id":"2","curp":"C00002"}\n'
+        como_lote = precalificar_contenido(
+            PERILLAS, head=ndjson, abrible=io.BytesIO(ndjson), nombre="csv-0.ndjson",
+            extension=".ndjson", ruta_relativa="x", tamano=len(ndjson),
+            permitir_contenedor_tabular=False,
+        )
+        assert not como_lote.senales.get("es_contenedor")
+        como_origen = precalificar_contenido(
+            PERILLAS, head=ndjson, abrible=io.BytesIO(ndjson), nombre="datos.ndjson",
+            extension=".ndjson", ruta_relativa="x", tamano=len(ndjson),
+        )
+        assert como_origen.senales.get("es_contenedor")

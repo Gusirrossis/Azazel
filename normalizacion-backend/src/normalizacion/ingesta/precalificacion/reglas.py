@@ -112,6 +112,14 @@ CONTENEDORES: frozenset[str] = frozenset(
     }
 )
 
+#: Contenedores de FILAS que NO tienen firma binaria: su tipo real solo se conoce tras T2
+#: (`refinar_tipo_texto`), no en T1 por magic bytes. Se mantienen SEPARADOS de
+#: `CONTENEDORES` (firmas binarias) para no perturbar su semántica ni el scoring. Un
+#: CSV/NDJSON de ORIGEN se explota en lotes como SQLite; un LOTE ya servido (que también
+#: es NDJSON) NO —eso se distingue por procedencia, no por tipo (ver `precalificar_contenido`
+#: y el flag `hoja`), o los lotes de SQLite se re-explorarían en bucle infinito.
+CONTENEDORES_TABULARES: frozenset[str] = frozenset({"text/csv", "application/x-ndjson"})
+
 DOCUMENTOS: frozenset[str] = frozenset(
     {
         "application/pdf",
@@ -592,11 +600,16 @@ def precalificar_contenido(
     extension: str | None,
     ruta_relativa: str,
     tamano: int,
+    permitir_contenedor_tabular: bool = True,
 ) -> ResultadoPrecalificacion:
     """Orquesta T0 → T1 → T2 → puntaje → router sobre contenido ya leído. Determinista.
 
     Sirve igual para archivos del disco que para entradas internas de contenedores
-    (T3), que llegan como file-like sin existir en el filesystem."""
+    (T3), que llegan como file-like sin existir en el filesystem.
+
+    `permitir_contenedor_tabular=False` en un LOTE ya servido (NDJSON): sin esto un lote
+    —que también es NDJSON— se marcaría contenedor y se re-exploraría a sí mismo en bucle
+    infinito. El llamador lo pone a False cuando la entrada viene con `origen["hoja"]`."""
     # T0 — sin tocar el contenido
     kill = evaluar_t0(
         perillas, nombre=nombre, extension=extension, ruta=ruta_relativa, tamano=tamano
@@ -637,6 +650,23 @@ def precalificar_contenido(
             )
 
     senales["extension_miente"] = bool(extension) and not _extension_coincide(extension, tipo)
+
+    # T3 tabular plano: un CSV/NDJSON de ORIGEN es un contenedor de FILAS (como SQLite,
+    # pero su tipo solo se conoce aquí, tras T2, porque no tiene magic bytes). Se explota
+    # en lotes en vez de indexarse como una muestra topada a `extractor_max_chars`. En un
+    # LOTE ya servido, el llamador pasa `permitir_contenedor_tabular=False` para que se
+    # puntúe como doc tabular normal y NO se re-explore a sí mismo (recursión infinita).
+    # `extension_miente` se calcula ANTES para que un CSV con extensión falsa deje igual
+    # su señal aunque se rute como contenedor.
+    if permitir_contenedor_tabular and tipo in CONTENEDORES_TABULARES:
+        senales["es_contenedor"] = True
+        return ResultadoPrecalificacion(
+            perillas.prioridad_contenedores,
+            RutaDecision.HOT,
+            tipo,
+            "contenedor_pendiente_t3",
+            senales,
+        )
     puntaje, dominante = puntuar(
         perillas, tipo_real=tipo, senales=senales, tamano=tamano, extension=extension
     )

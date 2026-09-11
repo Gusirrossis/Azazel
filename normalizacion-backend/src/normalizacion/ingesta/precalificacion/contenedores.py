@@ -425,6 +425,29 @@ def _explorar_sqlite(
     return ResultadoExploracion(True, None, tuple(entradas), "sqlite", topado=topado)
 
 
+def _explorar_tabular_plano(
+    perillas: PerillasFiltro, fuente: Path | IO[bytes], formato: str
+) -> ResultadoExploracion:
+    """Un CSV/NDJSON como contenedor: cada LOTE de filas es una entrada (ver `tabla_plana`).
+
+    Sin esto, el extractor tabular lee solo los primeros `calidad_max_bytes` (10 MB) y
+    trunca el texto a `extractor_max_chars`: un CSV grande se indexa como una muestra.
+    Troceado, entra entero. A diferencia de SQLite NO hace falta materializar a disco: el
+    stream anidado ya es seekable.
+    """
+    from . import tabla_plana
+
+    inicio = time.monotonic()
+    mtime_ns = int(fuente.stat().st_mtime * 1_000_000_000) if isinstance(fuente, Path) else _mtime_ns(None)
+    crudas, motivo, topado = tabla_plana.explorar(perillas, fuente, formato, mtime_ns)
+    if motivo:
+        return ResultadoExploracion(False, motivo, (), formato)
+    entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
+    if fallo := _validar_guards(perillas, entradas, [], inicio, formato):
+        return fallo
+    return ResultadoExploracion(True, None, tuple(entradas), formato, topado=topado)
+
+
 _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoExploracion]] = {
     "application/zip": _explorar_zip,
     "application/x-7z-compressed": _explorar_7z,
@@ -434,6 +457,8 @@ _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoE
     "application/x-bzip2": lambda p, f: _explorar_flujo(p, f, "bz2"),
     "application/x-xz": lambda p, f: _explorar_flujo(p, f, "xz"),
     "application/vnd.sqlite3": _explorar_sqlite,
+    "text/csv": lambda p, f: _explorar_tabular_plano(p, f, "csv"),
+    "application/x-ndjson": lambda p, f: _explorar_tabular_plano(p, f, "ndjson"),
 }
 
 
@@ -857,6 +882,20 @@ def _paso_sqlite(
                 os.unlink(temporal)
 
 
+def _paso_tabular_plano(
+    fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None
+) -> IO[bytes]:
+    """Sirve un LOTE de un CSV/NDJSON como NDJSON (ver `tabla_plana`).
+
+    A diferencia de SQLite, `tabla_plana` opera sobre un stream seekable, así que un CSV
+    anidado NO se materializa: se sirve directo del spool que trajo el paso anterior.
+    """
+    from . import tabla_plana
+
+    fuente: Path | IO[bytes] = ruta_fs if ruta_fs is not None else fobj
+    return tabla_plana.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
+
+
 def abrir_entrada(
     raiz: Path, cadena: list[str], *, umbral_memoria: int, limite_bytes: int
 ) -> IO[bytes]:
@@ -874,7 +913,14 @@ def abrir_entrada(
         for entrada in cadena[1:]:
             fobj.seek(0)
             cab = fobj.read(512)
-            if cab.startswith(b"PK\x03\x04"):
+            if entrada.startswith(("csv/", "ndjson/")):
+                # Lote de un contenedor tabular plano: `entrada` es su `ruta_interna`
+                # auto-descriptiva. CSV/NDJSON no tienen magic bytes que despachar, así
+                # que se decide por el prefijo (igual que `Lote.ruta_interna` en SQLite).
+                siguiente = _paso_tabular_plano(
+                    fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
+                )
+            elif cab.startswith(b"PK\x03\x04"):
                 siguiente = _paso_zip(fobj, entrada, umbral_memoria, limite_bytes)
             elif cab.startswith(_MAGIA_7Z):
                 siguiente = _paso_7z(

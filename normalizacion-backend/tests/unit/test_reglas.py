@@ -175,7 +175,9 @@ class TestPrecalificarArchivo:
         assert r.puntaje >= PERILLAS.umbral_hot
 
     def test_extension_mentirosa_no_engana(self, tmp_path: Path) -> None:
-        """INVARIANTE: un .jpg que ES un CSV se va a HOT como tabular (riesgo F4)."""
+        """INVARIANTE: un .jpg que ES un CSV se va a HOT como CONTENEDOR tabular —se
+        explota en lotes de filas, no se indexa como muestra topada— y no como imagen
+        (riesgo F4). La señal de que la extensión miente se conserva igual."""
         ruta = self._csv_en(tmp_path, "vacaciones.jpg")
         r = precalificar_archivo(
             PERILLAS,
@@ -188,6 +190,7 @@ class TestPrecalificarArchivo:
         assert r.ruta is RutaDecision.HOT
         assert r.tipo_real == "text/csv"
         assert r.senales["extension_miente"] is True
+        assert r.senales["es_contenedor"] is True  # ahora se explota en lotes (tabla_plana)
 
     def test_jpeg_real_va_a_cold(self, tmp_path: Path) -> None:
         """Lista BLANCA (default): lo que no es de interés va a frío reversible."""
