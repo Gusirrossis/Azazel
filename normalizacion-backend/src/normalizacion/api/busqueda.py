@@ -213,9 +213,13 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
         cuerpo["search_after"] = solicitud.cursor
     if solicitud.facetas:
         cuerpo["aggs"] = {
-            "por_tipo": {"terms": {"field": "tipo_real", "size": 20}},
-            "por_extension": {"terms": {"field": "extension", "size": 20}},
-            "por_disco": {"terms": {"field": "disco_id", "size": 20}},
+            # `size` holgado: `tipo_real`/`extension` tienen cardinalidad acotada (MIMEs,
+            # extensiones) pero un top-20 omitía en silencio las categorías fuera de los 20
+            # más frecuentes — un consumidor que inventaríe el corpus veía menos tipos de
+            # los que hay. 10 000 cubre la cardinalidad real sin coste apreciable.
+            "por_tipo": {"terms": {"field": "tipo_real", "size": 10000}},
+            "por_extension": {"terms": {"field": "extension", "size": 10000}},
+            "por_disco": {"terms": {"field": "disco_id", "size": 10000}},
         }
     return cuerpo
 
@@ -317,8 +321,10 @@ def estadisticas(cliente: Any, config: Config) -> Estadisticas:
             "track_total_hits": True,
             "aggs": {
                 "bytes": {"sum": {"field": "tamano"}},
-                "por_tipo": {"terms": {"field": "tipo_real", "size": 20}},
-                "por_disco": {"terms": {"field": "disco_id", "size": 20}},
+                # `size` holgado: el desglose por tipo real ya no omite en silencio los
+                # tipos fuera del top-20 (cardinalidad de `tipo_real` acotada).
+                "por_tipo": {"terms": {"field": "tipo_real", "size": 10000}},
+                "por_disco": {"terms": {"field": "disco_id", "size": 10000}},
             },
         },
     )

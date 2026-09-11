@@ -19,9 +19,6 @@ from normalizacion.core import identidad_columnas
 from . import ContextoExtraccion, ResultadoExtraccion, registrar
 
 _MAX_COLUMNAS_DETALLE = 100
-#: Columnas que se vuelcan al texto por fila. Con 300 columnas, meterlas todas gasta el
-#: presupuesto en dos filas; con las 40 primeras ORDENADAS POR IDENTIDAD entran cientos.
-_MAX_COLUMNAS_TEXTO = 40
 
 
 def _texto_de_filas(df: pl.DataFrame, presupuesto: int) -> tuple[str, bool]:
@@ -32,13 +29,15 @@ def _texto_de_filas(df: pl.DataFrame, presupuesto: int) -> tuple[str, bool]:
     `anclas.buscar_en_texto` no tenía dónde mirar: 36.657 CSV indexados sin una sola
     CURP detectada, aunque las tuvieran en cada fila.
 
-    Las columnas van ordenadas por identidad (⚙ `core/identidad_columnas`): si el
-    presupuesto se acaba, que se acabe habiendo escrito la CURP y el nombre, no el
-    campo de observaciones.
+    TODAS las columnas se vuelcan, ordenadas por identidad (⚙ `core/identidad_columnas`):
+    un dato en la columna 41 (un correo en `observaciones`) también tiene que ser
+    buscable. El orden por identidad solo decide el reparto del presupuesto de chars —si
+    se acaba, que se acabe habiendo escrito la CURP y el nombre, no las observaciones—,
+    no qué columnas entran. Incluirlas todas no añade RAM: el `df` ya está en memoria.
     """
     if df.height == 0 or df.width == 0:
         return "", False
-    columnas = identidad_columnas.ordenar_por_identidad(list(df.columns))[:_MAX_COLUMNAS_TEXTO]
+    columnas = identidad_columnas.ordenar_por_identidad(list(df.columns))
     partes = [" | ".join(columnas)]
     largo = len(partes[0])
     truncado = False

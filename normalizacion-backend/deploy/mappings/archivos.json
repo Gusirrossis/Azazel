@@ -36,7 +36,7 @@
             "match_mapping_type": "string",
             "mapping": {
               "type": "keyword",
-              "ignore_above": 1024,
+              "ignore_above": 32766,
               "fields": { "texto": { "type": "text" } }
             }
           }
@@ -48,7 +48,7 @@
         "nombre": { "type": "wildcard" },
         "ruta_original": {
           "type": "wildcard",
-          "fields": { "exacta": { "type": "keyword", "ignore_above": 8192 } }
+          "fields": { "exacta": { "type": "keyword", "ignore_above": 32766 } }
         },
         "extension": { "type": "keyword" },
         "tipo_real": { "type": "keyword" },

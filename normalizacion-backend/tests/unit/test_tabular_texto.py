@@ -158,3 +158,40 @@ class TestJson:
         lineas = ("\n".join(json.dumps(f) for f in filas)).encode()
         r = extraer_tabular(_ctx(lineas, "application/x-ndjson"))
         assert r.texto and CURP in r.texto
+
+
+class TestTodasLasColumnas:
+    """No se recortan las columnas volcadas al texto: un dato en la columna 55 (un
+    correo en «observaciones») también tiene que ser buscable. El tope viejo `[:40]`
+    dejaba mudas las columnas 41+."""
+
+    def test_una_columna_tardia_tambien_llega_al_texto(self) -> None:
+        cols = [f"col{i:02d}" for i in range(60)]
+        cab = ",".join(cols) + "\n"
+        valores = [f"v{i:02d}" for i in range(60)]
+        valores[55] = "hallame@ejemplo.mx"  # ninguna señal de identidad: queda al final
+        fila = ",".join(valores) + "\n"
+        r = extraer_tabular(_ctx((cab + fila).encode(), "text/csv"))
+        assert r.texto and "hallame@ejemplo.mx" in r.texto
+
+
+class TestEncoding:
+    """El texto no puede perder los acentos por adivinar mal el encoding. Un padrón en
+    Latin-1/CP1252 (lo normal en México) decodificado como UTF-8 con `errors="replace"`
+    convertía «MUÑOZ» en «MU�OZ»: la CURP (ASCII) sobrevivía y el nombre se perdía
+    en silencio."""
+
+    def test_latin1_conserva_los_acentos(self) -> None:
+        from normalizacion.ingesta.workers.extractores.texto import extraer_texto
+
+        datos = "JOSÉ MUÑOZ PEÑA".encode("latin-1")
+        r = extraer_texto(_ctx(datos, "text/plain"))
+        assert r.texto is not None
+        assert "MUÑOZ" in r.texto
+        assert "�" not in r.texto
+
+    def test_utf8_sigue_funcionando(self) -> None:
+        from normalizacion.ingesta.workers.extractores.texto import extraer_texto
+
+        r = extraer_texto(_ctx("JOSÉ MUÑOZ".encode(), "text/plain"))
+        assert r.texto and "MUÑOZ" in r.texto
