@@ -79,6 +79,11 @@ class RespuestaBusqueda(BaseModel):
     # y no hubo ninguna. La diferencia importa para quien federa: necesita distinguir
     # "no lo busqué" de "no hay nadie con ese nombre".
     entidades: list[dict[str, Any]] | None = None
+    # La consulta se cortó por timeout o algún shard no respondió: estos resultados son
+    # INCOMPLETOS. Existe para quien federa: sin esto, una respuesta parcial (menos
+    # coincidencias de las que hay, y una paginación por cursor que puede saltarse franjas)
+    # se toma por una copia entera de la base — «me faltan personas que sí estaban».
+    parcial: bool = False
 
 
 class Salud(BaseModel):

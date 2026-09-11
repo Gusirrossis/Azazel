@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from normalizacion.api.busqueda import construir_consulta
+from normalizacion.api.busqueda import buscar, construir_consulta
 from normalizacion.api.esquemas import SolicitudBusqueda
+from normalizacion.core.config import Config
 
 
 class TestConstruccion:
@@ -283,3 +284,36 @@ class TestPaginaDe500:
         from normalizacion.core.config import Config
 
         assert Config(_env_file=None).api_pagina_max >= 500
+
+
+class _ClienteFake:
+    def __init__(self, respuesta: dict) -> None:
+        self.respuesta = respuesta
+
+    def search(self, **_kwargs: object) -> dict:
+        return self.respuesta
+
+
+def _respuesta(*, timed_out: bool = False, failed: int = 0) -> dict:
+    return {
+        "hits": {"hits": [], "total": {"value": 0}},
+        "timed_out": timed_out,
+        "_shards": {"total": 2, "successful": 2 - failed, "failed": failed},
+    }
+
+
+class TestParcial:
+    """`buscar` tiene que SEÑALAR resultados incompletos: para quien federa, una copia
+    parcial dada por entera es «me faltan personas que sí estaban»."""
+
+    def test_timeout_marca_parcial(self) -> None:
+        r = buscar(_ClienteFake(_respuesta(timed_out=True)), Config(_env_file=None), SolicitudBusqueda())
+        assert r.parcial is True
+
+    def test_shard_fallido_marca_parcial(self) -> None:
+        r = buscar(_ClienteFake(_respuesta(failed=1)), Config(_env_file=None), SolicitudBusqueda())
+        assert r.parcial is True
+
+    def test_una_respuesta_completa_no_es_parcial(self) -> None:
+        r = buscar(_ClienteFake(_respuesta()), Config(_env_file=None), SolicitudBusqueda())
+        assert r.parcial is False

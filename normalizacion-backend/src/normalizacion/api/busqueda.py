@@ -248,6 +248,13 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
     else:
         respuesta = cliente.search(index=config.indice_alias, body=cuerpo)
 
+    # ¿Resultados INCOMPLETOS? OpenSearch con timeout devuelve lo que alcanzó y marca
+    # `timed_out`; un shard que falla cuenta en `_shards.failed`. (`skipped` NO es pérdida:
+    # son shards podados en can-match por no poder casar.) Sin leer esto, `buscar` armaba
+    # la respuesta como si estuviera completa.
+    shards = respuesta.get("_shards", {})
+    parcial = bool(respuesta.get("timed_out")) or bool(shards.get("failed"))
+
     hits = respuesta["hits"]["hits"]
     facetas: dict[str, dict[str, int]] | None = None
     if solicitud.facetas and "aggregations" in respuesta:
@@ -278,6 +285,7 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         pit_id=respuesta.get("pit_id", pit_id),
         origen=config.despliegue.nodo_id,
         entidades=entidades,
+        parcial=parcial,
     )
 
 
