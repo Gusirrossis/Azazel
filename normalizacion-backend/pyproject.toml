@@ -36,6 +36,10 @@ workers = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "pillow>=10.3",
+    # Formatos de oficina que estaban mudos (RTF, ODT/ODS/ODP, PPTX). Python puro.
+    "striprtf>=0.0.29",
+    "odfpy>=1.4",
+    "python-pptx>=1.0",
 ]
 # OCR de imágenes (Fase 1). Opcional: requiere ADEMÁS el binario del sistema
 # `tesseract` + idiomas (macOS: brew install tesseract tesseract-lang;
