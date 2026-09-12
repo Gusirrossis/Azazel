@@ -141,8 +141,7 @@ class TestSieteZip:
 
         def _contando(ruta_fs: Path) -> Path:
             # cuenta solo los MISS reales (extracción); los HIT no re-extraen
-            antes = str(ruta_fs.resolve()), ruta_fs.stat().st_size, ruta_fs.stat().st_mtime_ns
-            hit = antes in C._CACHE_7Z
+            hit = C._clave_persistente(ruta_fs) in C._CACHE_7Z
             resultado = original(ruta_fs)
             if not hit:
                 extracciones["n"] += 1
@@ -158,6 +157,37 @@ class TestSieteZip:
                     assert f.read() == f"contenido-{i}".encode()
             assert extracciones["n"] == 1  # UNA extracción para las 5 entradas
             assert len(C._CACHE_7Z) == 1
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_la_cache_persiste_entre_procesos(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """EL fix del impuesto de re-extracción: un proceso NUEVO reusa la extracción en
+        DISCO en vez de re-descomprimir. Se simula el 'proceso nuevo' vaciando solo el memo
+        en proceso, dejando el disco intacto."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
+        ruta = self._crear_7z(tmp_path / "persist.7z", {"docs/a.txt": b"contenido real"})
+        extracciones = {"n": 0}
+        original = C._extraer_7z_a_disco
+
+        def _contando(rf: Path, dst: Path) -> None:
+            extracciones["n"] += 1
+            original(rf, dst)
+
+        monkeypatch.setattr(C, "_extraer_7z_a_disco", _contando)
+        try:
+            d1 = C._dir_7z_extraido(ruta)
+            assert (d1 / "docs" / "a.txt").read_bytes() == b"contenido real"
+            assert extracciones["n"] == 1
+            assert (d1 / C._MARCADOR).exists()  # marcador de completitud
+            C._CACHE_7Z.clear()  # "proceso nuevo": memo vacío, disco intacto
+            d2 = C._dir_7z_extraido(ruta)
+            assert d2 == d1  # mismo dir determinista por hash
+            assert extracciones["n"] == 1  # NO re-extrajo: reusó el disco
         finally:
             C._limpiar_cache_7z()
 

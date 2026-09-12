@@ -21,6 +21,7 @@ import atexit
 import bz2
 import contextlib
 import gzip
+import hashlib
 import lzma
 import os
 import shutil
@@ -30,7 +31,6 @@ import tempfile
 import threading
 import time
 import zipfile
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -510,13 +510,24 @@ def explorar(perillas: PerillasFiltro, fuente: Path | IO[bytes], tipo: str) -> R
 # BLOQUE ENTERO para sacar UNA sola entrada. Extraer entrada-por-entrada es O(N²):
 # con 19 652 PDFs en un bloque de 458 MB, cada lectura re-descomprime los 458 MB
 # → el pipeline nunca avanza. La cura: extraer el archivo COMPLETO una única vez a
-# un temporal y servir cada entrada como una lectura de disco (O(N)). La caché es
-# por PROCESO (los workers son procesos separados; cada uno extrae una vez) y tiene
-# un tope de disco con evicción LRU. Se limpia al salir el proceso.
+# disco y servir cada entrada como una lectura (O(N)).
+#
+# La caché es PERSISTENTE y COMPARTIDA en disco (antes era por-proceso y se borraba al
+# salir). El dir de un contenedor se nombra por el HASH de (ruta, tamaño, mtime), así que
+# un proceso NUEVO —o un reinicio— REUSA lo ya extraído en vez de re-descomprimir 261 GB
+# desde cero. Medido en `vps-storage-01`: cada reinicio pagaba ~2 h de re-extracción y el
+# nodo pasaba más tiempo re-extrayendo lo mismo que procesando.
+
+_CACHE_BASE = Path(
+    os.environ.get("NORM_T3_CACHE_DIR") or (Path(tempfile.gettempdir()) / "norm7z_cache")
+)
+_MARCADOR = ".norm_completo"  # presente ⇒ la extracción de ese dir terminó ENTERA
+_ARCHIVO_TAM = ".norm_tam"  # tamaño del árbol en bytes: evictar sin re-recorrerlo
 
 _CACHE_7Z_LOCK = threading.Lock()
-_CACHE_7Z: OrderedDict[tuple[str, int, int], tuple[Path, int]] = OrderedDict()
-_CACHE_7Z_BYTES = 0
+#: Memo EN-PROCESO (hash → dir persistente): evita re-hashear/re-stat dentro de un mismo
+#: proceso. La fuente de verdad es el dir en disco, COMPARTIDO entre procesos.
+_CACHE_7Z: dict[str, Path] = {}
 _MINIMO_CACHE = 5 * 1024**3
 
 
@@ -549,14 +560,79 @@ _CACHE_7Z_MAX_BYTES = int(
 )
 
 
+def _limpiar_tmp_del_proceso() -> None:
+    """Al salir borra SOLO los `.tmp.<pid>` a medias de ESTE proceso (extracciones que no
+    llegaron al rename atómico). Los dirs COMPLETOS y compartidos SE QUEDAN: son la caché
+    persistente que evita re-extraer en el próximo arranque."""
+    with contextlib.suppress(OSError):
+        for d in _CACHE_BASE.glob(f".*.tmp.{os.getpid()}"):
+            shutil.rmtree(d, ignore_errors=True)
+
+
+atexit.register(_limpiar_tmp_del_proceso)
+
+
 def _limpiar_cache_7z() -> None:
+    """Vacía la caché de extracción ENTERA: el memo en proceso Y los dirs persistentes en
+    disco. Para tests y para un vaciado manual; el pipeline normal NUNCA la llama —la caché
+    persiste a propósito entre procesos y reinicios—."""
     with _CACHE_7Z_LOCK:
-        for destino, _ in _CACHE_7Z.values():
-            shutil.rmtree(destino, ignore_errors=True)
         _CACHE_7Z.clear()
+    with contextlib.suppress(OSError):
+        if _CACHE_BASE.exists():
+            shutil.rmtree(_CACHE_BASE, ignore_errors=True)
 
 
-atexit.register(_limpiar_cache_7z)
+def _clave_persistente(ruta_fs: Path) -> str:
+    """Hash determinista de (ruta resuelta, tamaño, mtime): el mismo contenedor cae SIEMPRE
+    en el mismo dir, así que cualquier proceso lo reusa. Si el archivo cambia (mtime/tam),
+    la clave cambia y se re-extrae — correcto."""
+    st = ruta_fs.stat()
+    material = f"{ruta_fs.resolve()}\0{st.st_size}\0{st.st_mtime_ns}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
+def _tam_guardado(d: Path) -> int:
+    try:
+        return int((d / _ARCHIVO_TAM).read_text())
+    except (OSError, ValueError):  # dir de una versión anterior: recorrerlo una vez
+        return _tam_arbol(d)
+
+
+def _tocar(d: Path) -> None:
+    """Marca el dir como usado reciente (LRU por mtime): un dir en uso no se evicta primero."""
+    with contextlib.suppress(OSError):
+        os.utime(d, None)
+
+
+def _evictar_si_hace_falta(reservar: int) -> None:
+    """LRU por mtime sobre la caché COMPARTIDA: quita los dirs completos más antiguos hasta
+    que quepa `reservar`. Best-effort y tolerante a carreras —otro proceso puede estar
+    leyendo uno; si desaparece, la extracción es idempotente y se rehace—. Solo toca dirs
+    CON marcador (nunca un tmp en curso), y lee el tamaño de `.norm_tam` sin re-recorrer."""
+    try:
+        dirs = [d for d in _CACHE_BASE.iterdir() if d.is_dir() and (d / _MARCADOR).exists()]
+    except OSError:
+        return
+    total = sum(_tam_guardado(d) for d in dirs)
+    if total + reservar <= _CACHE_7Z_MAX_BYTES:
+        return
+    for d in sorted(dirs, key=lambda p: p.stat().st_mtime):
+        if total + reservar <= _CACHE_7Z_MAX_BYTES:
+            break
+        t = _tam_guardado(d)
+        shutil.rmtree(d, ignore_errors=True)
+        total -= t
+        # Desalojar TIENE que verse: si el conjunto de trabajo no cabe, esto ocurre en cada
+        # salto entre contenedores y desde fuera se ve un nodo con el disco al máximo que no
+        # avanza. Diez horas así en `vps-storage-01` antes de que nadie supiera por qué.
+        log.warning(
+            "cache_7z_evict",
+            dir=d.name,
+            bytes_desalojados=t,
+            tope=_CACHE_7Z_MAX_BYTES,
+            pista="si se repite, el tope no llega al conjunto de trabajo",
+        )
 
 
 def _tam_arbol(raiz: Path) -> int:
@@ -683,46 +759,51 @@ def _dir_7z_extraido(ruta_fs: Path) -> Path:
     Extrae con 7zz (streaming a disco), NO con py7zr: su `extractall` descomprime el
     bloque solid en RAM y dispara el OOM del contenedor sobre archivos grandes.
     """
-    st = ruta_fs.stat()
-    clave = (str(ruta_fs.resolve()), st.st_size, st.st_mtime_ns)
-    global _CACHE_7Z_BYTES
+    clave = _clave_persistente(ruta_fs)
     with _CACHE_7Z_LOCK:
-        cacheado = _CACHE_7Z.get(clave)
-        if cacheado is not None and cacheado[0].is_dir():
-            _CACHE_7Z.move_to_end(clave)
-            return cacheado[0]
+        memo = _CACHE_7Z.get(clave)
+        if memo is not None and (memo / _MARCADOR).exists():
+            return memo
 
-        destino = Path(tempfile.mkdtemp(prefix="norm7z_"))
+    destino = _CACHE_BASE / clave
+    if not (destino / _MARCADOR).exists():
+        _extraer_a_persistente(ruta_fs, clave, destino)
+    _tocar(destino)
+    with _CACHE_7Z_LOCK:
+        _CACHE_7Z[clave] = destino
+    return destino
+
+
+def _extraer_a_persistente(ruta_fs: Path, clave: str, destino: Path) -> None:
+    """Extrae a un tmp propio y lo renombra ATÓMICAMENTE a `destino`. Si otro proceso ganó
+    la carrera (el destino ya tiene marcador), descarta su tmp y usa el del otro. Un
+    `destino` sin marcador es una extracción muerta de un proceso anterior → se rehace.
+
+    El marcador y el tamaño se escriben DENTRO del tmp antes del rename, así que un
+    `destino` renombrado está SIEMPRE completo: ningún proceso ve una extracción a medias.
+    """
+    _CACHE_BASE.mkdir(parents=True, exist_ok=True)
+    marcador = destino / _MARCADOR
+    if destino.exists() and not marcador.exists():
+        shutil.rmtree(destino, ignore_errors=True)
+    _evictar_si_hace_falta(reservar=ruta_fs.stat().st_size * 4)
+    tmp = _CACHE_BASE / f".{clave}.tmp.{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        _extraer_7z_a_disco(ruta_fs, tmp)
+        _abrir_lectura_arbol(tmp)
+        (tmp / _ARCHIVO_TAM).write_text(str(_tam_arbol(tmp)))
+        (tmp / _MARCADOR).write_bytes(b"")  # COMPLETO: marcado ANTES del rename atómico
         try:
-            _extraer_7z_a_disco(ruta_fs, destino)
-        except ContenedorIlegible:
-            shutil.rmtree(destino, ignore_errors=True)
-            raise
-        _abrir_lectura_arbol(destino)
-
-        tam = _tam_arbol(destino)
-        _CACHE_7Z[clave] = (destino, tam)
-        _CACHE_7Z_BYTES += tam
-        # Evicción LRU por presupuesto de disco (jamás desaloja el recién creado)
-        while _CACHE_7Z_BYTES > _CACHE_7Z_MAX_BYTES and len(_CACHE_7Z) > 1:
-            vieja_clave, (viejo_dir, viejo_tam) = next(iter(_CACHE_7Z.items()))
-            if vieja_clave == clave:
-                break
-            _CACHE_7Z.popitem(last=False)
-            _CACHE_7Z_BYTES -= viejo_tam
-            shutil.rmtree(viejo_dir, ignore_errors=True)
-            # Desalojar TIENE que verse. Si el conjunto de trabajo no cabe, esto ocurre
-            # en cada salto entre contenedores y lo que se ve desde fuera es un nodo
-            # con el disco al máximo que no avanza — sin un solo error. Diez horas así
-            # en `vps-storage-01` antes de que nadie supiera por qué.
-            log.warning(
-                "cache_extraccion_desalojada",
-                desalojado=str(vieja_clave[0]),
-                bytes_desalojados=viejo_tam,
-                tope=_CACHE_7Z_MAX_BYTES,
-                pista="si se repite, el tope no llega al conjunto de trabajo",
-            )
-        return destino
+            os.rename(tmp, destino)  # atómico en el mismo FS; falla si otro proceso ganó
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if not marcador.exists():
+                raise
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
 
 
 # ------------------------------------------------------------------ abrir entradas
