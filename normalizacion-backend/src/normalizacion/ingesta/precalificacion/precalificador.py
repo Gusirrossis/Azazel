@@ -54,7 +54,7 @@ def _filas_de_entradas(
     # marcarlos `hoja`, un lote NDJSON se volvería a detectar como contenedor tabular y se
     # re-exploraría a sí mismo → recursión infinita en el BFS de la cola. El flag viaja en
     # `origen_contenedor` (Jsonb) y lo lee `_procesar_fila` para NO re-explorar.
-    es_hoja = exploracion.formato in ("sqlite", "csv", "ndjson")
+    es_hoja = exploracion.formato in ("sqlite", "csv", "ndjson", "texto")
     nuevas: list[cola.FilaCatalogo] = []
     for entrada in exploracion.entradas:
         ruta_virtual = f"{fila.ruta}!{entrada.ruta_interna}"
@@ -124,9 +124,9 @@ def _procesar_fila(
             extension=fila.extension,
             ruta_relativa=fila.ruta,
             tamano=fila.tamano,
-            # Un lote ya servido (NDJSON) NO se re-explora como contenedor tabular: se
-            # puntúa como doc tabular y lo extrae `tabular.py`. Sin esto, bucle infinito.
-            permitir_contenedor_tabular=not (origen and origen.get("hoja")),
+            # Un trozo ya servido (lote NDJSON, slice de texto) NO se re-explora como
+            # contenedor: se puntúa como doc y lo extrae su plugin. Sin esto, bucle infinito.
+            permitir_contenedor_hoja=not (origen and origen.get("hoja")),
         )
         if not resultado.senales.get("es_contenedor"):
             return resultado, []

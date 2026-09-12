@@ -182,6 +182,13 @@ class PerillasFiltro(BaseModel):
     # es `t3_entradas_max`, para no tener dos límites que se pisen.
     t3_sqlite_lotes_max: int = 1_000_000
 
+    # Umbral para trocear TEXTO grande (text/*, SQL, XML, rfc822) en trozos-contenedor
+    # (ver `texto_lotes`). Por debajo, el archivo cabe bajo `extractor_max_chars` y se
+    # indexa como doc único —partirlo no gana nada y explotar cada .txt chico duplicaría
+    # el trabajo—. = `extractor_max_chars` en bytes. NO aplica a CSV/NDJSON (siempre
+    # contenedor: chico = 1 lote = 1 doc).
+    t3_troceo_min_bytes: int = 100_000
+
     # K5 - tamano del head en T2 (mas = mejores senales, mas I/O por miles de millones)
     head_t2_bytes: int = Field(default=65_536, ge=8_192)
 
@@ -192,7 +199,7 @@ class PerillasFiltro(BaseModel):
     lineas_consistencia_csv: int = 10
 
     # ⚙ K7 — pesos del puntaje (señal → puntos). CUALQUIER cambio = nueva version_filtro.
-    version_filtro: str = "reglas-v4-imagen-ocr"
+    version_filtro: str = "reglas-v5-troceo-texto"
     pesos: dict[str, int] = Field(
         default_factory=lambda: {
             "tabular": 35,

@@ -585,7 +585,7 @@ class TestContenedorTabularPlano:
         como_lote = precalificar_contenido(
             PERILLAS, head=ndjson, abrible=io.BytesIO(ndjson), nombre="csv-0.ndjson",
             extension=".ndjson", ruta_relativa="x", tamano=len(ndjson),
-            permitir_contenedor_tabular=False,
+            permitir_contenedor_hoja=False,
         )
         assert not como_lote.senales.get("es_contenedor")
         como_origen = precalificar_contenido(
@@ -593,3 +593,44 @@ class TestContenedorTabularPlano:
             extension=".ndjson", ruta_relativa="x", tamano=len(ndjson),
         )
         assert como_origen.senales.get("es_contenedor")
+
+
+class TestContenedorTexto:
+    """Un texto/log/SQL grande se trocea en ventanas de bytes (ver `texto_lotes`) y cada
+    trozo se sirve como texto crudo. Con el guard anti-recursión y el gate de tamaño."""
+
+    def test_texto_grande_se_explora_en_trozos_y_cubre_todo(self, tmp_path: Path) -> None:
+        contenido = (
+            "\n".join(f"linea {i} con bastante relleno para superar los 100k bytes" for i in range(4000))
+            + "\n"
+        ).encode()
+        assert len(contenido) > 100_000
+        ruta = tmp_path / "grande.txt"
+        ruta.write_bytes(contenido)
+
+        r = explorar(PERILLAS, ruta, "text/plain")
+        assert r.ok and r.formato == "texto" and len(r.entradas) > 1
+        recuperado = b""
+        for e in r.entradas:
+            fobj = abrir_entrada(
+                tmp_path, ["grande.txt", e.ruta_interna], umbral_memoria=1 << 20, limite_bytes=1 << 30
+            )
+            recuperado += fobj.read()
+        assert recuperado == contenido  # el 100 % del contenido, sin pérdida ni duplicado
+
+    def test_tipo_text_arbitrario_tambien_se_trocea(self, tmp_path: Path) -> None:
+        """`text/x-c`, `text/x-php`… cualquier text/* es troceable por el fallback."""
+        ruta = tmp_path / "x.c"
+        ruta.write_bytes(b"int main(){}\n" * 12000)  # >100k
+        r = explorar(PERILLAS, ruta, "text/x-c")
+        assert r.ok and r.formato == "texto" and r.entradas
+
+    def test_anti_recursion_un_trozo_servido_no_se_reexplora(self) -> None:
+        from normalizacion.ingesta.precalificacion.reglas import precalificar_contenido
+
+        trozo = b"un trozo de texto plano\ncon varias lineas cortas\ny nada mas\n"
+        como_trozo = precalificar_contenido(
+            PERILLAS, head=trozo, abrible=io.BytesIO(trozo), nombre="parte-0.txt",
+            extension=".txt", ruta_relativa="x", tamano=len(trozo), permitir_contenedor_hoja=False,
+        )
+        assert not como_trozo.senales.get("es_contenedor")

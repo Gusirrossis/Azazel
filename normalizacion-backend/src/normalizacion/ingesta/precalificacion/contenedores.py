@@ -475,6 +475,23 @@ def _explorar_tabular_plano(
     return ResultadoExploracion(True, None, tuple(entradas), formato, topado=topado)
 
 
+def _explorar_texto(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> ResultadoExploracion:
+    """Un texto grande (text/*, SQL, XML, rfc822) como contenedor de TROZOS de bytes (ver
+    `texto_lotes`). Sin esto, `texto.py` lee solo `extractor_max_chars*4` bytes y trunca a
+    100k chars: un dump/log/boletín grande pierde todo lo posterior."""
+    from . import texto_lotes
+
+    inicio = time.monotonic()
+    mtime_ns = int(fuente.stat().st_mtime * 1_000_000_000) if isinstance(fuente, Path) else _mtime_ns(None)
+    crudas, motivo, topado = texto_lotes.explorar(perillas, fuente, mtime_ns)
+    if motivo:
+        return ResultadoExploracion(False, motivo, (), "texto")
+    entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
+    if fallo := _validar_guards(perillas, entradas, inicio, "texto"):
+        return fallo
+    return ResultadoExploracion(True, None, tuple(entradas), "texto", topado=topado)
+
+
 _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoExploracion]] = {
     "application/zip": _explorar_zip,
     "application/x-7z-compressed": _explorar_7z,
@@ -486,12 +503,18 @@ _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoE
     "application/vnd.sqlite3": _explorar_sqlite,
     "text/csv": lambda p, f: _explorar_tabular_plano(p, f, "csv"),
     "application/x-ndjson": lambda p, f: _explorar_tabular_plano(p, f, "ndjson"),
+    "text/plain": _explorar_texto,
+    "application/sql": _explorar_texto,
+    "message/rfc822": _explorar_texto,
+    "application/xml": _explorar_texto,
 }
 
 
 def explorar(perillas: PerillasFiltro, fuente: Path | IO[bytes], tipo: str) -> ResultadoExploracion:
     """Lista el contenedor y valida guards. NUNCA lanza por archivo hostil: devuelve flag."""
     explorador = _EXPLORADORES.get(tipo)
+    if explorador is None and tipo.startswith("text/"):
+        explorador = _explorar_texto  # text/x-c, text/x-php… cualquier text/* es troceable
     if explorador is None:
         return ResultadoExploracion(False, "formato_no_soportado", (), tipo)
     try:
@@ -1004,6 +1027,17 @@ def _paso_tabular_plano(
     return tabla_plana.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
 
 
+def _paso_texto(
+    fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None
+) -> IO[bytes]:
+    """Sirve un TROZO de un texto grande como texto crudo (ver `texto_lotes`). Opera sobre
+    el stream seekable directo: un texto anidado NO se materializa."""
+    from . import texto_lotes
+
+    fuente: Path | IO[bytes] = ruta_fs if ruta_fs is not None else fobj
+    return texto_lotes.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
+
+
 def abrir_entrada(
     raiz: Path, cadena: list[str], *, umbral_memoria: int, limite_bytes: int
 ) -> IO[bytes]:
@@ -1026,6 +1060,11 @@ def abrir_entrada(
                 # auto-descriptiva. CSV/NDJSON no tienen magic bytes que despachar, así
                 # que se decide por el prefijo (igual que `Lote.ruta_interna` en SQLite).
                 siguiente = _paso_tabular_plano(
+                    fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
+                )
+            elif entrada.startswith("texto/"):
+                # Trozo de un texto grande troceado (ver `texto_lotes`), también por prefijo.
+                siguiente = _paso_texto(
                     fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
                 )
             elif cab.startswith(b"PK\x03\x04"):

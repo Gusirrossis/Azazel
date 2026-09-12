@@ -120,6 +120,15 @@ CONTENEDORES: frozenset[str] = frozenset(
 #: y el flag `hoja`), o los lotes de SQLite se re-explorarían en bucle infinito.
 CONTENEDORES_TABULARES: frozenset[str] = frozenset({"text/csv", "application/x-ndjson"})
 
+#: Texto grande que se trocea en VENTANAS de bytes (ver `texto_lotes`) para no truncarlo a
+#: `extractor_max_chars`. Como no tienen firma binaria, se detectan tras T2. A diferencia de
+#: los tabulares, SOLO se trocean por encima de `t3_troceo_min_bytes` (un texto que ya cabe
+#: bajo el límite de chars no gana nada partido, y explotar cada `.txt` chico duplicaría el
+#: trabajo de todo el corpus de texto). `text/*` se cubre por prefijo, no solo estos.
+CONTENEDORES_TEXTO: frozenset[str] = frozenset(
+    {"text/plain", "application/sql", "message/rfc822", "application/xml"}
+)
+
 DOCUMENTOS: frozenset[str] = frozenset(
     {
         "application/pdf",
@@ -600,16 +609,17 @@ def precalificar_contenido(
     extension: str | None,
     ruta_relativa: str,
     tamano: int,
-    permitir_contenedor_tabular: bool = True,
+    permitir_contenedor_hoja: bool = True,
 ) -> ResultadoPrecalificacion:
     """Orquesta T0 → T1 → T2 → puntaje → router sobre contenido ya leído. Determinista.
 
     Sirve igual para archivos del disco que para entradas internas de contenedores
     (T3), que llegan como file-like sin existir en el filesystem.
 
-    `permitir_contenedor_tabular=False` en un LOTE ya servido (NDJSON): sin esto un lote
-    —que también es NDJSON— se marcaría contenedor y se re-exploraría a sí mismo en bucle
-    infinito. El llamador lo pone a False cuando la entrada viene con `origen["hoja"]`."""
+    `permitir_contenedor_hoja=False` en un LOTE/trozo ya servido (NDJSON, slice de texto…):
+    sin esto un trozo —que también es texto/NDJSON— se marcaría contenedor y se
+    re-exploraría a sí mismo en bucle infinito. El llamador lo pone a False cuando la
+    entrada viene con `origen["hoja"]`."""
     # T0 — sin tocar el contenido
     kill = evaluar_t0(
         perillas, nombre=nombre, extension=extension, ruta=ruta_relativa, tamano=tamano
@@ -651,22 +661,27 @@ def precalificar_contenido(
 
     senales["extension_miente"] = bool(extension) and not _extension_coincide(extension, tipo)
 
-    # T3 tabular plano: un CSV/NDJSON de ORIGEN es un contenedor de FILAS (como SQLite,
-    # pero su tipo solo se conoce aquí, tras T2, porque no tiene magic bytes). Se explota
-    # en lotes en vez de indexarse como una muestra topada a `extractor_max_chars`. En un
-    # LOTE ya servido, el llamador pasa `permitir_contenedor_tabular=False` para que se
-    # puntúe como doc tabular normal y NO se re-explore a sí mismo (recursión infinita).
-    # `extension_miente` se calcula ANTES para que un CSV con extensión falsa deje igual
-    # su señal aunque se rute como contenedor.
-    if permitir_contenedor_tabular and tipo in CONTENEDORES_TABULARES:
-        senales["es_contenedor"] = True
-        return ResultadoPrecalificacion(
-            perillas.prioridad_contenedores,
-            RutaDecision.HOT,
-            tipo,
-            "contenedor_pendiente_t3",
-            senales,
-        )
+    # T3 contenedor-de-hoja: un archivo cuyo contenido se trocea en trozos, cada uno su
+    # propio doc, en vez de indexarse como una muestra topada a `extractor_max_chars`. Su
+    # tipo solo se conoce aquí (tras T2, sin magic bytes). En un TROZO ya servido el
+    # llamador pasa `permitir_contenedor_hoja=False` para que se puntúe como doc normal y
+    # NO se re-explore (recursión infinita). `extension_miente` se calcula ANTES para
+    # conservar la señal aunque se rute como contenedor.
+    #  · Tabulares (CSV/NDJSON): SIEMPRE — un archivo chico es 1 lote = 1 doc, equivalente.
+    #  · Texto grande (text/*, SQL, XML, rfc822): SOLO si supera `t3_troceo_min_bytes` —por
+    #    debajo cabe bajo el límite de chars y no gana nada partirlo (y evita explotar cada
+    #    .txt chico del corpus).
+    if permitir_contenedor_hoja:
+        es_texto = tipo in CONTENEDORES_TEXTO or bool(tipo and tipo.startswith("text/"))
+        if tipo in CONTENEDORES_TABULARES or (es_texto and tamano > perillas.t3_troceo_min_bytes):
+            senales["es_contenedor"] = True
+            return ResultadoPrecalificacion(
+                perillas.prioridad_contenedores,
+                RutaDecision.HOT,
+                tipo,
+                "contenedor_pendiente_t3",
+                senales,
+            )
     puntaje, dominante = puntuar(
         perillas, tipo_real=tipo, senales=senales, tamano=tamano, extension=extension
     )
