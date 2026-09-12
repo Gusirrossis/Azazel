@@ -34,13 +34,23 @@ class TestExplorar:
         assert {e.nombre for e in r.entradas} == {"a.csv", "b.txt"}
         assert all(e.tamano > 0 for e in r.entradas)
 
-    def test_zip_bomb_dispara_guard_ratio(self, tmp_path: Path) -> None:
-        """INVARIANTE (DoD F1.5): la bomba produce un FLAG, nunca un crash."""
-        ruta = _zip(tmp_path / "bomba.zip", {"relleno.bin": b"\x00" * (4 * 1024 * 1024)})
+    def test_zip_bomb_se_aisla_no_veta_el_contenedor(self, tmp_path: Path) -> None:
+        """La entrada muy compresible ya NO tira el contenedor ENTERO a COLD: se AÍSLA
+        (se preserva sin explotar) y la exploración se marca parcial. Una entrada legítima
+        del mismo zip se explora igual — antes se perdía con toda la caja. Sin crash."""
+        ruta = _zip(
+            tmp_path / "bomba.zip",
+            {
+                "relleno.bin": b"\x00" * (4 * 1024 * 1024),  # ratio >> 300 → se aísla
+                "datos.txt": b"contenido legitimo de un padron\n",  # normal → se explora
+            },
+        )
         r = explorar(PERILLAS, ruta, "application/zip")
-        assert not r.ok
-        assert r.motivo == "guard_ratio"
-        assert r.entradas == ()
+        assert r.ok  # ya no se veta el contenedor
+        assert r.topado  # parcial: algo se aisló
+        nombres = {e.nombre for e in r.entradas}
+        assert "datos.txt" in nombres  # la legítima SÍ se explora
+        assert "relleno.bin" not in nombres  # la bomba quedó aislada
 
     def test_guard_de_entradas_maximas(self, tmp_path: Path) -> None:
         perillas = PerillasFiltro(t3_entradas_max=3)

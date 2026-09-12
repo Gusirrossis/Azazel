@@ -118,19 +118,38 @@ def _mtime_ns_tupla(fecha: tuple[int, ...]) -> int:
 def _validar_guards(
     perillas: PerillasFiltro,
     entradas: list[EntradaContenedor],
-    ratios: list[float],
     inicio: float,
     formato: str,
 ) -> ResultadoExploracion | None:
+    """Guards de CONTENEDOR COMPLETO: conteo de entradas, bytes totales descomprimidos y
+    tiempo de listado. El ratio de compresión ya NO veta aquí: se aísla por-entrada (ver
+    `_aislar_ratio`), para que una sola entrada muy compresible no tire la cobertura de
+    todas las demás."""
     if len(entradas) > perillas.t3_entradas_max:
         return ResultadoExploracion(False, "guard_entradas", (), formato)
     if sum(e.tamano for e in entradas) > perillas.t3_descomprimido_max_bytes:
         return ResultadoExploracion(False, "guard_descomprimido", (), formato)
-    if any(r > perillas.t3_ratio_compresion_max for r in ratios):
-        return ResultadoExploracion(False, "guard_ratio", (), formato)
     if time.monotonic() - inicio > perillas.t3_timeout_s:
         return ResultadoExploracion(False, "guard_timeout", (), formato)
     return None
+
+
+def _aislar_ratio(
+    entradas: list[EntradaContenedor], ratios: list[float], max_ratio: float
+) -> tuple[list[EntradaContenedor], int]:
+    """Aísla (NO explota) las entradas cuyo ratio de compresión supera `max_ratio` —una
+    posible bomba— y devuelve el resto para explorar, más cuántas se aislaron.
+
+    Antes UNA entrada sobre el umbral vetaba el contenedor ENTERO a COLD: datos legítimos
+    muy compresibles (un CSV disperso, un log, un XML con relleno) hacían perder la
+    cobertura de TODO lo demás. La entrada aislada se PRESERVA íntegra (el contenedor va a
+    HOT), no se pierde: solo no se explota su contenido, y la exploración se marca parcial
+    (`topado`). `ratios` va alineado con `entradas` (0 = sin dato de ratio → nunca se
+    aísla); si no viene alineado, no se aísla nada."""
+    if len(ratios) != len(entradas):
+        return entradas, 0
+    kept = [e for e, r in zip(entradas, ratios, strict=True) if r <= max_ratio]
+    return kept, len(entradas) - len(kept)
 
 
 # ------------------------------------------------------------------ ZIP
@@ -152,8 +171,9 @@ def _explorar_zip(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> Resulta
             for i in infos
         ]
         ratios = [i.file_size / max(i.compress_size, 1) for i in infos]
-    guard = _validar_guards(perillas, entradas, ratios, inicio, "zip")
-    return guard or ResultadoExploracion(True, None, tuple(entradas), "zip")
+    entradas, aisladas = _aislar_ratio(entradas, ratios, perillas.t3_ratio_compresion_max)
+    guard = _validar_guards(perillas, entradas, inicio, "zip")
+    return guard or ResultadoExploracion(True, None, tuple(entradas), "zip", topado=aisladas > 0)
 
 
 # ------------------------------------------------------------------ 7z
@@ -176,11 +196,15 @@ def _explorar_7z(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> Resultad
         )
         for i in infos
     ]
-    # En 7z "sólido" el tamaño comprimido por entrada puede no existir → solo
-    # aplican los guards de total/entradas/timeout (el ratio es por-archivo zip)
-    ratios = [int(i.uncompressed or 0) / max(int(i.compressed), 1) for i in infos if i.compressed]
-    guard = _validar_guards(perillas, entradas, ratios, inicio, "7z")
-    return guard or ResultadoExploracion(True, None, tuple(entradas), "7z")
+    # En 7z "sólido" el tamaño comprimido por entrada puede no existir (0.0 = sin dato →
+    # esa entrada no se aísla); las que sí lo traen se aíslan por-entrada como en zip.
+    ratios = [
+        int(i.uncompressed or 0) / max(int(i.compressed), 1) if i.compressed else 0.0
+        for i in infos
+    ]
+    entradas, aisladas = _aislar_ratio(entradas, ratios, perillas.t3_ratio_compresion_max)
+    guard = _validar_guards(perillas, entradas, inicio, "7z")
+    return guard or ResultadoExploracion(True, None, tuple(entradas), "7z", topado=aisladas > 0)
 
 
 # ------------------------------------------------------------------ RAR (vía 7-Zip)
@@ -296,8 +320,9 @@ def _listar_con_7zz(
     if proc.returncode != 0:
         return ResultadoExploracion(False, "contenedor_corrupto", (), formato)
     entradas, ratios = _parse_slt_7zz(proc.stdout.decode("utf-8", "replace"))
-    guard = _validar_guards(perillas, entradas, ratios, inicio, formato)
-    return guard or ResultadoExploracion(True, None, tuple(entradas), formato)
+    entradas, aisladas = _aislar_ratio(entradas, ratios, perillas.t3_ratio_compresion_max)
+    guard = _validar_guards(perillas, entradas, inicio, formato)
+    return guard or ResultadoExploracion(True, None, tuple(entradas), formato, topado=aisladas > 0)
 
 
 def _explorar_rar(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> ResultadoExploracion:
@@ -345,8 +370,9 @@ def _explorar_tar(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> Resulta
             for m in tf
             if m.isfile()
         ]
-    ratios = [sum(e.tamano for e in entradas) / max(comprimido, 1)]
-    guard = _validar_guards(perillas, entradas, ratios, inicio, "tar")
+    # tar no comprime por-entrada (la compresión, si la hay, es del flujo .tar.gz): el
+    # ratio sería whole-container, así que aquí solo protege el guard de bytes totales.
+    guard = _validar_guards(perillas, entradas, inicio, "tar")
     return guard or ResultadoExploracion(True, None, tuple(entradas), "tar")
 
 
@@ -387,8 +413,9 @@ def _explorar_flujo(
         if isinstance(fuente, Path):
             crudo.close()
     entradas = [EntradaContenedor("contenido", "contenido", total, _mtime_ns(None))]
-    ratios = [total / max(comprimido, 1)]
-    guard = _validar_guards(perillas, entradas, ratios, inicio, formato)
+    # El descomprimido ya se midió y topó arriba en streaming (guard de bytes): el ratio
+    # whole-container sería redundante.
+    guard = _validar_guards(perillas, entradas, inicio, formato)
     return guard or ResultadoExploracion(True, None, tuple(entradas), formato)
 
 
@@ -420,7 +447,7 @@ def _explorar_sqlite(
     entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
     # Los guards comunes también aquí: una base con millones de lotes es, a efectos
     # del pipeline, exactamente el mismo problema que una zip-bomb.
-    if fallo := _validar_guards(perillas, entradas, [], inicio, "sqlite"):
+    if fallo := _validar_guards(perillas, entradas, inicio, "sqlite"):
         return fallo
     return ResultadoExploracion(True, None, tuple(entradas), "sqlite", topado=topado)
 
@@ -443,7 +470,7 @@ def _explorar_tabular_plano(
     if motivo:
         return ResultadoExploracion(False, motivo, (), formato)
     entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
-    if fallo := _validar_guards(perillas, entradas, [], inicio, formato):
+    if fallo := _validar_guards(perillas, entradas, inicio, formato):
         return fallo
     return ResultadoExploracion(True, None, tuple(entradas), formato, topado=topado)
 
