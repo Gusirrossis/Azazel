@@ -492,6 +492,26 @@ def _explorar_texto(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> Resul
     return ResultadoExploracion(True, None, tuple(entradas), "texto", topado=topado)
 
 
+def _explorar_documento(
+    perillas: PerillasFiltro, fuente: Path | IO[bytes], formato: str
+) -> ResultadoExploracion:
+    """Un PDF/DOCX grande como contenedor de rangos de página/párrafo (ver
+    `documento_lotes`). Un doc chico devuelve 0 entradas → se indexa como doc único."""
+    from . import documento_lotes
+
+    inicio = time.monotonic()
+    mtime_ns = int(fuente.stat().st_mtime * 1_000_000_000) if isinstance(fuente, Path) else _mtime_ns(None)
+    crudas, motivo, topado = documento_lotes.explorar(perillas, fuente, formato, mtime_ns)
+    if motivo:
+        return ResultadoExploracion(False, motivo, (), formato)
+    entradas = [EntradaContenedor(ri, nom, tam, mt) for ri, nom, tam, mt in crudas]
+    if fallo := _validar_guards(perillas, entradas, inicio, formato):
+        return fallo
+    return ResultadoExploracion(True, None, tuple(entradas), formato, topado=topado)
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoExploracion]] = {
     "application/zip": _explorar_zip,
     "application/x-7z-compressed": _explorar_7z,
@@ -507,6 +527,8 @@ _EXPLORADORES: dict[str, Callable[[PerillasFiltro, Path | IO[bytes]], ResultadoE
     "application/sql": _explorar_texto,
     "message/rfc822": _explorar_texto,
     "application/xml": _explorar_texto,
+    "application/pdf": lambda p, f: _explorar_documento(p, f, "pdf"),
+    _DOCX_MIME: lambda p, f: _explorar_documento(p, f, "docx"),
 }
 
 
@@ -1038,6 +1060,16 @@ def _paso_texto(
     return texto_lotes.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
 
 
+def _paso_documento(
+    fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None
+) -> IO[bytes]:
+    """Sirve un trozo de un PDF (mini-PDF) o DOCX (texto de párrafos) — ver `documento_lotes`."""
+    from . import documento_lotes
+
+    fuente: Path | IO[bytes] = ruta_fs if ruta_fs is not None else fobj
+    return documento_lotes.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
+
+
 def abrir_entrada(
     raiz: Path, cadena: list[str], *, umbral_memoria: int, limite_bytes: int
 ) -> IO[bytes]:
@@ -1065,6 +1097,11 @@ def abrir_entrada(
             elif entrada.startswith("texto/"):
                 # Trozo de un texto grande troceado (ver `texto_lotes`), también por prefijo.
                 siguiente = _paso_texto(
+                    fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
+                )
+            elif entrada.startswith(("pdf/", "docx/")):
+                # Trozo de un PDF/DOCX troceado (ver `documento_lotes`), por prefijo.
+                siguiente = _paso_documento(
                     fobj, entrada, umbral_memoria, limite_bytes, ruta_fs=ruta_fs_actual
                 )
             elif cab.startswith(b"PK\x03\x04"):

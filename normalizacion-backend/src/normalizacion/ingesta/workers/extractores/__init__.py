@@ -78,6 +78,10 @@ class ContextoExtraccion:
     # OCR habilitado (fuente única: filtro.ocr_activo, que el worker propaga). Un plugin
     # de imagen/PDF lo consulta para decidir si intenta OCR. Default False = intacto.
     ocr_activo: bool = False
+    #: El archivo es un contenedor que YA se explotó en trozos (páginas/párrafos): el
+    #: extractor del PADRE no debe re-OCR-earlo —las páginas OCR-ean como hijos— para no
+    #: pagar el OCR dos veces ni duplicar el texto en el índice. Default False = intacto.
+    es_contenedor_explotado: bool = False
     #: Instante (reloj monótono) a partir del cual el plugin debe devolver lo que
     #: lleve. None = sin plazo (tests y llamadas directas).
     plazo: float | None = None
@@ -157,6 +161,7 @@ def extraer(
     nombre: str,
     tamano: int,
     ocr_activo: bool = False,
+    es_contenedor_explotado: bool = False,
 ) -> ResultadoExtraccion:
     """Despacha al plugin con plazo cooperativo + corte duro (⚙K11). NUNCA lanza."""
     plugin = extractor_para(tipo_real)
@@ -171,6 +176,7 @@ def extraer(
         tamano=tamano,
         perillas=perillas,
         ocr_activo=ocr_activo,
+        es_contenedor_explotado=es_contenedor_explotado,
         plazo=time.monotonic() + perillas.extractor_timeout_s,
     )
     futuro = _pool().submit(plugin, ctx)

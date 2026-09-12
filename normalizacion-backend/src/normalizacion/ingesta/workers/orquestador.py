@@ -138,6 +138,14 @@ def _extraer_o_reusar(
         )
 
     inicio = time.monotonic()
+    # Si este archivo es un contenedor que YA se explotó en trozos (páginas/párrafos), su
+    # extractor-padre no debe re-OCR-ear: las páginas OCR-ean como hijos (evita 2x OCR y
+    # texto duplicado en el índice).
+    explotado = bool(
+        fila.senales
+        and fila.senales.get("es_contenedor")
+        and fila.senales.get("entradas_re_encoladas", 0) > 0
+    )
     extraccion = extractores.extraer(
         config.worker,
         spool,
@@ -145,6 +153,7 @@ def _extraer_o_reusar(
         nombre=fila.nombre,
         tamano=fila.tamano,
         ocr_activo=config.filtro.ocr_activo,
+        es_contenedor_explotado=explotado,
     )
     ms = int((time.monotonic() - inicio) * 1000)
     # Un resultado incompleto o fallido NO se cachea. Guardarlo convertía un problema

@@ -129,6 +129,19 @@ CONTENEDORES_TEXTO: frozenset[str] = frozenset(
     {"text/plain", "application/sql", "message/rfc822", "application/xml"}
 )
 
+#: Documentos que se trocean en rangos de página (PDF) o párrafo (DOCX) — ver
+#: `documento_lotes`. SÍ tienen firma binaria (se detectan en T1), pero el gate no es el
+#: tamaño en bytes (un PDF de 1 página escaneada pesa más que uno de 50 de texto): lo decide
+#: el CONTEO en el explorador, que devuelve 0 entradas para un doc chico → se indexa como
+#: doc único. El padre conserva su propio doc (texto nativo + metadata); las páginas/párrafos
+#: aportan el resto sin re-OCR del padre (ver `es_contenedor_explotado`).
+CONTENEDORES_DOCUMENTO: frozenset[str] = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
+
 DOCUMENTOS: frozenset[str] = frozenset(
     {
         "application/pdf",
@@ -673,7 +686,12 @@ def precalificar_contenido(
     #    .txt chico del corpus).
     if permitir_contenedor_hoja:
         es_texto = tipo in CONTENEDORES_TEXTO or bool(tipo and tipo.startswith("text/"))
-        if tipo in CONTENEDORES_TABULARES or (es_texto and tamano > perillas.t3_troceo_min_bytes):
+        es_doc = tipo in CONTENEDORES_DOCUMENTO
+        if (
+            tipo in CONTENEDORES_TABULARES
+            or es_doc  # PDF/DOCX: el conteo del explorador decide (chico → 0 entradas)
+            or (es_texto and tamano > perillas.t3_troceo_min_bytes)
+        ):
             senales["es_contenedor"] = True
             return ResultadoPrecalificacion(
                 perillas.prioridad_contenedores,

@@ -54,7 +54,7 @@ def _filas_de_entradas(
     # marcarlos `hoja`, un lote NDJSON se volvería a detectar como contenedor tabular y se
     # re-exploraría a sí mismo → recursión infinita en el BFS de la cola. El flag viaja en
     # `origen_contenedor` (Jsonb) y lo lee `_procesar_fila` para NO re-explorar.
-    es_hoja = exploracion.formato in ("sqlite", "csv", "ndjson", "texto")
+    es_hoja = exploracion.formato in ("sqlite", "csv", "ndjson", "texto", "pdf", "docx")
     nuevas: list[cola.FilaCatalogo] = []
     for entrada in exploracion.entradas:
         ruta_virtual = f"{fila.ruta}!{entrada.ruta_interna}"

@@ -102,6 +102,12 @@ def extraer_pdf(ctx: ContextoExtraccion) -> ResultadoExtraccion:
             break
     texto = "\n".join(fragmentos)[:maximo].strip()
 
+    # Si el PDF ya se explotó en páginas-contenedor, el padre NO re-OCR-ea: cada página
+    # OCR-ea como hijo (evita 2x OCR y texto duplicado). El padre conserva su texto nativo
+    # + metadata como doc-resumen.
+    if ctx.es_contenedor_explotado:
+        return ResultadoExtraccion(campos=campos, texto=texto or None, flags=[*flags, "pdf_explotado"])
+
     # Escaneo (texto nativo casi vacío) + OCR activo → rasterizar y OCR (Fase 2).
     if ctx.ocr_activo and len(texto) < ctx.perillas.ocr_pdf_umbral_chars and not ctx.vencido():
         texto_ocr, flags_ocr, confianza = _ocr_pdf(ctx)

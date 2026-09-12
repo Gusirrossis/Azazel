@@ -96,3 +96,34 @@ class TestExplorar:
         entradas, motivo, topado = explorar(PerillasFiltro(), io.BytesIO(_pdf(4)), "pdf", 99)
         assert motivo is None and not topado
         assert [e[0] for e in entradas] == ["pdf/0-1", "pdf/1-2", "pdf/2-3", "pdf/3-4"]
+
+
+class TestNoDobleOcr:
+    """Un PDF explotado en páginas NO debe re-OCR-earse en el padre: cada página OCR-ea
+    como hijo. Sin esto se paga el OCR dos veces y se duplica el texto en el índice."""
+
+    def test_pdf_explotado_no_re_ocr_ea_el_padre(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from normalizacion.core.config import PerillasWorker
+        from normalizacion.ingesta.workers.extractores import ContextoExtraccion, documentos
+
+        llamadas = {"n": 0}
+
+        def _fake_ocr(_ctx):  # type: ignore[no-untyped-def]
+            llamadas["n"] += 1
+            return "texto ocr fingido", ["ocr_ok"], 90.0
+
+        monkeypatch.setattr(documentos, "_ocr_pdf", _fake_ocr)
+        datos = _pdf(3)  # páginas en blanco → texto nativo vacío → dispararía OCR
+
+        def _ctx(explotado: bool):  # type: ignore[no-untyped-def]
+            return ContextoExtraccion(
+                fuente=io.BytesIO(datos), nombre="x.pdf", tipo_real="application/pdf",
+                tamano=len(datos), perillas=PerillasWorker(), ocr_activo=True,
+                es_contenedor_explotado=explotado,
+            )
+
+        r = documentos.extraer_pdf(_ctx(True))
+        assert llamadas["n"] == 0  # el padre explotado NO re-OCR-ea
+        assert "pdf_explotado" in r.flags
+        documentos.extraer_pdf(_ctx(False))
+        assert llamadas["n"] == 1  # sin el flag, SÍ OCR-earía
