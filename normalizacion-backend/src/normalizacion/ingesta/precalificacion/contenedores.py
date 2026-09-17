@@ -748,8 +748,14 @@ def _extraer_7z_con_7zz(ruta_fs: Path, destino: Path) -> None:
     `x` = extraer con rutas; `-y` = sí a todo; `-bd` = sin barra de progreso;
     `-o` fija el destino; `--` cierra las opciones (rutas que empiezan por `-`).
     """
+    # `-mmt1` = UN SOLO HILO. Medido en los .7z de INE (`vps-storage-01`): la
+    # descompresión multi-hilo por defecto aloja un buffer/diccionario POR HILO y la
+    # RAM del proceso trepa a ~10 GiB (8 hilos), que sumado al page-cache de escritura
+    # OOM-mata el contenedor. Con un hilo el proceso se queda en ~0,5 GiB —el resto es
+    # cache de disco reclamable— y la extracción es igual de rápida (está limitada por
+    # el I/O de disco, no por la CPU de descompresión).
     proc = subprocess.run(
-        [_7zz_bin(), "x", "-y", "-bd", f"-o{destino}", "--", str(ruta_fs)],
+        [_7zz_bin(), "x", "-y", "-bd", "-mmt1", f"-o{destino}", "--", str(ruta_fs)],
         capture_output=True,
     )
     if proc.returncode != 0:
