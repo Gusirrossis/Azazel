@@ -234,6 +234,119 @@ class TestRar:
         assert r.entradas == ()  # 7zz lo marca corrupto; nunca lanza
 
 
+class TestRar5YCache:
+    """RAR5 (que 7zz no decodifica) y RAR SOLID de miles de entradas. Sin binarios reales:
+    se simulan `7zz`/`lsar`/`unar` para que corra en cualquier entorno."""
+
+    _LSAR = {
+        "lsarContents": [
+            {"XADFileName": "DBs", "XADIsDirectory": True},
+            {"XADFileName": "DBs/a.sql", "XADFileSize": 1000, "XADCompressedSize": 100,
+             "XADLastModificationDate": "2015-11-26 19:50:34 -0600"},
+            {"XADFileName": "b.txt", "XADFileSize": 10, "XADCompressedSize": 10},
+        ]
+    }
+
+    def test_lsar_json_se_parsea_sin_carpetas(self) -> None:
+        import json
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        entradas, ratios = C._parse_json_lsar(json.dumps(self._LSAR))
+        assert [e.ruta_interna for e in entradas] == ["DBs/a.sql", "b.txt"]
+        assert entradas[0].tamano == 1000 and ratios == [10.0, 1.0]
+
+    def test_rar5_cae_a_lsar_si_7zz_lo_da_por_corrupto(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """7zz rechaza RAR5 y lo daba por «corrupto»: el RAR se preservaba entero sin
+        explotar — medido en 'Matrix.rar': 0 de 1215 entradas indexadas."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        ruta = tmp_path / "m.rar"
+        ruta.write_bytes(b"Rar!\x1a\x07\x01\x00")
+        monkeypatch.setattr(
+            C, "_listar_con_7zz",
+            lambda *a: C.ResultadoExploracion(False, "contenedor_corrupto", (), "rar"),
+        )
+        entrada = C.EntradaContenedor(ruta_interna="a.txt", nombre="a.txt", tamano=1,
+                                      mtime_ns=0)
+        monkeypatch.setattr(
+            C, "_listar_con_lsar",
+            lambda *a: C.ResultadoExploracion(True, None, (entrada,), "rar"),
+        )
+        r = C._explorar_rar(PERILLAS, ruta)
+        assert r.ok and [e.ruta_interna for e in r.entradas] == ["a.txt"]
+
+    def test_rar_se_extrae_una_sola_vez_y_sirve_de_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RAR SOLID: extraer entrada por entrada redescomprime desde el principio (O(n²):
+        ni una entrada en 45 min sobre 1132). Se extrae entero UNA vez y se sirve de ahí."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
+        ruta = tmp_path / "s.rar"
+        ruta.write_bytes(b"Rar!\x1a\x07\x01\x00")
+        llamadas = {"n": 0}
+
+        def _unar_falso(rf: Path, dst: Path) -> None:
+            llamadas["n"] += 1
+            (dst / "DBs").mkdir()
+            (dst / "DBs" / "a.sql").write_bytes(b"INSERT 1")
+            (dst / "b.txt").write_bytes(b"hola")
+
+        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
+        try:
+            for entrada, esperado in (("DBs/a.sql", b"INSERT 1"), ("b.txt", b"hola")):
+                spool = C._paso_rar(io.BytesIO(), entrada, 1024, 1 << 20, ruta_fs=ruta)
+                assert spool.read() == esperado
+            C._CACHE_7Z.clear()  # «proceso nuevo»: solo el disco sobrevive
+            C._paso_rar(io.BytesIO(), "b.txt", 1024, 1 << 20, ruta_fs=ruta)
+            assert llamadas["n"] == 1
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_unar_parcial_conserva_lo_extraido(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """unar sale con rc=1 si UNA entrada viene corrupta (49 de 1215 en 'Matrix.rar'):
+        el árbol con las otras 1166 NO puede tirarse entero."""
+        import subprocess
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        destino = tmp_path / "out"
+        destino.mkdir()
+
+        def _run_falso(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[bytes]:
+            (destino / "buena.txt").write_bytes(b"ok")
+            return subprocess.CompletedProcess(cmd, 1, b"", b"mala.sql... Failed!")
+
+        monkeypatch.setattr(C, "_unar_bin", lambda: "unar")
+        monkeypatch.setattr(C.subprocess, "run", _run_falso)
+        C._extraer_7z_con_unar(tmp_path / "x.rar", destino)  # no lanza
+        assert (destino / "buena.txt").read_bytes() == b"ok"
+
+    def test_unar_sin_nada_extraido_si_es_fallo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        destino = tmp_path / "out"
+        destino.mkdir()
+        monkeypatch.setattr(C, "_unar_bin", lambda: "unar")
+        monkeypatch.setattr(
+            C.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, b"", b"roto"),
+        )
+        with pytest.raises(OSError):
+            C._extraer_7z_con_unar(tmp_path / "x.rar", destino)
+
+
 class TestTarYFlujos:
     """tar/gz/bz2/xz explorables con librería estándar (decisión del usuario:
     los comprimidos del servidor — tar.gz incluidos — se exploran por completo)."""

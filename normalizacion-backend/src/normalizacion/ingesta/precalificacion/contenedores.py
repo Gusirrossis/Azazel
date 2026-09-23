@@ -22,6 +22,7 @@ import bz2
 import contextlib
 import gzip
 import hashlib
+import json
 import lzma
 import os
 import shutil
@@ -325,13 +326,93 @@ def _listar_con_7zz(
     return guard or ResultadoExploracion(True, None, tuple(entradas), formato, topado=aisladas > 0)
 
 
+_LSAR_CACHE: list[str | None] = []
+
+
+def _lsar_bin() -> str:
+    """Ruta a `lsar` (el listador de The Unarchiver, junto a `unar`). Cacheada."""
+    if not _LSAR_CACHE:
+        candidatos = ("/opt/homebrew/bin/lsar", "/usr/local/bin/lsar")
+        _LSAR_CACHE.append(
+            shutil.which("lsar") or next((c for c in candidatos if Path(c).exists()), None)
+        )
+    binario = _LSAR_CACHE[0]
+    if binario is None:
+        raise FileNotFoundError("lsar no encontrado (parte de unar: brew install unar)")
+    return binario
+
+
+def _parse_json_lsar(salida: str) -> tuple[list[EntradaContenedor], list[float]]:
+    """Parsea `lsar --json`. Omite carpetas; el ratio sale de XADFileSize/XADCompressedSize."""
+    entradas: list[EntradaContenedor] = []
+    ratios: list[float] = []
+    try:
+        datos = json.loads(salida)
+    except ValueError:  # salida no-JSON (archivo ilegible)
+        return entradas, ratios
+    for e in datos.get("lsarContents", []):
+        if e.get("XADIsDirectory"):
+            continue
+        ruta = str(e.get("XADFileName") or "").replace("\\", "/")
+        if not ruta:
+            continue
+        try:
+            tamano = int(e.get("XADFileSize") or 0)
+        except (ValueError, TypeError):
+            tamano = 0
+        entradas.append(
+            EntradaContenedor(
+                ruta_interna=ruta,
+                nombre=ruta.rsplit("/", 1)[-1],
+                tamano=tamano,
+                mtime_ns=_mtime_ns_iso(str(e.get("XADLastModificationDate") or "")),
+            )
+        )
+        try:
+            comp = int(e.get("XADCompressedSize") or 0)
+        except (ValueError, TypeError):
+            comp = 0
+        if comp:
+            ratios.append(tamano / max(comp, 1))
+    return entradas, ratios
+
+
+def _listar_con_lsar(
+    perillas: PerillasFiltro, ruta: str, inicio: float, formato: str
+) -> ResultadoExploracion:
+    """Lista un RAR con lsar (The Unarchiver): decodifica RAR5, que 7-Zip rechaza."""
+    try:
+        proc = subprocess.run(
+            [_lsar_bin(), "--json", "--", ruta],
+            capture_output=True,
+            timeout=perillas.t3_timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return ResultadoExploracion(False, "guard_timeout", (), formato)
+    if proc.returncode != 0:
+        return ResultadoExploracion(False, "contenedor_corrupto", (), formato)
+    entradas, ratios = _parse_json_lsar(proc.stdout.decode("utf-8", "replace"))
+    if not entradas:
+        return ResultadoExploracion(False, "contenedor_corrupto", (), formato)
+    entradas, aisladas = _aislar_ratio(entradas, ratios, perillas.t3_ratio_compresion_max)
+    guard = _validar_guards(perillas, entradas, inicio, formato)
+    return guard or ResultadoExploracion(True, None, tuple(entradas), formato, topado=aisladas > 0)
+
+
 def _explorar_rar(perillas: PerillasFiltro, fuente: Path | IO[bytes]) -> ResultadoExploracion:
-    """Lista un RAR con 7-Zip (`7zz`). Un archivo del filesystem se lista en sitio (sin
-    copiar los GB); un RAR anidado dentro de otro contenedor se vuelca a un temporal."""
+    """Lista un RAR. 7-Zip (`7zz`) primero —rápido y ya presente—; pero 7zz NO decodifica
+    RAR5 y lo da por «corrupto», así que en ese caso se cae a `lsar` (The Unarchiver), que
+    sí soporta RAR5 —el mismo binario que luego extrae los miembros—. Un archivo del
+    filesystem se lista en sitio (sin copiar los GB); un RAR anidado se vuelca a un temporal."""
     inicio = time.monotonic()
     ruta, es_temporal = _ruta_temporal_de(fuente)
     try:
-        return _listar_con_7zz(perillas, ruta, inicio, "rar")
+        r = _listar_con_7zz(perillas, ruta, inicio, "rar")
+        if not r.ok and r.motivo == "contenedor_corrupto":
+            r2 = _listar_con_lsar(perillas, ruta, inicio, "rar")
+            if r2.ok:
+                return r2
+        return r
     finally:
         if es_temporal:
             Path(ruta).unlink(missing_ok=True)
@@ -729,10 +810,22 @@ def _extraer_7z_con_unar(ruta_fs: Path, destino: Path) -> None:
         ],
         capture_output=True,
     )
+    extrajo_algo = any(destino.iterdir())
     if proc.returncode != 0:
-        detalle = (proc.stderr or proc.stdout).decode("utf-8", "replace").strip()[:200]
-        raise OSError(f"unar salió con {proc.returncode}: {detalle}")
-    if not any(destino.iterdir()):
+        detalle = (proc.stderr or proc.stdout).decode("utf-8", "replace").strip()[:500]
+        if extrajo_algo:
+            # PARCIAL: unar sale con rc≠0 en cuanto ALGUNA entrada no decodifica —bytes
+            # realmente corruptos DENTRO del archivo origen, no un fallo de la
+            # herramienta (medido en 'Matrix.rar': 49 de 1215 entradas venían
+            # truncadas, el resto perfectas). Descartar el árbol ENTERO por eso tiraría
+            # la cobertura de las otras 1166 entradas buenas — justo lo que no se
+            # quiere. Se sigue con lo que hay: las entradas que faltan fallan
+            # individualmente más tarde («entrada no encontrada»), aisladas, sin tumbar
+            # el resto del contenedor.
+            log.warning("7z_extraccion_parcial", archivo=str(ruta_fs), detalle=detalle)
+        else:
+            raise OSError(f"unar salió con {proc.returncode}: {detalle}")
+    if not extrajo_algo:
         raise OSError("unar terminó con éxito pero no extrajo nada")
 
 
@@ -825,14 +918,52 @@ def _dir_7z_extraido(ruta_fs: Path) -> Path:
     return destino
 
 
-def _extraer_a_persistente(ruta_fs: Path, clave: str, destino: Path) -> None:
+def _dir_rar_extraido(ruta_fs: Path) -> Path:
+    """Análogo a `_dir_7z_extraido` pero para RAR: extrae el archivo COMPLETO una sola
+    vez (caché persistente compartida) y sirve las entradas desde ahí — O(N), no O(N²).
+
+    Imprescindible para un RAR SOLID (el método de compresión habitual): extraer una
+    entrada SUELTA con `unar` redescomprime el flujo desde el principio, así que pedir
+    entrada por entrada sobre un archivo de miles de ficheros es cuadrático. Medido en
+    'Matrix.rar' (matriz, 1132 entradas): sin esta caché, ni UNA entrada terminaba de
+    extraerse en 45 minutos — cada pedido reiniciaba la descompresión desde cero.
+    Comparte la misma caché en disco que los `.7z` (misma clave, mismo cupo, mismo LRU).
+    """
+    clave = _clave_persistente(ruta_fs)
+    with _CACHE_7Z_LOCK:
+        memo = _CACHE_7Z.get(clave)
+        if memo is not None and (memo / _MARCADOR).exists():
+            return memo
+
+    destino = _CACHE_BASE / clave
+    if not (destino / _MARCADOR).exists():
+        _extraer_a_persistente(ruta_fs, clave, destino, extractor=_extraer_7z_con_unar)
+    _tocar(destino)
+    with _CACHE_7Z_LOCK:
+        _CACHE_7Z[clave] = destino
+    return destino
+
+
+def _extraer_a_persistente(
+    ruta_fs: Path,
+    clave: str,
+    destino: Path,
+    extractor: Callable[[Path, Path], None] | None = None,
+) -> None:
     """Extrae a un tmp propio y lo renombra ATÓMICAMENTE a `destino`. Si otro proceso ganó
     la carrera (el destino ya tiene marcador), descarta su tmp y usa el del otro. Un
     `destino` sin marcador es una extracción muerta de un proceso anterior → se rehace.
 
     El marcador y el tamaño se escriben DENTRO del tmp antes del rename, así que un
     `destino` renombrado está SIEMPRE completo: ningún proceso ve una extracción a medias.
+
+    `extractor` es el paso real (7z, rar…) — la caché en sí (clave, marcador, rename
+    atómico, evicción LRU) es la misma para cualquier formato de contenedor completo.
+    Por omisión se resuelve AQUÍ, al llamar (no como valor por defecto del parámetro,
+    que Python liga al definir la función y congelaría la referencia).
     """
+    if extractor is None:
+        extractor = _extraer_7z_a_disco
     _CACHE_BASE.mkdir(parents=True, exist_ok=True)
     marcador = destino / _MARCADOR
     if destino.exists() and not marcador.exists():
@@ -842,7 +973,7 @@ def _extraer_a_persistente(ruta_fs: Path, clave: str, destino: Path) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     try:
-        _extraer_7z_a_disco(ruta_fs, tmp)
+        extractor(ruta_fs, tmp)
         _abrir_lectura_arbol(tmp)
         (tmp / _ARCHIVO_TAM).write_text(str(_tam_arbol(tmp)))
         (tmp / _MARCADOR).write_bytes(b"")  # COMPLETO: marcado ANTES del rename atómico
@@ -945,14 +1076,21 @@ def _paso_7z(
 def _paso_rar(
     fobj: IO[bytes], entrada: str, umbral: int, limite: int, *, ruta_fs: Path | None = None
 ) -> IO[bytes]:
-    """Extrae UNA entrada de un RAR con `unar` (soporta RAR5 que 7-Zip no decodifica)
-    a un spool (RAM→disco) con tope duro. Usa el archivo en disco si se conoce
-    (`ruta_fs`, sin copia); si no, vuelca el flujo a un temporal. Los RAR no-sólidos
-    permiten extraer la entrada directamente sin descomprimir el archivo entero."""
+    """Sirve UNA entrada de un RAR. Con `ruta_fs` (archivo real en disco, el caso
+    normal): extrae el RAR COMPLETO una sola vez a la caché persistente compartida
+    (`_dir_rar_extraido`) y sirve desde ahí — evita el O(n²) de extraer entrada por
+    entrada en un RAR SOLID (cada extracción suelta redescomprime desde el principio;
+    con miles de entradas eso no termina nunca). Sin `ruta_fs` (RAR anidado dentro de
+    otro contenedor, sin ruta propia): fallback por-entrada con `unar`, como antes."""
     if ruta_fs is not None:
-        ruta, es_temporal = str(ruta_fs), False
-    else:
-        ruta, es_temporal = _ruta_temporal_de(fobj)
+        dir_ex = _dir_rar_extraido(ruta_fs)
+        origen_fs = dir_ex / entrada
+        if not origen_fs.is_file():
+            raise OSError(f"entrada no encontrada en rar: {entrada}")
+        return _servir_desde_arbol(origen_fs, entrada, umbral, limite)
+
+    # RAR anidado (stream, sin ruta en disco): fallback por-entrada con `unar`.
+    ruta, es_temporal = _ruta_temporal_de(fobj)
     tmpdir = tempfile.mkdtemp()
     try:
         proc = subprocess.run(
