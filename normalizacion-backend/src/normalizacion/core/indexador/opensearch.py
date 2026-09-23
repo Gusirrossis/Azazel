@@ -223,6 +223,27 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
                 "index.plugins.index_state_management.rollover_alias": config.indice_alias
             }
         cliente.indices.create(index=indice, body=cuerpo)
+    else:
+        # El índice YA existía: el bloque de arriba no corre y `is_write_index` se
+        # queda como estuviera. Sin este paso, `aplicar_indice` no era idempotente
+        # para el caso real que motivó el comentario de arriba —restaurar el
+        # snapshot del otro nodo dejó TODOS los índices del alias en
+        # `is_write_index: false` (ninguno designado)— porque el índice de este
+        # nodo ya existía y la función no tocaba nada. `update_aliases` es
+        # idempotente: reafirmar lo que ya está bien no hace daño.
+        cliente.indices.update_aliases(
+            body={
+                "actions": [
+                    {
+                        "add": {
+                            "index": indice,
+                            "alias": config.indice_alias,
+                            "is_write_index": True,
+                        }
+                    }
+                ]
+            }
+        )
     log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
 
 
