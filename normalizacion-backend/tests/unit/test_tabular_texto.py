@@ -195,3 +195,19 @@ class TestEncoding:
 
         r = extraer_texto(_ctx("JOSÉ MUÑOZ".encode(), "text/plain"))
         assert r.texto and "MUÑOZ" in r.texto
+
+    def test_csv_cp1252_no_tira_el_lote(self) -> None:
+        """polars exige UTF-8: un CSV en cp1252 reventaba con `invalid utf-8 sequence` y
+        el lote ENTERO se indexaba sin texto (medido en 'Matrix.rar')."""
+        datos = f"nombre,curp\nJOSÉ MUÑOZ PEÑA,{CURP}\n".encode("cp1252")
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto and "MUÑOZ" in r.texto and CURP in r.texto
+        assert "recodificado_cp1252" in r.flags
+
+    def test_csv_cortado_a_mitad_de_caracter(self) -> None:
+        """La muestra se corta en `calidad_max_bytes` y puede partir una «Ñ» (2 bytes):
+        el byte huérfano del final no puede tirar el lote ni forzar una recodificación."""
+        datos = f"nombre,curp\nMUÑOZ,{CURP}\nPEÑA".encode()[:-2]  # parte la «Ñ»
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto and "MUÑOZ" in r.texto
+        assert "recodificado_cp1252" not in r.flags

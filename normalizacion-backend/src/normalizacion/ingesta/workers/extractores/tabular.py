@@ -74,12 +74,39 @@ def _perfil_calidad(df: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def _a_utf8(datos: bytes) -> tuple[bytes, str | None]:
+    """Normaliza los bytes a UTF-8 válido antes de dárselos a polars (que exige UTF-8).
+
+    Dos causas reales de `invalid utf-8 sequence`, las dos tiraban el lote ENTERO
+    (indexado sin texto, `extraccion_fallida`):
+    - La muestra se corta en `calidad_max_bytes` y puede partir un carácter multibyte
+      al final → se recortan esos 1-3 bytes huérfanos.
+    - Dumps en cp1252/latin-1 (lo normal en bases mexicanas: medido en 'Matrix.rar').
+      Se recodifican desde cp1252 —no con `utf8-lossy`, que cambiaría cada «é» por
+      «�» y rompería la búsqueda por nombre—. cp1252 es superconjunto práctico de
+      latin-1 en el rango imprimible; los pocos bytes sin definir se reemplazan."""
+    try:
+        datos.decode("utf-8")
+        return datos, None
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(datos) - 3:
+            try:
+                datos[: exc.start].decode("utf-8")
+                return datos[: exc.start], None
+            except UnicodeDecodeError:
+                pass
+    return datos.decode("cp1252", errors="replace").encode("utf-8"), "recodificado_cp1252"
+
+
 @registrar("text/csv", "application/x-ndjson", "application/json")
 def extraer_tabular(ctx: ContextoExtraccion) -> ResultadoExtraccion:
     datos = ctx.fuente.read(ctx.perillas.calidad_max_bytes)
     flags: list[str] = []
     if ctx.tamano > len(datos):
         flags.append("perfil_truncado")  # se perfila la muestra, no el archivo entero
+    datos, recodificado = _a_utf8(datos)
+    if recodificado:
+        flags.append(recodificado)
 
     if ctx.tipo_real == "application/json":
         # JSON único: sin perfil tabular; las claves raíz se vuelven buscables
