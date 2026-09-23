@@ -224,27 +224,40 @@ def aplicar_indice(config: Config, ruta_deploy: Path = Path("deploy")) -> None:
             }
         cliente.indices.create(index=indice, body=cuerpo)
     else:
-        # El índice YA existía: el bloque de arriba no corre y `is_write_index` se
-        # queda como estuviera. Sin este paso, `aplicar_indice` no era idempotente
-        # para el caso real que motivó el comentario de arriba —restaurar el
-        # snapshot del otro nodo dejó TODOS los índices del alias en
-        # `is_write_index: false` (ninguno designado)— porque el índice de este
-        # nodo ya existía y la función no tocaba nada. `update_aliases` es
-        # idempotente: reafirmar lo que ya está bien no hace daño.
-        cliente.indices.update_aliases(
-            body={
-                "actions": [
-                    {
-                        "add": {
-                            "index": indice,
-                            "alias": config.indice_alias,
-                            "is_write_index": True,
-                        }
-                    }
-                ]
-            }
-        )
+        _asegurar_indice_escritura(cliente, config.indice_alias, indice)
     log.info("indice_aplicado", indice=indice, alias=config.indice_alias)
+
+
+def _asegurar_indice_escritura(cliente: Any, alias: str, inicial: str) -> None:
+    """Si el alias se quedó SIN índice de escritura, designa el propio más reciente.
+
+    Caso real: restaurar el snapshot de otro nodo dejó TODOS los índices del alias en
+    `is_write_index: false` y, como el índice de este nodo ya existía, `aplicar_indice`
+    no tocaba nada — toda indexación nueva rechazada con «no write index is defined».
+
+    Dos cosas que NO se hacen, a propósito:
+    - Si ya hay un índice de escritura, no se toca. La ISM rota (`-000001` →
+      `-000003`) y el de escritura correcto es el último: forzar el inicial devolvería
+      la escritura a un índice viejo en cada arranque del api y cada corrida.
+    - No se elige a ciegas el inicial: entre los índices PROPIOS del alias (mismo
+      prefijo, sufijo numérico; nunca las réplicas `-r` de otros nodos) gana el de
+      número más alto, que es el que la ISM dejó vivo."""
+    try:
+        actual = cliente.indices.get_alias(name=alias)
+    except Exception:
+        actual = {}
+    if any(
+        (meta.get("aliases") or {}).get(alias, {}).get("is_write_index")
+        for meta in actual.values()
+    ):
+        return
+    prefijo = inicial.rsplit("-", 1)[0] + "-"
+    propios = [i for i in actual if i.startswith(prefijo) and i[len(prefijo) :].isdigit()]
+    objetivo = max(propios, key=lambda i: int(i[len(prefijo) :])) if propios else inicial
+    cliente.indices.update_aliases(
+        body={"actions": [{"add": {"index": objetivo, "alias": alias, "is_write_index": True}}]}
+    )
+    log.warning("indice_escritura_redesignado", indice=objetivo, alias=alias)
 
 
 def reindexar_a_mapping_nuevo(
