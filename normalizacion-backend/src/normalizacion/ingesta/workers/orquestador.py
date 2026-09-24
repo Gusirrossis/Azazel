@@ -160,7 +160,11 @@ def _extraer_o_reusar(
     # transitorio —tesseract todavía sin instalar, un timeout puntual, OpenSearch
     # caído— en la respuesta definitiva para ese contenido y para TODAS sus copias, y
     # además la dejaba con la versión al día, así que `reextraer` tampoco la veía.
-    if cache_extraccion.es_cacheable(extraccion.flags):
+    # Y uno barato (texto nativo, milisegundos) tampoco: guardarlo cuesta más que
+    # rehacerlo (ver `cache_extraccion.vale_la_pena`).
+    if cache_extraccion.es_cacheable(extraccion.flags) and cache_extraccion.vale_la_pena(
+        extraccion.flags, extraccion.texto, ms
+    ):
         # Las banderas que se guardan son las del DOC final, con el descarte por
         # confianza ya aplicado. Antes se guardaban las de antes del descarte, así que
         # `ocr_descartado_confianza` no llegaba nunca a la tabla y

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import zipfile
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 
@@ -238,7 +239,7 @@ class TestRar5YCache:
     """RAR5 (que 7zz no decodifica) y RAR SOLID de miles de entradas. Sin binarios reales:
     se simulan `7zz`/`lsar`/`unar` para que corra en cualquier entorno."""
 
-    _LSAR = {
+    _LSAR: ClassVar[dict[str, Any]] = {
         "lsarContents": [
             {"XADFileName": "DBs", "XADIsDirectory": True},
             {"XADFileName": "DBs/a.sql", "XADFileSize": 1000, "XADCompressedSize": 100,
@@ -327,16 +328,22 @@ class TestRar5YCache:
             (dst / "DBs" / "a.sql").write_bytes(sql)
 
         copias: list[str] = []
-        original = C._copiar_con_limite
-        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
-        monkeypatch.setattr(
-            C, "_copiar_con_limite", lambda o, d, lim, que: (copias.append(que), original(o, d, lim, que))
-        )
+        copiar = C._copiar_con_limite
+
+        def _copiar_contando(o: Any, d: Any, lim: int, que: str) -> None:
+            copias.append(que)
+            copiar(o, d, lim, que)
+
         vistas: list[object] = []
         servir = texto_lotes.servir_lote
-        monkeypatch.setattr(
-            texto_lotes, "servir_lote", lambda fuente, *a, **kw: (vistas.append(fuente), servir(fuente, *a, **kw))[1]
-        )
+
+        def _servir_viendo(fuente: object, *a: Any, **kw: Any) -> Any:
+            vistas.append(fuente)
+            return servir(fuente, *a, **kw)
+
+        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
+        monkeypatch.setattr(C, "_copiar_con_limite", _copiar_contando)
+        monkeypatch.setattr(texto_lotes, "servir_lote", _servir_viendo)
         try:
             f = C.abrir_entrada(
                 tmp_path, ["s.rar", "DBs/a.sql", "texto/0-65536"],

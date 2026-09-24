@@ -41,6 +41,25 @@ class TestCacheableSoloLoDefinitivo:
         assert cache_extraccion.es_cacheable(["ocr_vacio"]) is True
 
 
+class TestSoloSeCacheaLoCaro:
+    """Guardar el texto de cada lote nativo (~490.000 trozos de `.sql` en 'Matrix.rar')
+    saturó el WAL de Postgres: los workers esperando `WALWrite` y el panel esperando
+    locks. Solo compensa guardar lo que sería caro repetir."""
+
+    def test_texto_nativo_barato_no_se_guarda(self) -> None:
+        assert cache_extraccion.vale_la_pena([], "INSERT INTO t VALUES (1);", ms=3) is False
+
+    def test_ocr_siempre_se_guarda_aunque_sea_rapido(self) -> None:
+        assert cache_extraccion.vale_la_pena(["ocr_ok"], "JUAN PEREZ", ms=5) is True
+
+    def test_ocr_intentado_sin_texto_tambien(self) -> None:
+        """`reextraer --motor ocr_sin_texto` necesita encontrarlo cuando mejore el OCR."""
+        assert cache_extraccion.vale_la_pena(["ocr_vacio"], None, ms=5) is True
+
+    def test_extraccion_nativa_lenta_si_se_guarda(self) -> None:
+        assert cache_extraccion.vale_la_pena([], "texto de un PDF enorme", ms=4000) is True
+
+
 class TestClaveDeVersion:
     """`ocr_activo` tiene que estar DENTRO de la clave de invalidación. Sin él, un PDF
     escaneado extraído con el OCR apagado (cero texto) servía como caché al encenderlo:

@@ -48,10 +48,25 @@ _BANDERAS_NO_CACHEABLES = (
 
 _TIMEOUT = 5
 
+#: Por debajo de esto, re-extraer cuesta menos que guardar y releer la caché.
+_MS_MINIMO_CACHE = 250
+
 
 def es_cacheable(flags: list[str]) -> bool:
     """¿Este resultado es definitivo, o fruto de un fallo/interrupción?"""
     return not any(f.startswith(_BANDERAS_NO_CACHEABLES) for f in flags)
+
+
+def vale_la_pena(flags: list[str], texto: str | None, ms: int) -> bool:
+    """¿Compensa guardar este resultado? Solo si repetirlo sería CARO.
+
+    La caché existe para no repetir el OCR —y para que `reextraer` sepa qué rehacer
+    cuando mejora—. Un trozo de texto nativo se extrae en milisegundos: guardarlo cuesta
+    más que rehacerlo. Medido en la matriz: los ~490.000 lotes de 64 KB de los `.sql` de
+    'Matrix.rar' metían su texto ENTERO en Postgres (1,9 GB en una hora, duplicando lo
+    que ya va a OpenSearch), el WAL se saturó y los workers pasaban el tiempo esperando
+    `WALWrite` — hasta las sesiones del panel quedaban esperando locks."""
+    return motor_de(flags, texto) != "nativo" or ms >= _MS_MINIMO_CACHE
 
 
 def clave_version(config: Config) -> str:
