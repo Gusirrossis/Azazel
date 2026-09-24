@@ -97,9 +97,15 @@ def validar(config: Config, token: str | None) -> SesionActiva | None:
             return None
         # Renovación deslizante: mientras se use, la sesión no caduca por reloj;
         # caduca por INACTIVIDAD, que es lo que de verdad importa aquí.
+        #
+        # Como mucho una vez por minuto. Esto corre en CADA petición, y el panel lanza
+        # varias a la vez con la misma sesión: todas reescribían la MISMA fila y se
+        # formaban en cola sobre su lock detrás de commits lentos. Medido en la matriz
+        # con una corrida grande: `UPDATE sesiones` era la espera más frecuente de todo
+        # Postgres. Con sesiones de horas, un minuto de desfase en la caducidad no importa.
         conn.execute(
             "UPDATE sesiones SET vista_en = now(), expira_en = now() + %s * interval '1 minute'"
-            " WHERE id = %s",
+            " WHERE id = %s AND vista_en < now() - interval '60 seconds'",
             (config.sesion_duracion_min, fila[0]),
         )
         conn.commit()
