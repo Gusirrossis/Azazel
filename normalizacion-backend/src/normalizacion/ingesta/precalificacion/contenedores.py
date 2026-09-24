@@ -22,6 +22,7 @@ import bz2
 import contextlib
 import gzip
 import hashlib
+import io
 import json
 import lzma
 import os
@@ -1014,19 +1015,18 @@ def _paso_zip(fobj: IO[bytes], entrada: str, umbral: int, limite: int) -> IO[byt
     return spool
 
 
-def _servir_desde_arbol(origen_fs: Path, entrada: str, umbral: int, limite: int) -> IO[bytes]:
-    """Copia una entrada ya extraída (en disco) a un spool con tope duro."""
+def _servir_desde_arbol(origen_fs: Path, entrada: str, limite: int) -> IO[bytes]:
+    """Abre EN SITIO una entrada ya extraída en la caché, sin copiarla.
+
+    Antes se copiaba entera a un spool en cada petición. Con los lotes de texto eso es
+    catastrófico: un lote de 64 KB de un `.sql` de 1,6 GB copiaba los 1,6 GB — por
+    lote. Medido en la matriz ('Matrix.rar', 412 `.sql`, 29 GB): ~30 TB escritos en 4 h,
+    disco al 75 % de presión y la corrida parada. El archivo de la caché no cambia
+    mientras se lee (se escribe entero antes del rename atómico), así que el tope se
+    comprueba exacto con `stat`, sin copiar para contar."""
     if origen_fs.stat().st_size > limite:
         raise ContenedorInseguro(f"entrada '{entrada}' excede el límite ({limite} B)")
-    spool: IO[bytes] = SpooledTemporaryFile(max_size=umbral)  # noqa: SIM115
-    try:
-        with origen_fs.open("rb") as f:
-            _copiar_con_limite(f, spool, limite, entrada)
-    except ContenedorInseguro:
-        spool.close()
-        raise
-    spool.seek(0)
-    return spool
+    return origen_fs.open("rb")
 
 
 def _paso_7z(
@@ -1040,7 +1040,7 @@ def _paso_7z(
         origen_fs = dir_ex / entrada
         if not origen_fs.is_file():
             raise OSError(f"entrada no encontrada en 7z: {entrada}")
-        return _servir_desde_arbol(origen_fs, entrada, umbral, limite)
+        return _servir_desde_arbol(origen_fs, entrada, limite)
 
     # 7z ANIDADO dentro de otro contenedor (stream, sin ruta en disco): fallback
     # por-entrada. py7zr ≥1.0 ya no tiene read(): se extrae SOLO esa entrada a un
@@ -1087,7 +1087,7 @@ def _paso_rar(
         origen_fs = dir_ex / entrada
         if not origen_fs.is_file():
             raise OSError(f"entrada no encontrada en rar: {entrada}")
-        return _servir_desde_arbol(origen_fs, entrada, umbral, limite)
+        return _servir_desde_arbol(origen_fs, entrada, limite)
 
     # RAR anidado (stream, sin ruta en disco): fallback por-entrada con `unar`.
     ruta, es_temporal = _ruta_temporal_de(fobj)
@@ -1214,6 +1214,18 @@ def _paso_documento(
     return documento_lotes.servir_lote(fuente, entrada, umbral_memoria=umbral, limite_bytes=limite)
 
 
+def _ruta_si_es_archivo_real(fobj: IO[bytes]) -> Path | None:
+    """Ruta en disco del paso recién servido, si es un archivo REAL (una entrada abierta
+    en sitio desde la caché), no un spool. Así el paso siguiente —el lote de texto/CSV,
+    o una SQLite— lee en sitio en vez de sobre una copia o un temporal materializado."""
+    nombre = getattr(fobj, "name", None)
+    if isinstance(fobj, io.BufferedReader) and isinstance(nombre, str):
+        ruta = Path(nombre)
+        if ruta.is_file():
+            return ruta
+    return None
+
+
 def abrir_entrada(
     raiz: Path, cadena: list[str], *, umbral_memoria: int, limite_bytes: int
 ) -> IO[bytes]:
@@ -1276,7 +1288,7 @@ def abrir_entrada(
                 raise OSError(f"paso de cadena con formato no soportado: {entrada}")
             fobj.close()
             fobj = siguiente
-            ruta_fs_actual = None
+            ruta_fs_actual = _ruta_si_es_archivo_real(fobj)
         fobj.seek(0)
         return fobj
     except (ContenedorInseguro, ContenedorIlegible):

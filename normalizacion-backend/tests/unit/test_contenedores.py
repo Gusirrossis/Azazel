@@ -308,6 +308,48 @@ class TestRar5YCache:
         finally:
             C._limpiar_cache_7z()
 
+    def test_lote_de_texto_se_lee_en_sitio_sin_copiar_la_entrada(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cada lote de 64 KB copiaba el `.sql` ENTERO a un temporal (1,6 GB por lote):
+        ~30 TB escritos en 4 h en la matriz. La entrada de la caché se abre en sitio y el
+        lote lee solo su ventana."""
+        import normalizacion.ingesta.precalificacion.contenedores as C
+        from normalizacion.ingesta.precalificacion import texto_lotes
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
+        (tmp_path / "s.rar").write_bytes(b"Rar!\x1a\x07\x01\x00")
+        sql = b"".join(f"INSERT INTO t VALUES ({i});\n".encode() for i in range(20_000))
+
+        def _unar_falso(rf: Path, dst: Path) -> None:
+            (dst / "DBs").mkdir()
+            (dst / "DBs" / "a.sql").write_bytes(sql)
+
+        copias: list[str] = []
+        original = C._copiar_con_limite
+        monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
+        monkeypatch.setattr(
+            C, "_copiar_con_limite", lambda o, d, lim, que: (copias.append(que), original(o, d, lim, que))
+        )
+        vistas: list[object] = []
+        servir = texto_lotes.servir_lote
+        monkeypatch.setattr(
+            texto_lotes, "servir_lote", lambda fuente, *a, **kw: (vistas.append(fuente), servir(fuente, *a, **kw))[1]
+        )
+        try:
+            f = C.abrir_entrada(
+                tmp_path, ["s.rar", "DBs/a.sql", "texto/0-65536"],
+                umbral_memoria=1 << 20, limite_bytes=1 << 30,
+            )
+            lote = f.read()
+            f.close()
+            assert copias == []  # la entrada del RAR NO se copió
+            assert isinstance(vistas[0], Path) and vistas[0].name == "a.sql"  # se leyó en sitio
+            assert lote.startswith(b"INSERT INTO t VALUES (0);") and len(lote) < 70_000
+        finally:
+            C._limpiar_cache_7z()
+
     def test_unar_parcial_conserva_lo_extraido(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
