@@ -309,7 +309,7 @@ class TestLocalNoCambiaNada:
         # para que un cambio de conducta del filtro no pase sin subir la versión — sin ella,
         # dos archivos clasificados con reglas distintas quedan indistinguibles en
         # `archivos.version_filtro` y en el índice.
-        assert c.filtro.version_filtro == "reglas-v5-troceo-texto"
+        assert c.filtro.version_filtro == "reglas-v6-lote-hereda-padre"
         assert c.filtro.umbral_hot == 65
         assert c.recursos.mem_por_worker_mb == 700
         assert c.recursos.politica == "conservador"

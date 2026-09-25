@@ -199,7 +199,7 @@ class PerillasFiltro(BaseModel):
     lineas_consistencia_csv: int = 10
 
     # ⚙ K7 — pesos del puntaje (señal → puntos). CUALQUIER cambio = nueva version_filtro.
-    version_filtro: str = "reglas-v5-troceo-texto"
+    version_filtro: str = "reglas-v6-lote-hereda-padre"
     pesos: dict[str, int] = Field(
         default_factory=lambda: {
             "tabular": 35,

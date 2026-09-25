@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import codecs
 
+from normalizacion.ingesta.precalificacion.reglas import decodificar_utf16
+
 from . import ContextoExtraccion, ResultadoExtraccion, registrar
 
 
@@ -32,7 +34,18 @@ def _decodificar_tolerante(datos: bytes) -> str:
     multibyte cortado al final del bloque leído (`final=False`: no exige cerrarlo, así un
     corte a mitad de char no tira todo el texto a un fallback equivocado), y se cae a
     CP1252 y por último a Latin-1, que mapea los 256 bytes y nunca falla.
+
+    UTF-16 va ANTES que UTF-8, porque el NUL es UTF-8 válido: un UTF-16 de texto latino
+    «decodifica» como UTF-8 con un NUL entre cada letra. Así entró al índice el .sql
+    UTF-16 de 430 MB de Matrix (49,9 % de U+0000), y en otros discos hay 4.013 text/plain
+    UTF-16 indexados (20 de 20 docs muestreados en OpenSearch con U+0000).
+    `decodificar_utf16` lo reconoce por BOM o por la paridad de sus NUL —así también un
+    lote de ventana, que empieza sin BOM y a mitad de carácter— y deshace el 0x0D que el
+    modo texto de Windows mete delante de cada byte 0x0A.
     """
+    utf16 = decodificar_utf16(datos)
+    if utf16 is not None:
+        return utf16[0]
     try:
         return codecs.getincrementaldecoder("utf-8-sig")().decode(datos, final=False)
     except UnicodeDecodeError:

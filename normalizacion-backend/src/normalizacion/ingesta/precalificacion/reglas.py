@@ -15,6 +15,7 @@ INVARIANTE (con test): mismas entradas → mismo resultado. Nada aquí toca la b
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import json
@@ -361,6 +362,97 @@ def _decodificar(buf: bytes) -> tuple[str | None, str]:
         return buf.decode("latin-1", "replace"), "latin-1"
 
 
+def _ratio_imprimibles(texto: str) -> float:
+    if not texto:
+        return 0.0
+    return sum(1 for c in texto if c.isprintable() or c in "\n\r\t") / len(texto)
+
+
+_BOM_UTF16: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+# UTF-16 de alfabeto latino sin BOM: la mitad de sus bytes son NUL —el byte alto de cada
+# carácter ASCII— y caen casi todos en la MISMA paridad. Medido en el .sql UTF-16 de
+# Matrix: NUL 49,6-50 % por lote. Un binario con NUL (AppleDouble, un .txt con regiones
+# densas de ceros) también ronda el 50 %, pero repartido entre pares e impares.
+_UTF16_NULOS_MIN = 0.3
+_UTF16_NULOS_MAX = 0.7
+_UTF16_PUREZA_MIN = 0.9
+_UTF16_MODO_TEXTO_MIN = 0.9
+
+
+def _nulos_por_paridad(buf: bytes) -> tuple[int, int]:
+    return buf[0::2].count(0), buf[1::2].count(0)
+
+
+def _deshacer_modo_texto(datos: bytes) -> bytes:
+    """Un UTF-16 que pasó por un stream en modo texto de Windows lleva un 0x0D delante de
+    CADA byte 0x0A, aunque sea medio carácter: el .sql UTF-16 de Matrix tiene 859.021 de
+    859.021 fines de línea como `0D 00 0D 0A 00`. Ese byte suelto invierte la alineación
+    de una línea a la siguiente. Bien formado, el 0x0A de un salto va tras un 0x00, así que
+    si casi todos van tras 0x0D es esa traducción, y se invierte EXACTA quitando el 0x0D que
+    precede a cada 0x0A (un `0D 0A` original quedó `0D 0D 0A` y vuelve a ser `0D 0A`)."""
+    saltos = datos.count(b"\n")
+    if saltos and datos.count(b"\r\n") >= _UTF16_MODO_TEXTO_MIN * saltos:
+        return datos.replace(b"\r\n", b"\n")
+    return datos
+
+
+def _decodificar_alineado(buf: bytes, encoding: str) -> str:
+    """Decodifica un tramo UTF-16 SIN BOM que puede empezar un byte tarde: un lote de
+    ventana corta en el byte 0x0A, así que el lote empieza con el byte alto huérfano del
+    salto de línea. Los NUL marcan la alineación: en little-endian son los bytes impares y
+    en big-endian los pares; si caen del otro lado, sobra el primer byte."""
+    pares, impares = _nulos_por_paridad(buf)
+    if (pares > impares) if encoding == "utf-16-le" else (impares > pares):
+        buf = buf[1:]
+    if len(buf) % 2:
+        buf = buf[:-1]
+    return buf.decode(encoding, "replace")
+
+
+def decodificar_utf16(datos: bytes, *, imprimibles_min: float = 0.9) -> tuple[str, str] | None:
+    """(texto, encoding) si `datos` es UTF-16 —por BOM o por la paridad de sus NUL—; si no,
+    None. Sin esto el UTF-16 pasa por UTF-8 (el NUL es UTF-8 válido): el doc del .sql
+    UTF-16 de 430 MB de Matrix entró al índice con un 49,9 % de U+0000, y sus 6.560 lotes
+    —que empiezan sin BOM— fueron a frío como binario por el detector de nulos.
+
+    Con BOM, el BOM fija la alineación y la paridad de los NUL no la toca: en un texto CJK
+    los NUL son el byte BAJO de los U+xx00 (一 es U+4E00) y caen del lado contrario al del
+    latino, así que alinear por ellos desplazaba un byte todo el texto y salía basura."""
+    encoding: str | None = None
+    for bom, enc in _BOM_UTF16:
+        if datos.startswith(bom):
+            datos, encoding = datos[len(bom) :], enc
+            break
+    if encoding is None and not (
+        len(datos) >= 2 and _UTF16_NULOS_MIN <= datos.count(0) / len(datos) <= _UTF16_NULOS_MAX
+    ):
+        return None
+    datos = _deshacer_modo_texto(datos)
+    if encoding is not None:
+        return datos[: len(datos) // 2 * 2].decode(encoding, "replace"), encoding
+
+    enc = "utf-16-le"  # sin BOM: el UTF-16 que llega es de Windows
+    nulos = datos.count(0)
+    if max(_nulos_por_paridad(datos)) >= _UTF16_PUREZA_MIN * nulos:
+        texto = _decodificar_alineado(datos, enc)
+    else:
+        # Paridad mezclada pero pura LÍNEA A LÍNEA: saltos de modo texto mezclados con
+        # saltos bien formados, en proporción que `_deshacer_modo_texto` no se atreve a
+        # tocar. Cada línea se alinea por separado y el byte suelto sobra al final.
+        lineas = datos.split(b"\n")
+        if sum(max(_nulos_por_paridad(ln)) for ln in lineas) < _UTF16_PUREZA_MIN * nulos:
+            return None
+        texto = "\n".join(_decodificar_alineado(ln, enc) for ln in lineas)
+    # Sin BOM, la paridad sola no prueba que sea texto: un arreglo de enteros de 16 bits
+    # también la tiene. Se exige que lo decodificado se pueda leer.
+    if _ratio_imprimibles(texto) < imprimibles_min:
+        return None
+    return texto, enc
+
+
 def _es_tabular(texto: str, lineas_consistencia: int) -> tuple[bool, int]:
     """csv.Sniffer + consistencia de nº de columnas en las primeras N líneas."""
     lineas = [ln for ln in texto.splitlines() if ln.strip()][:lineas_consistencia]
@@ -398,16 +490,21 @@ def _es_json_o_ndjson(texto: str) -> tuple[bool, bool]:
     return True, False
 
 
-def analizar_head(perillas: PerillasFiltro, buf: bytes) -> dict[str, Any]:
-    """Señales T2 del head (8-64 KB, ⚙K5/K6). Todas se guardan: auditables y features del T4."""
+def analizar_head(
+    perillas: PerillasFiltro, buf: bytes, *, preferir_sql: bool = False
+) -> dict[str, Any]:
+    """Señales T2 del head (8-64 KB, ⚙K5/K6). Todas se guardan: auditables y features del T4.
+
+    `preferir_sql`: el archivo ya dice ser SQL (extensión `.sql` o lote de un padre
+    `application/sql`), así que si el head trae sentencias SQL, eso gana a un `<html`.
+    Medido en Matrix: 13 `.sql` de nivel RAR (1,75 GB, uno de 1,72 GB) fueron a frío como
+    `text/html` porque sus INSERT guardan páginas HTML en las columnas, y en 8 de los 13
+    hay un `<html` en los primeros 2 KB. La extensión no crea el tipo: solo desempata
+    entre dos señales que el CONTENIDO ya da; sin sentencias SQL sigue siendo HTML."""
     senales: dict[str, Any] = {"entropia": round(entropia_shannon(buf), 3)}
     texto, encoding = _decodificar(buf)
     senales["encoding"] = encoding
-    if texto:
-        imprimibles = sum(1 for c in texto if c.isprintable() or c in "\n\r\t")
-        senales["ratio_imprimibles"] = round(imprimibles / len(texto), 3)
-    else:
-        senales["ratio_imprimibles"] = 0.0
+    senales["ratio_imprimibles"] = round(_ratio_imprimibles(texto or ""), 3)
 
     legible = senales["ratio_imprimibles"] >= perillas.ratio_imprimibles_min
     senales["texto_legible"] = legible
@@ -424,17 +521,18 @@ def analizar_head(perillas: PerillasFiltro, buf: bytes) -> dict[str, Any]:
         if not es_json:
             # cabeceras antes que SQL/CSV: el CUERPO de un correo puede contener ambos
             senales["es_correo"] = len({m.lower() for m in _EML_RE.findall(texto[:4096])}) >= 2
-            bajo = texto[:2048].lower()
-            senales["es_html"] = not senales["es_correo"] and (
-                "<!doctype html" in bajo or "<html" in bajo
-            )
-            if not senales["es_correo"] and not senales["es_html"]:
-                senales["es_sql"] = bool(_SQL_RE.search(texto[:8192]))
-                if not senales["es_sql"]:
-                    es_csv, columnas = _es_tabular(texto, perillas.lineas_consistencia_csv)
-                    senales["es_csv"] = es_csv
-                    if es_csv:
-                        senales["columnas"] = columnas
+            if not senales["es_correo"]:
+                es_sql = bool(_SQL_RE.search(texto[:8192]))
+                bajo = texto[:2048].lower()
+                parece_html = "<!doctype html" in bajo or "<html" in bajo
+                senales["es_html"] = parece_html and not (preferir_sql and es_sql)
+                if not senales["es_html"]:
+                    senales["es_sql"] = es_sql
+                    if not es_sql:
+                        es_csv, columnas = _es_tabular(texto, perillas.lineas_consistencia_csv)
+                        senales["es_csv"] = es_csv
+                        if es_csv:
+                            senales["columnas"] = columnas
             senales["es_xml"] = not senales["es_html"] and bool(_XML_INICIO.match(buf))
     return senales
 
@@ -613,6 +711,97 @@ def _rutear_imagen(
     )
 
 
+# ---------------------------------------------------------------- lotes de ventana de texto
+
+#: Lo que una VENTANA de texto puede ser de verdad, además de `text/*`. Un lote `texto/…`
+#: es un rango de bytes de un texto ya aceptado; si T1 le ve otra cosa —una firma corta
+#: (ORC, TAPE, 'ustar' en el offset 257), una imagen, un contenedor— es una coincidencia
+#: de los bytes de esa ventana. Medido en Matrix: un lote con 'ustar' en el offset 257 se
+#: exploró como tar y quedó INDEXADO sin contenido.
+_TIPOS_VENTANA_TEXTO: frozenset[str] = (
+    CONTENEDORES_TEXTO | CONTENEDORES_TABULARES | frozenset({"application/json"})
+)
+
+#: Candado de binario al heredar. `ratio_imprimibles` solo no basta: las 3.644 ventanas
+#: de BLOBs de Matrix (fotos JPEG dentro de INSERT) llegan a 0,896 de imprimibles —233
+#: entre 0,8 y 0,9, con el umbral en 0,9— porque latin-1 «imprime» casi todos los bytes
+#: altos. Lo que las separa son los bytes de control C0, que en texto casi solo son \t, \n
+#: y \r. Medido en Matrix: las 6.301 ventanas HTML heredables llegan como mucho a 0,94 %
+#: (dos a 1,86 % con el troceo nuevo) y las 3.644 de BLOB empiezan en 3,31 % (4,25 % con
+#: el troceo de antes). Con el troceo nuevo también hay ventanas desde 1,8 % en líneas
+#: con BLOB: a ~10 % de C0 por byte de foto, son texto con un trozo de BLOB. El umbral va
+#: en medio y, en la duda, del lado del recall: ese trozo es ruido en el índice, mientras
+#: que una ventana de texto en frío no la encuentra nadie.
+_CONTROL_C0_MAX_LOTE = 0.02
+_CONTROL_C0 = bytes(b for b in range(0x20) if b not in b"\t\n\r")
+
+
+def _ratio_control_c0(buf: bytes) -> float:
+    if not buf:
+        return 0.0
+    return (len(buf) - len(buf.translate(None, _CONTROL_C0))) / len(buf)
+
+
+def _sin_caracter_cortado(buf: bytes) -> bytes:
+    """El head sin el carácter UTF-8 que el corte a 64 KB deja a medias. Con él, el UTF-8
+    estricto de `_decodificar` falla y cae a latin-1, que convierte los bytes 0x80-0x9F de
+    comillas y rayas (“ es E2 80 9C) en controles C1. Medido en Matrix: 10 ventanas HTML
+    UTF-8 se quedaban en frío con 0,767-0,871 de imprimibles, y sin sus 1-2 bytes finales
+    dan 0,999-1,0. Solo aquí: tocar `_decodificar` cambiaría T2 para todo el corpus."""
+    decodificador = codecs.getincrementaldecoder("utf-8")()
+    try:
+        decodificador.decode(buf, final=False)
+    except UnicodeDecodeError:
+        return buf
+    pendiente = decodificador.getstate()[0]
+    return buf[: len(buf) - len(pendiente)] if pendiente else buf
+
+
+def _t1_cabe_en_ventana_de_texto(perillas: PerillasFiltro, deteccion: DeteccionT1) -> bool:
+    """¿Lo que T1 vio en una ventana de texto es algo que una ventana de texto puede ser?"""
+    if deteccion.tipo is None:
+        return deteccion.detector == "texto"
+    return (
+        deteccion.detector == "libmagic"
+        and not deteccion.es_contenedor
+        and pasa_lista(perillas, deteccion.tipo)
+        and (deteccion.tipo.startswith("text/") or deteccion.tipo in _TIPOS_VENTANA_TEXTO)
+    )
+
+
+def _heredar_tipo_padre(
+    perillas: PerillasFiltro,
+    *,
+    head: bytes,
+    senales: dict[str, Any],
+    tipo_ventana: str | None,
+    tipo_padre: str,
+    preferir_sql: bool,
+) -> tuple[str, ResultadoPrecalificacion | None]:
+    """El lote toma el tipo de su padre si su ventana se puede LEER; si no, va a frío con
+    motivo propio. Devuelve (tipo, None) para seguir a puntuar, o (tipo, decisión de frío).
+
+    Legible es lo de siempre (`texto_legible`) más el candado de control C0, sobre el texto
+    decodificado si la ventana es UTF-16: esas ventanas son un 50 % de NUL en crudo."""
+    utf16 = decodificar_utf16(head, imprimibles_min=perillas.ratio_imprimibles_min)
+    muestra = _sin_caracter_cortado(head) if utf16 is None else utf16[0].encode("utf-8")
+    senales.update(analizar_head(perillas, muestra, preferir_sql=preferir_sql))
+    senales["tier"] = "T2"
+    if utf16 is not None:
+        senales["encoding"] = utf16[1]
+        senales["utf16"] = True
+    tipo_ventana = tipo_ventana or refinar_tipo_texto(senales)
+    senales["tipo_ventana"] = tipo_ventana
+    control = _ratio_control_c0(muestra)
+    senales["control_c0"] = round(control, 4)
+    if senales["texto_legible"] and control < _CONTROL_C0_MAX_LOTE:
+        senales["tipo_heredado"] = True
+        return tipo_padre, None
+    return tipo_ventana, ResultadoPrecalificacion(
+        5, RutaDecision.COLD, tipo_ventana, "lote_ilegible", senales
+    )
+
+
 def precalificar_contenido(
     perillas: PerillasFiltro,
     *,
@@ -623,6 +812,7 @@ def precalificar_contenido(
     ruta_relativa: str,
     tamano: int,
     permitir_contenedor_hoja: bool = True,
+    tipo_padre: str | None = None,
 ) -> ResultadoPrecalificacion:
     """Orquesta T0 → T1 → T2 → puntaje → router sobre contenido ya leído. Determinista.
 
@@ -632,7 +822,18 @@ def precalificar_contenido(
     `permitir_contenedor_hoja=False` en un LOTE/trozo ya servido (NDJSON, slice de texto…):
     sin esto un trozo —que también es texto/NDJSON— se marcaría contenedor y se
     re-exploraría a sí mismo en bucle infinito. El llamador lo pone a False cuando la
-    entrada viene con `origen["hoja"]`."""
+    entrada viene con `origen["hoja"]`.
+
+    `tipo_padre`, SOLO en un lote de ventana de texto (`texto/…`): el tipo real del archivo
+    del que la ventana es un rango de bytes. Sin él cada ventana de 64 KB se re-detectaba
+    desde cero y, si su tipo no estaba en la lista blanca, iba a frío aunque su padre
+    fuera un .sql aceptado. Medido en Matrix: 6.311 ventanas de SQL con HTML en sus
+    columnas fueron a frío como `text/html`, 6.562 de un .sql UTF-16 como binario (sus
+    ventanas empiezan sin BOM) y 29 por falsos positivos de libmagic (javascript, zlib…).
+    Solo se hereda cuando el tipo propio de la ventana se rechazaría o no puede ser el de
+    un trozo de texto; las ventanas que hoy entran conservan su tipo (el de 255.614 lotes
+    SQL indexados como `text/csv` es otra decisión, sin medir). No se hereda en lotes de
+    SQLite/CSV/PDF: esos se sirven como NDJSON o mini-PDF, no como bytes del padre."""
     # T0 — sin tocar el contenido
     kill = evaluar_t0(
         perillas, nombre=nombre, extension=extension, ruta=ruta_relativa, tamano=tamano
@@ -640,11 +841,49 @@ def precalificar_contenido(
     if kill:
         return ResultadoPrecalificacion(0, RutaDecision.COLD, None, kill, {"tier": "T0"})
 
+    if not head:
+        # Declara bytes y se sirvió VACÍO: no es un tipo fuera de la lista. libmagic llama
+        # `application/x-empty` a b"" y así iban a frío, como `fuera_de_lista_blanca` y sin
+        # avisar, 106.140 lotes de Matrix (ventanas dentro de una línea de ~1 MB que el
+        # troceo servía con 0 bytes) y 41 entradas del RAR que la extracción dejó en 0 B.
+        # Motivo propio, y quien sabe de dónde viene la fila decide si es un fallo: el
+        # precalificador manda a ERROR `servido_vacio` y el lote de texto vacío, pero no un
+        # lote de SQLite vacío, que es un hueco legítimo de rowid.
+        senales_vacio: dict[str, Any] = {"tier": "T1", "detector": "vacio"}
+        if tipo_padre is not None:
+            senales_vacio["tipo_padre"] = tipo_padre
+        es_lote = tipo_padre is not None or not permitir_contenedor_hoja
+        motivo_vacio = "lote_vacio" if es_lote else "servido_vacio"
+        return ResultadoPrecalificacion(0, RutaDecision.COLD, None, motivo_vacio, senales_vacio)
+
+    # Solo se hereda un tipo que el padre mismo tenga permitido.
+    padre = tipo_padre if tipo_padre is not None and pasa_lista(perillas, tipo_padre) else None
+    preferir_sql = (extension or "").lower() == ".sql" or tipo_padre == "application/sql"
+
     # T1 — tipo real
     deteccion = detectar_tipo(head[: perillas.bytes_t1], abrible)
     senales: dict[str, Any] = {"tier": "T1", "detector": deteccion.detector}
+    if padre is not None:
+        senales["tipo_padre"] = padre
 
-    if deteccion.es_contenedor:
+    tipo = deteccion.tipo
+    tipo_libmagic: str | None = None
+    heredado = False
+    if padre is not None and not _t1_cabe_en_ventana_de_texto(perillas, deteccion):
+        # Firma binaria, imagen, contenedor o tipo rechazado en un trozo de texto: no se
+        # explora ni se rutea como tal; decide si la ventana se puede leer.
+        tipo, frio = _heredar_tipo_padre(
+            perillas,
+            head=head,
+            senales=senales,
+            tipo_ventana=tipo,
+            tipo_padre=padre,
+            preferir_sql=preferir_sql,
+        )
+        if frio is not None:
+            return frio
+        heredado = True
+    elif deteccion.es_contenedor:
         # Los contenedores tienen PRIORIDAD (decisión del usuario: la mayoría de lo
         # útil viene dentro). T3 los explora; siempre se preservan íntegros.
         senales["es_contenedor"] = True
@@ -655,22 +894,48 @@ def precalificar_contenido(
             "contenedor_pendiente_t3",
             senales,
         )
-
-    tipo = deteccion.tipo
-    if tipo is not None and perillas.ocr_activo and tipo.startswith("image/"):
+    elif tipo is not None and perillas.ocr_activo and tipo.startswith("image/"):
         return _rutear_imagen(perillas, tipo, senales, abrible)
-    if tipo is not None and not pasa_lista(perillas, tipo):
-        return ResultadoPrecalificacion(5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales)
-
-    # T2 — estructura del head (solo texto/estructurado/documento llega aquí)
-    senales.update(analizar_head(perillas, head))
-    senales["tier"] = "T2"
-    if tipo is None:
-        tipo = refinar_tipo_texto(senales)
-        if not pasa_lista(perillas, tipo):
+    elif tipo is not None and not pasa_lista(perillas, tipo):
+        if not (preferir_sql and deteccion.detector == "libmagic"):
             return ResultadoPrecalificacion(
                 5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales
             )
+        # Un .sql que libmagic llama `text/html` (o javascript, zlib…) por lo que guardan
+        # sus columnas: T2 mira el contenido y, si ve sentencias SQL, gana el SQL.
+        tipo_libmagic, tipo = tipo, None
+
+    if not heredado:
+        # T2 — estructura del head (solo texto/estructurado/documento llega aquí)
+        senales.update(analizar_head(perillas, head, preferir_sql=preferir_sql))
+        senales["tier"] = "T2"
+    if tipo is None:  # heredado ya trae tipo: solo lo refina T2 un candidato a texto
+        tipo = refinar_tipo_texto(senales)
+        if tipo_libmagic is not None:
+            if tipo != "application/sql":
+                # T2 solo desempata a favor del SQL; si no lo ve, manda libmagic. Dejarle la
+                # última palabra sacaba un .sql de HTML sin `<html` en sus primeros 2 KB
+                # como `application/xml` y a HOT (1 de los 13 que libmagic llama
+                # `text/html` en Matrix).
+                return ResultadoPrecalificacion(
+                    5, RutaDecision.COLD, tipo_libmagic, motivo_lista(perillas), senales
+                )
+            senales["tipo_libmagic"] = tipo_libmagic
+        if not pasa_lista(perillas, tipo):
+            if padre is None:
+                return ResultadoPrecalificacion(
+                    5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales
+                )
+            tipo, frio = _heredar_tipo_padre(
+                perillas,
+                head=head,
+                senales=senales,
+                tipo_ventana=tipo,
+                tipo_padre=padre,
+                preferir_sql=preferir_sql,
+            )
+            if frio is not None:
+                return frio
 
     senales["extension_miente"] = bool(extension) and not _extension_coincide(extension, tipo)
 

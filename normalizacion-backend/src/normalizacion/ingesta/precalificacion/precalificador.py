@@ -26,6 +26,14 @@ from .reglas import ResultadoPrecalificacion
 log = obtener_logger("precalificacion")
 
 
+class ServidoVacio(Exception):
+    """Una fila que declara bytes llegó vacía: un archivo o una entrada de contenedor, o
+    una ventana de texto (`texto_lotes` nunca sirve vacía una ventana con contenido). Es un
+    fallo nuestro y va a ERROR, a la vista y reprocesable. En frío pasaba por «no hay
+    nada»: así se escondieron 106.140 ventanas de Matrix y 41 entradas que `unar` dejó en
+    0 B. Un lote de SQLite vacío NO lo es: sus rangos de rowid pueden caer en un hueco."""
+
+
 @dataclass(frozen=True)
 class ResumenPrecalificacion:
     procesados: int
@@ -87,14 +95,59 @@ def _filas_de_entradas(
     return nuevas
 
 
+def _es_lote_de_texto(fila: cola.FilaReclamada) -> bool:
+    """Ventana de bytes de un texto troceado (`texto/…`): el único lote que es un rango de
+    bytes CRUDOS de su padre. Los de SQLite/CSV se sirven como NDJSON y los de PDF/DOCX
+    como mini-PDF o texto: heredarles el tipo mandaría un NDJSON al extractor de SQLite."""
+    origen = fila.origen_contenedor
+    if not origen or not origen.get("hoja"):
+        return False
+    cadena = origen.get("cadena") or []
+    return bool(cadena) and str(cadena[-1]).startswith("texto/")
+
+
+def _tipos_de_padres(
+    conn: psycopg.Connection[Any], filas: list[cola.FilaReclamada]
+) -> dict[str, str]:
+    """archivo_id de cada lote de texto → tipo_real de su padre, en UNA consulta por lote
+    de claim. Se busca por `contenedor_archivo_id`, que ya viaja en `origen_contenedor`
+    (medido en la matriz: 453.080 de 453.080 lotes lo tienen y su padre tiene tipo). Una
+    clave nueva en `origen_contenedor` estaría vacía en todas las filas ya creadas —los
+    122.797 COLD de Matrix incluidos— y un `rescore-frio` no rescataría ninguna."""
+    padre_de: dict[str, str] = {}
+    for fila in filas:
+        if _es_lote_de_texto(fila):
+            padre_id = (fila.origen_contenedor or {}).get("contenedor_archivo_id")
+            if padre_id:
+                padre_de[fila.archivo_id] = str(padre_id)
+    if not padre_de:
+        return {}
+    tipos: dict[str, str] = dict(
+        conn.execute(
+            "SELECT archivo_id, tipo_real FROM archivos"
+            " WHERE archivo_id = ANY(%s) AND tipo_real IS NOT NULL",
+            (sorted(set(padre_de.values())),),
+        ).fetchall()
+    )
+    huerfanos = sum(1 for padre_id in padre_de.values() if padre_id not in tipos)
+    if huerfanos:
+        # Sin tipo del padre el lote se decide como antes (su ventana sola): que se vea.
+        log.warning("lote_sin_tipo_de_padre", lotes=huerfanos)
+    return {lote: tipos[p] for lote, p in padre_de.items() if p in tipos}
+
+
 def _procesar_fila(
     perillas: PerillasFiltro,
     worker: PerillasWorker,
     raiz: str,
     fila: cola.FilaReclamada,
+    *,
+    tipo_padre: str | None = None,
 ) -> tuple[ResultadoPrecalificacion, list[cola.FilaCatalogo]]:
     """Precalifica una fila (archivo del disco o entrada interna) y, si es contenedor,
-    aplica T3. Devuelve (decisión, filas nuevas a re-encolar)."""
+    aplica T3. Devuelve (decisión, filas nuevas a re-encolar).
+
+    `tipo_padre`: solo para lotes de texto (ver `_tipos_de_padres`)."""
     origen = fila.origen_contenedor
     profundidad = int(origen["profundidad"]) if origen else 0
 
@@ -127,7 +180,12 @@ def _procesar_fila(
             # Un trozo ya servido (lote NDJSON, slice de texto) NO se re-explora como
             # contenedor: se puntúa como doc y lo extrae su plugin. Sin esto, bucle infinito.
             permitir_contenedor_hoja=not (origen and origen.get("hoja")),
+            tipo_padre=tipo_padre,
         )
+        if resultado.motivo == "servido_vacio" or (
+            resultado.motivo == "lote_vacio" and _es_lote_de_texto(fila)
+        ):
+            raise ServidoVacio(f"{resultado.motivo}: declara {fila.tamano} B y llegaron 0")
         if not resultado.senales.get("es_contenedor"):
             return resultado, []
 
@@ -153,6 +211,11 @@ def _procesar_fila(
             # y su copia parcial es indistinguible de una entera — que es exactamente
             # como 276.606.467 filas de Lilith quedaron fuera sin que nadie lo supiera.
             senales["contenedor_topado"] = True
+        if exploracion.tamano_ilegible:
+            # Entradas que el listador no supo medir y no se encolaron. `topado` también lo
+            # pone el aislamiento por ratio: sin esto la fila no dice cuál de los dos fue
+            # (sin unrar, la entrada de 21,4 GB de Matrix acaba aquí, ver `_parse_json_lsar`).
+            senales["entradas_tamano_ilegible"] = exploracion.tamano_ilegible
         if not exploracion.ok:
             if exploracion.motivo and exploracion.motivo.startswith("guard_"):
                 # Zip-bomb sospechoso: flag + COLD. NUNCA cuelga al worker (riesgo F3/R8).
@@ -217,13 +280,20 @@ def precalificar_pendientes(
             conn.commit()  # el lease queda visible para otros workers
             if not filas:
                 break
+            tipos_padre = _tipos_de_padres(conn, filas)
 
             for fila in filas:
                 raiz = montajes.get(fila.disco_id)
                 try:
                     if raiz is None:
                         raise OSError(f"disco sin punto de montaje: {fila.disco_id}")
-                    resultado, nuevas = _procesar_fila(perillas, config.worker, raiz, fila)
+                    resultado, nuevas = _procesar_fila(
+                        perillas,
+                        config.worker,
+                        raiz,
+                        fila,
+                        tipo_padre=tipos_padre.get(fila.archivo_id),
+                    )
                 except contenedores.ContenedorInseguro as exc:  # PERMANENTE
                     cola.marcar_error(conn, fila.archivo_id, Estado.PENDIENTE, f"contenedor: {exc}")
                     errores += 1
@@ -234,6 +304,11 @@ def precalificar_pendientes(
                     # que una corrida se quede horas sin avanzar sin un solo error visible.
                     cola.marcar_error(conn, fila.archivo_id, Estado.PENDIENTE, f"ilegible: {exc}")
                     errores += 1
+                    continue
+                except ServidoVacio as exc:  # PERMANENTE: la caché/el troceo no van a cambiar
+                    cola.marcar_error(conn, fila.archivo_id, Estado.PENDIENTE, str(exc))
+                    errores += 1
+                    log.warning("servido_vacio", archivo=fila.ruta, error=str(exc))
                     continue
                 except OSError as exc:  # TRANSITORIO con tope (disco intermitente)
                     en_reintento = cola.fallo_transitorio(
