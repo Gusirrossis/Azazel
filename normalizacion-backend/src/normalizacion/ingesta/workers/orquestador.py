@@ -12,6 +12,7 @@ deja su fila EN_PROCESO con lease — `recuperar_huerfanos` la devuelve a la col
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import time
 from collections.abc import Callable
@@ -249,25 +250,117 @@ def _construir_doc(
     )
 
 
+@dataclass
+class _Cuentas:
+    """Lo que un tramo del worker hizo con sus filas. `ajenas`: filas que ya no eran de
+    este worker al escribir (su lease venció y otro la re-reclamó); las cuenta quien las
+    termine. Contarlas aquí también las duplicaba en la corrida."""
+
+    procesados: int = 0
+    transitorios: int = 0
+    errores: int = 0
+    ajenas: int = 0
+
+    def fallo_transitorio(self, en_reintento: bool | None) -> None:
+        if en_reintento is None:
+            self.ajenas += 1
+        elif en_reintento:
+            self.transitorios += 1
+        else:
+            self.errores += 1
+
+    def error(self, marcada: bool) -> None:
+        if marcada:
+            self.errores += 1
+        else:
+            self.ajenas += 1
+
+    def sumar(self, otra: _Cuentas) -> None:
+        self.procesados += otra.procesados
+        self.transitorios += otra.transitorios
+        self.errores += otra.errores
+        self.ajenas += otra.ajenas
+
+
+def _cerrar_lote(
+    conn: psycopg.Connection[Any],
+    worker_id: str,
+    w: Any,
+    confirmados: list[str],
+    muertos: list[tuple[str, str, bool]],
+    hash_por_id: dict[str, str],
+    fila_por_id: dict[str, cola.FilaReclamada],
+) -> _Cuentas:
+    """Lleva a la cola lo que el índice confirmó o rechazó. Va entero en UNA transacción
+    y se repite entero si hay deadlock, así que cuenta desde cero en cada intento."""
+    cuentas = _Cuentas()
+    for archivo_id in confirmados:
+        if cola.registrar_persistencia(
+            conn, archivo_id, hash_por_id[archivo_id], worker_id=worker_id
+        ):
+            cuentas.procesados += 1
+        else:
+            cuentas.ajenas += 1
+    for archivo_id, motivo, es_transitorio in muertos:
+        if es_transitorio:  # OpenSearch caído: la fila vuelve con backoff
+            intentos = fila_por_id[archivo_id].intentos
+            cuentas.fallo_transitorio(
+                cola.fallo_transitorio(
+                    conn,
+                    archivo_id,
+                    estado_actual=Estado.EN_PROCESO,
+                    estado_retorno=Estado.PRECALIFICADO,
+                    motivo=f"indice: {motivo}",
+                    intentos_actuales=intentos,
+                    intentos_max=w.intentos_max,
+                    backoff_s=w.backoff_transitorio_base_s * (2**intentos),
+                    worker_id=worker_id,
+                )
+            )
+        else:  # el índice rechazó ESTE doc → dead-letter
+            cuentas.error(
+                cola.marcar_error(
+                    conn,
+                    archivo_id,
+                    Estado.EN_PROCESO,
+                    f"indexado_rechazado: {motivo}",
+                    worker_id=worker_id,
+                )
+            )
+    return cuentas
+
+
 def procesar_hot(
     config: Config,
-    worker_id: str = "worker-1",
+    worker_id: str | None = None,
     sink: Sink | None = None,
     almacen: Almacen | None = None,
     seguir_esperando: Callable[[], bool] | None = None,
 ) -> ResumenWorker:
     """Drena las filas PRECALIFICADO (HOT) de la cola: persistir + doc + sink.
 
+    `worker_id`: por omisión, uno ÚNICO por proceso (`cola.identificador_worker`). El
+    valor por defecto era la constante "worker-1", y los 6 `norm worker` que se
+    lanzaron sin id en la matriz compartieron identidad y leases (ver renovar_lease).
+
     `seguir_esperando`: modo CONTINUO — si la cola se vacía pero el productor
     (el precalificador, corriendo en paralelo) sigue vivo, espera en vez de
     terminar. Al morir el productor se hace UN barrido final (evita la carrera
     de filas insertadas entre el último claim y la muerte del productor)."""
+    worker_id = worker_id or cola.identificador_worker("worker")
     sink = sink if sink is not None else SinkNulo()
     almacen = almacen if almacen is not None else crear_almacen(config)
-    procesados = nuevos = dedup = copiados = errores = transitorios = reusos = 0
+    nuevos = dedup = copiados = reusos = 0
+    total = _Cuentas()
     barrido_final = False
     w = config.worker
 
+    # El worker_id viaja como application_name: un deadlock o una espera en
+    # pg_stat_activity se puede atribuir a un worker concreto. En la corrida 7 no se
+    # pudo cruzar el pid del deadlock fatal con el worker que lo causó.
+    conectar = functools.partial(
+        psycopg.connect, config.postgres_dsn, application_name=worker_id[:63]
+    )
     # Dos conexiones a propósito: `conn` para los DATOS (transaccional) y `conn_ctl` en
     # AUTOCOMMIT solo para las lecturas de control (pausa/montajes) y el sondeo del throttle.
     # Clave: el throttle de memoria (esperar_si_presion) BLOQUEA hasta minutos; si se esperara
@@ -275,12 +368,21 @@ def procesar_hot(
     # congelaría el xmin horizon → autovacuum no podría reclamar tuplas muertas y `archivos`
     # (tabla-cola con UPDATE masivo) se infla sin control. Con las lecturas de control en
     # autocommit, durante la espera NINGUNA conexión sostiene snapshot.
+    # La tercera es la del latido (hilo propio): mantiene el lease del lote aunque el
+    # hilo principal pase minutos extrayendo un RAR entero a la caché en `_abrir_fuente`.
     with (
-        psycopg.connect(config.postgres_dsn) as conn,
-        psycopg.connect(config.postgres_dsn, autocommit=True) as conn_ctl,
+        conectar() as conn,
+        conectar(autocommit=True) as conn_ctl,
+        cola.Latido(
+            functools.partial(conectar, autocommit=True), worker_id, w.lease_segundos
+        ) as latido,
     ):
-        huerfanos = cola.recuperar_huerfanos(conn)
-        conn.commit()
+        # Las escrituras DENTRO del lote van con `confirmar=False`: siguen en la
+        # transacción del lote como siempre. Un commit por archivo pagaría un fsync de WAL
+        # por archivo, y la matriz llega a 57-87 % de presión de IO (/proc/pressure/io,
+        # medido al preparar este cambio). `tx` las rehace si un deadlock las deshace.
+        tx = cola.TransaccionCola(conn)
+        huerfanos = tx.escribir("recuperar_huerfanos", cola.recuperar_huerfanos)
         if huerfanos:
             log.warning("huerfanos_rescatados", cuantos=huerfanos)
         montajes = cola.montajes(conn_ctl)
@@ -296,14 +398,14 @@ def procesar_hot(
             recursos.esperar_si_presion(
                 config, etiqueta=worker_id, seguir=lambda: not cola.sistema_pausado(conn_ctl)
             )
-            filas = cola.claim(
-                conn,
+            filas = tx.escribir(
+                "claim",
+                cola.claim,
                 worker_id=worker_id,
                 estado=Estado.PRECALIFICADO,
                 lote=config.worker.lote_claim,
                 lease_segundos=config.worker.lease_segundos,
             )
-            conn.commit()
             if not filas:
                 if seguir_esperando is not None and seguir_esperando():
                     time.sleep(0.5)  # el productor sigue: pronto habrá más filas
@@ -313,24 +415,41 @@ def procesar_hot(
                     continue
                 break
 
+            lote_ids = [f.archivo_id for f in filas]
+            latido.vigilar(lote_ids)
+            lote = _Cuentas()
             hash_por_id: dict[str, str] = {}
             fila_por_id: dict[str, cola.FilaReclamada] = {}
             ultimo_heartbeat = time.monotonic()
             for fila in filas:
-                # Heartbeat: un archivo enorme no debe dejar vencer el lease del lote
+                # Punto de confirmación entre archivos: acota lo que `conn` retiene sin
+                # confirmar. Renueva en ESTA transacción las filas que ella misma tiene
+                # bloqueadas (el hilo del latido las salta por SKIP LOCKED); si se
+                # confirmaran con el lease vencido, recuperar_huerfanos podría robarlas.
                 if time.monotonic() - ultimo_heartbeat > w.lease_segundos / 3:
-                    cola.renovar_lease(conn, worker_id, w.lease_segundos)
-                    conn.commit()
+                    tx.escribir(
+                        "renovar_lease",
+                        cola.renovar_lease,
+                        worker_id,
+                        w.lease_segundos,
+                        archivo_ids=lote_ids,
+                    )
                     ultimo_heartbeat = time.monotonic()
 
-                if not cola.transicionar(
-                    conn,
+                latido.empezar(fila.archivo_id)
+                if not tx.escribir(
+                    "transicionar",
+                    cola.transicionar,
                     fila.archivo_id,
                     Estado.PRECALIFICADO,
                     Estado.EN_PROCESO,
                     conservar_lease=True,
+                    worker_id=worker_id,
+                    confirmar=False,
                 ):
-                    continue  # otro proceso la ganó
+                    # Otro proceso la ganó, o ya es de otro: su lease venció, o el latido
+                    # la devolvió a la cola porque el archivo anterior se colgó.
+                    continue
                 raiz = montajes.get(fila.disco_id)
                 try:
                     if raiz is None:
@@ -362,15 +481,23 @@ def procesar_hot(
                     else:
                         dedup += 1
                 except contenedores.ContenedorInseguro as exc:  # PERMANENTE
-                    cola.marcar_error(
-                        conn, fila.archivo_id, Estado.EN_PROCESO, f"contenedor: {exc}"
+                    lote.error(
+                        tx.escribir(
+                            "marcar_error",
+                            cola.marcar_error,
+                            fila.archivo_id,
+                            Estado.EN_PROCESO,
+                            f"contenedor: {exc}",
+                            worker_id=worker_id,
+                            confirmar=False,
+                        )
                     )
-                    errores += 1
                     continue
                 except (AlmacenNoDisponible, OSError) as exc:  # TRANSITORIO con tope
                     tipo = "almacen" if isinstance(exc, AlmacenNoDisponible) else "io_fuente"
-                    en_reintento = cola.fallo_transitorio(
-                        conn,
+                    en_reintento = tx.escribir(
+                        "fallo_transitorio",
+                        cola.fallo_transitorio,
                         fila.archivo_id,
                         estado_actual=Estado.EN_PROCESO,
                         estado_retorno=Estado.PRECALIFICADO,
@@ -378,22 +505,26 @@ def procesar_hot(
                         intentos_actuales=fila.intentos,
                         intentos_max=w.intentos_max,
                         backoff_s=w.backoff_transitorio_base_s * (2**fila.intentos),
+                        worker_id=worker_id,
+                        confirmar=False,
                     )
+                    lote.fallo_transitorio(en_reintento)
                     if en_reintento:
-                        transitorios += 1
                         log.warning("fallo_transitorio", archivo=fila.ruta, tipo=tipo)
-                    else:
-                        errores += 1
                     continue
                 except Exception as exc:  # ARCHIVO ENVENENADO: dead-letter y la corrida
                     # SIGUE. Jamás un solo archivo tumba el worker automático.
-                    cola.marcar_error(
-                        conn,
-                        fila.archivo_id,
-                        Estado.EN_PROCESO,
-                        f"worker_fallido:{type(exc).__name__}: {exc}"[:300],
+                    lote.error(
+                        tx.escribir(
+                            "marcar_error",
+                            cola.marcar_error,
+                            fila.archivo_id,
+                            Estado.EN_PROCESO,
+                            f"worker_fallido:{type(exc).__name__}: {exc}"[:300],
+                            worker_id=worker_id,
+                            confirmar=False,
+                        )
                     )
-                    errores += 1
                     log.warning(
                         "archivo_envenenado",
                         etapa="worker",
@@ -404,51 +535,48 @@ def procesar_hot(
 
             # Confirmación ANTES de transicionar: la cola nunca le miente al índice.
             confirmados, muertos = sink.drenar()
-            for archivo_id in confirmados:
-                cola.registrar_persistencia(conn, archivo_id, hash_por_id[archivo_id])
-                procesados += 1
-            for archivo_id, motivo, es_transitorio in muertos:
-                if es_transitorio:  # OpenSearch caído: la fila vuelve con backoff
-                    intentos = fila_por_id[archivo_id].intentos
-                    en_reintento = cola.fallo_transitorio(
-                        conn,
-                        archivo_id,
-                        estado_actual=Estado.EN_PROCESO,
-                        estado_retorno=Estado.PRECALIFICADO,
-                        motivo=f"indice: {motivo}",
-                        intentos_actuales=intentos,
-                        intentos_max=w.intentos_max,
-                        backoff_s=w.backoff_transitorio_base_s * (2**intentos),
-                    )
-                    if en_reintento:
-                        transitorios += 1
-                    else:
-                        errores += 1
-                else:  # el índice rechazó ESTE doc → dead-letter
-                    cola.marcar_error(
-                        conn, archivo_id, Estado.EN_PROCESO, f"indexado_rechazado: {motivo}"
-                    )
-                    errores += 1
-            conn.commit()  # lote durable
+            lote.sumar(
+                tx.escribir(  # lote durable
+                    "cerrar_lote",
+                    _cerrar_lote,
+                    worker_id,
+                    w,
+                    confirmados,
+                    muertos,
+                    hash_por_id,
+                    fila_por_id,
+                )
+            )
+            latido.vigilar(())
+            total.sumar(lote)
+            if lote.ajenas:
+                log.warning("filas_ya_no_eran_del_worker", worker=worker_id, cuantas=lote.ajenas)
             log.info(
                 "avance_worker",
-                procesados=procesados,
+                procesados=total.procesados,
                 deduplicados=dedup,
-                errores=errores,
-                transitorios=transitorios,
+                errores=total.errores,
+                transitorios=total.transitorios,
             )
 
     sink.cerrar()
     log.info(
         "worker_completo",
-        procesados=procesados,
+        procesados=total.procesados,
         blobs_nuevos=nuevos,
         deduplicados=dedup,
         bytes=copiados,
-        errores=errores,
-        transitorios=transitorios,
+        errores=total.errores,
+        transitorios=total.transitorios,
         extracciones_reusadas=reusos,
     )
     return ResumenWorker(
-        procesados, nuevos, dedup, copiados, errores, transitorios, huerfanos, reusos
+        total.procesados,
+        nuevos,
+        dedup,
+        copiados,
+        total.errores,
+        total.transitorios,
+        huerfanos,
+        reusos,
     )

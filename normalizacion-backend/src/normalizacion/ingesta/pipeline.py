@@ -131,6 +131,7 @@ def _worker_en_proceso(
     """Target de cada PROCESO worker. Procesos reales (no hilos): la extracción es
     Python puro y el GIL mataría el paralelismo. Cada proceso abre sus propias
     conexiones; la cola reparte sin duplicar (SKIP LOCKED)."""
+    from normalizacion.core import cola
     from normalizacion.core.indexador import Sink, SinkNulo
     from normalizacion.ingesta.workers.orquestador import procesar_hot
 
@@ -143,7 +144,9 @@ def _worker_en_proceso(
         sink = SinkNulo()
     resumen = procesar_hot(
         config,
-        worker_id=f"pipeline-w{indice}",
+        # `pipeline-w{indice}` solo es único dentro de UN pipeline: dos contenedores
+        # con pipeline sobre la misma cola repetían pipeline-w1…wN y compartían leases.
+        worker_id=cola.identificador_worker(f"pipeline-w{indice}"),
         sink=sink,
         seguir_esperando=lambda: not filtro_terminado.is_set(),
     )
