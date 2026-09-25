@@ -25,6 +25,21 @@ def _cfg(**kwargs: object) -> Config:
     return Config(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _sin_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Aquí no hay BD, y las escrituras de la réplica son best-effort: que `connect`
+    falle AL INSTANTE. Sin Postgres escuchando, en Windows tarda 10 s en fallar (5 s por
+    ::1 y otros 5 por 127.0.0.1, medido) y cada ciclo de réplica abre varias conexiones
+    (sellos, huella, cursor del backfill): el fichero pasaba de minutos. Los tests que sí
+    necesitan una BD de mentira la ponen encima con su propio `monkeypatch`."""
+    import psycopg
+
+    def _caida(*_: object, **__: object) -> None:
+        raise psycopg.OperationalError("sin Postgres en los tests unitarios")
+
+    monkeypatch.setattr(psycopg, "connect", _caida)
+
+
 # ------------------------------------------------------------------ el almacén que no guarda
 
 
