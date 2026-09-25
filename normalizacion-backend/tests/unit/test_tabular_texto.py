@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Iterator
+from typing import Any
 
 from normalizacion.core.config import PerillasWorker
 from normalizacion.ingesta.workers.extractores import ContextoExtraccion
@@ -211,3 +213,234 @@ class TestEncoding:
         r = extraer_tabular(_ctx(datos, "text/csv"))
         assert r.texto and "MUÑOZ" in r.texto
         assert "recodificado_cp1252" not in r.flags
+
+
+#: Tope de Lucene para un término keyword. `perfil_calidad` es `flat_object` en los índices
+#: vivos y `campos_extraidos` lo es en la plantilla (lo será tras el próximo rollover): cada
+#: hoja se indexa como `raiz.ruta=valor` en `<campo>._valueAndPath`, y un solo término más
+#: largo tumba el documento ENTERO.
+_LIMITE_TERMINO = 32_766
+
+
+def _terminos(raiz: str, valor: Any, ruta: str = "") -> Iterator[str]:
+    """Los términos `raiz.ruta=valor` de `_valueAndPath`, el campo que rechazó el doc de
+    Matrix. Cada uno contiene la clave y el valor de su hoja: si él cabe, caben los dos."""
+    if isinstance(valor, dict):
+        for clave, hijo in valor.items():
+            yield from _terminos(raiz, hijo, f"{ruta}.{clave}" if ruta else str(clave))
+    elif isinstance(valor, list):
+        for hijo in valor:
+            yield from _terminos(raiz, hijo, ruta)
+    else:
+        yield f"{raiz}.{ruta}={valor}"
+
+
+def _termino_mas_largo(r: Any) -> int:
+    terminos = [
+        *_terminos("perfil_calidad", r.perfil_calidad or {}),
+        *_terminos("campos_extraidos", r.campos),
+    ]
+    return max((len(t.encode("utf-8")) for t in terminos), default=0)
+
+
+class TestSinTerminosGigantes:
+    """Un doc con un término de más de 32.766 bytes UTF-8 lo rechaza OpenSearch ENTERO.
+
+    Medido en el reproceso de 'Matrix.rar': el lote `inovawp.sql!texto/65536-131072`, que
+    T2 tipó text/csv, cayó dentro de una línea larga; polars tomó esa línea por cabecera,
+    su «nombre de columna» fue a `perfil_calidad.columnas_detalle` y el doc quedó en ERROR
+    con «immense term in field=perfil_calidad._valueAndPath». Y un lote que cae entero
+    dentro de la línea no tiene filas: aunque OpenSearch lo aceptara, `_texto_de_filas`
+    devolvía "" y su contenido no era buscable."""
+
+    LINEA_70KB = ("a" * 35_000 + " " + CURP + " " + "b" * 35_000).encode()
+
+    def test_cabecera_de_70kb_sin_comas_no_produce_terminos_gigantes(self) -> None:
+        datos = self.LINEA_70KB + b"\nfila uno\nfila dos\n"
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert _termino_mas_largo(r) <= _LIMITE_TERMINO
+
+    def test_lote_dentro_de_una_linea_larga_conserva_su_texto(self) -> None:
+        """El lote entero es un trozo de UNA línea, sin salto: lo que sirve `texto_lotes`
+        en mitad de una línea más larga que su ventana."""
+        r = extraer_tabular(_ctx(self.LINEA_70KB, "text/csv"))
+        assert _termino_mas_largo(r) <= _LIMITE_TERMINO
+        assert r.texto and CURP in r.texto, "el contenido del lote tiene que ser buscable"
+        assert "tabular_como_texto:cabecera_sin_esquema" in r.flags
+
+    def test_filas_tras_una_cabecera_falsa_no_se_recortan(self) -> None:
+        """Con una «cabecera» de una sola columna, `truncate_ragged_lines` recortaba cada
+        fila siguiente a su primer campo: la CURP de la segunda columna se perdía. La
+        cabecera falsa CORTA está en `TestFilasDesiguales`."""
+        otra_curp = "PEPJ900202MDFXXX02"
+        datos = self.LINEA_70KB + f"\n1,{otra_curp},Persona Dos\n".encode()
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto and otra_curp in r.texto and "Persona Dos" in r.texto
+
+    def test_el_texto_como_texto_respeta_el_tope(self) -> None:
+        r = extraer_tabular(_ctx(self.LINEA_70KB, "text/csv", max_chars=10_000))
+        assert r.texto is not None and len(r.texto) == 10_000
+        assert "texto_truncado" in r.flags
+
+    def test_el_texto_multibyte_llena_el_tope_sin_caracteres_rotos(self) -> None:
+        """Solo se decodifican 4 bytes por carácter del tope. Recortar de menos (a `tope`
+        bytes) dejaría la mitad del texto en una línea de «ñ» (2 bytes cada una); y el
+        corte, que aquí cae a mitad de carácter, no puede dejar un «�»."""
+        datos = ("a" + "ñ" * 50_000).encode()
+        r = extraer_tabular(_ctx(datos, "text/csv", max_chars=1_000))
+        assert r.texto == "a" + "ñ" * 999
+        assert "texto_truncado" in r.flags
+
+    def test_un_lote_en_blanco_no_deja_texto_vacio(self) -> None:
+        """Un "" cuenta como presente para un `exists` de OpenSearch: el doc se escondía de
+        la cuenta de «sin texto». Como en `texto.py`, un lote en blanco da None."""
+        for datos in (b"", b"\n", b" \r\n"):
+            r = extraer_tabular(_ctx(datos, "text/csv"))
+            assert r.texto is None, datos
+            assert any(f.startswith("tabular_como_texto:") for f in r.flags), datos
+
+    def test_una_cabecera_mas_larga_que_el_presupuesto_no_lo_rebasa(self) -> None:
+        """Miles de columnas cortas: la cabecera sola ya pasa del tope de chars, y antes se
+        devolvía entera."""
+        cab = ",".join(f"c{i:04d}" for i in range(3_000))
+        fila = ",".join("1" for _ in range(3_000))
+        r = extraer_tabular(_ctx(f"{cab}\n{fila}\n".encode(), "text/csv", max_chars=2_000))
+        assert r.texto is not None and len(r.texto) <= 2_000
+        assert "texto_truncado" in r.flags
+
+    def test_lote_de_una_linea_con_comas_conserva_su_texto(self) -> None:
+        """Mismo lote dentro de una línea larga, pero partida por comas en columnas cortas:
+        el término no crece, pero sin filas el texto salía vacío."""
+        linea = ",".join(f"'v{i}'" for i in range(2_000)) + f",'{CURP}'"
+        r = extraer_tabular(_ctx(linea.encode(), "text/csv"))
+        assert r.texto and CURP in r.texto
+        assert "tabular_como_texto:sin_filas" in r.flags
+
+    def test_comilla_sin_cerrar_no_tira_el_lote(self) -> None:
+        """`ignore_errors` no cubre las comillas: polars revienta con ComputeError y el lote
+        se indexaba SIN texto (`extraccion_fallida:ComputeError`, 859 docs en Matrix)."""
+        datos = f'id,valor\n1,"abc\n2,{CURP}\n'.encode()
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto and CURP in r.texto
+        assert "tabular_como_texto:ComputeError" in r.flags
+
+    def test_struct_ancho_de_ndjson_no_produce_un_tipo_gigante(self) -> None:
+        """El `tipo` de una columna anidada enumera todos sus campos: 3.000 claves → 66 KB."""
+        fila = {"curp": CURP, "meta": {f"campo_{i:05d}": i for i in range(3_000)}}
+        r = extraer_tabular(_ctx((json.dumps(fila) + "\n").encode(), "application/x-ndjson"))
+        assert _termino_mas_largo(r) <= _LIMITE_TERMINO
+        assert r.perfil_calidad is not None
+        assert r.perfil_calidad["columnas_detalle"]["meta"]["tipo"].endswith("…")
+        assert r.texto and CURP in r.texto
+
+    def test_claves_largas_de_ndjson_se_acotan_sin_pisarse(self) -> None:
+        """Las claves son un esquema real: se perfilan, con el nombre acotado y marcado. Dos
+        claves con el mismo principio no pueden quedar en la misma entrada del perfil."""
+        larga_a, larga_b = "k" * 40_000 + "A", "k" * 40_000 + "B"
+        filas = [{"curp": CURP, larga_a: 1, larga_b: 2}, {"curp": "X", larga_a: 3, larga_b: 4}]
+        datos = ("\n".join(json.dumps(f) for f in filas)).encode()
+        r = extraer_tabular(_ctx(datos, "application/x-ndjson"))
+        assert _termino_mas_largo(r) <= _LIMITE_TERMINO
+        assert r.perfil_calidad is not None
+        detalle = r.perfil_calidad["columnas_detalle"]
+        assert len(detalle) == 3, "cada columna conserva su entrada en el perfil"
+        assert all(len(nombre) <= 300 for nombre in detalle)
+        assert sum(nombre.startswith("kkk") for nombre in detalle) == 2
+        assert len(r.campos["columnas_nombres"]) == 3
+
+    def test_clave_raiz_gigante_de_json_no_produce_terminos_gigantes(self) -> None:
+        datos = json.dumps({"k" * 40_000: CURP, "curp": CURP}).encode()
+        r = extraer_tabular(_ctx(datos, "application/json"))
+        assert _termino_mas_largo(r) <= _LIMITE_TERMINO
+        assert r.texto and CURP in r.texto
+
+    def test_csv_normal_da_el_mismo_perfil_que_antes(self) -> None:
+        """Salvaguarda, no regresión: pasa también sin el arreglo. Lo que prueba es que el
+        acotado no toca a un CSV normal (valores copiados de la salida previa al arreglo)."""
+        r = extraer_tabular(_ctx(_csv(), "text/csv"))
+        assert r.perfil_calidad == {
+            "filas": 3,
+            "columnas": 3,
+            "quality_score": 100,
+            "columnas_detalle": {
+                "id": {"tipo": "Int64", "nulos_pct": 0.0, "unicos": 3},
+                "curp": {"tipo": "String", "nulos_pct": 0.0, "unicos": 3},
+                "nombre": {"tipo": "String", "nulos_pct": 0.0, "unicos": 3},
+            },
+        }
+        assert r.campos == {
+            "filas": 3,
+            "columnas": 3,
+            "columnas_nombres": ["id", "curp", "nombre"],
+            "tiene_columnas_identidad": True,
+        }
+        assert not any(f.startswith("tabular_como_texto") for f in r.flags)
+
+
+class TestFilasDesiguales:
+    """Una fila con más campos que la cabecera: `truncate_ragged_lines` la recortaba EN
+    SILENCIO y los campos de más no llegaban al texto, con perfil y sin bandera.
+
+    Es lo normal en las ventanas SQL que T2 tipa text/csv (255.614 lotes): la «cabecera» es
+    la línea con la que empieza la ventana, y polars solo entiende la comilla doble, así
+    que cada coma dentro de un literal `'PÉREZ, JUAN'` es un campo más. Ninguna de estas
+    cabeceras falsas pasa de 256 caracteres: `_cabecera_sin_esquema` no las ve."""
+
+    CSV_CON_UN_CAMPO_DE_MAS = (
+        b"id,curp,nombre\n"
+        b"0,GOMC800100HDFXXX00,Persona 0\n"
+        b"1,GOMC800101HDFXXX01,Persona 1,Calle Falsa 123\n"
+        b"2,GOMC800102HDFXXX02,Persona 2\n"
+    )
+
+    def test_ventana_sql_con_cabecera_falsa_corta_conserva_la_curp(self) -> None:
+        """La ventana empieza con la cola de un INSERT: dos «columnas», y cada INSERT de
+        después trae la CURP en el 5.º campo."""
+        insert = "".join(
+            f"INSERT INTO padron VALUES ({i},'n{i}','a','b','{CURP}');\n" for i in range(50)
+        )
+        r = extraer_tabular(_ctx(("'x', 'y');\n" + insert).encode(), "text/csv"))
+        assert r.texto and CURP in r.texto
+        assert "tabular_como_texto:filas_desiguales" in r.flags
+
+    def test_csv_con_barras_y_una_coma_conserva_la_curp(self) -> None:
+        """Separador `|`: para polars la cabecera es UNA columna, y la coma del nombre parte
+        la fila en dos; todo lo que seguía a la coma se perdía."""
+        datos = f"id|nombre|curp\n1|PÉREZ, JUAN|{CURP}\n".encode()
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto and CURP in r.texto and "PÉREZ, JUAN" in r.texto
+
+    def test_el_campo_de_mas_de_un_csv_real_llega_al_texto(self) -> None:
+        r = extraer_tabular(_ctx(self.CSV_CON_UN_CAMPO_DE_MAS, "text/csv"))
+        assert r.texto and "Calle Falsa 123" in r.texto
+        assert all(f"GOMC80010{i}HDFXXX0{i}" in r.texto for i in range(3))
+        assert "tabular_como_texto:filas_desiguales" in r.flags
+
+    def test_filas_desiguales_conservan_el_perfil_de_siempre(self) -> None:
+        """Salvaguarda, no regresión: pasa también sin el arreglo. Solo cambia de dónde sale
+        el texto; el perfil y los `campos` son los de antes (copiados de su salida)."""
+        r = extraer_tabular(_ctx(self.CSV_CON_UN_CAMPO_DE_MAS, "text/csv"))
+        assert r.perfil_calidad == {
+            "filas": 3,
+            "columnas": 3,
+            "quality_score": 100,
+            "columnas_detalle": {
+                "id": {"tipo": "Int64", "nulos_pct": 0.0, "unicos": 3},
+                "curp": {"tipo": "String", "nulos_pct": 0.0, "unicos": 3},
+                "nombre": {"tipo": "String", "nulos_pct": 0.0, "unicos": 3},
+            },
+        }
+        assert r.campos == {
+            "filas": 3,
+            "columnas": 3,
+            "columnas_nombres": ["id", "curp", "nombre"],
+            "tiene_columnas_identidad": True,
+        }
+
+    def test_una_fila_con_campos_de_menos_no_cambia_nada(self) -> None:
+        """Salvaguarda: polars completa con nulos la fila corta y no se pierde nada, así que
+        sigue el volcado por filas de siempre, sin bandera."""
+        datos = f"id,curp,nombre\n0,{CURP},Persona 0\n1,GOMC800101HDFXXX01\n".encode()
+        r = extraer_tabular(_ctx(datos, "text/csv"))
+        assert r.texto == f"curp | nombre | id\n{CURP} | Persona 0 | 0\nGOMC800101HDFXXX01 |  | 1"
+        assert not any(f.startswith("tabular_como_texto") for f in r.flags)
