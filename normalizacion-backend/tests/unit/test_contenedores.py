@@ -214,8 +214,8 @@ class TestSieteZip:
 
 
 class TestRar:
-    """RAR se LISTA con 7-Zip (`7zz`) y se EXTRAE con `unar` — ambos binarios
-    notarizados. Un RAR ilegible (truncado/hostil) se preserva íntegro vía flag,
+    """RAR se LISTA y se EXTRAE con `unrar` oficial (7zz y lsar/unar de respaldo; ver
+    `test_rar_unrar.py`). Un RAR ilegible (truncado/hostil) se preserva íntegro vía flag,
     jamás se pierde ni revienta el proceso."""
 
     def test_rar5_truncado_se_marca_sin_reventar(self, tmp_path: Path) -> None:
@@ -235,9 +235,19 @@ class TestRar:
         assert r.entradas == ()  # 7zz lo marca corrupto; nunca lanza
 
 
+def _sin_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fuerza el respaldo `unar`/`lsar` aunque la máquina tenga `unrar` instalado."""
+    import normalizacion.ingesta.precalificacion.contenedores as C
+
+    def _no_hay() -> str:
+        raise FileNotFoundError("unrar")
+
+    monkeypatch.setattr(C, "_unrar_bin", _no_hay)
+
+
 class TestRar5YCache:
-    """RAR5 (que 7zz no decodifica) y RAR SOLID de miles de entradas. Sin binarios reales:
-    se simulan `7zz`/`lsar`/`unar` para que corra en cualquier entorno."""
+    """RAR5 (que 7zz no decodifica) y la caché de extracción. Sin binarios reales: se
+    simulan `7zz`/`lsar`/`unar` —y se quita `unrar`— para que corra en cualquier entorno."""
 
     _LSAR: ClassVar[dict[str, Any]] = {
         "lsarContents": [
@@ -253,9 +263,10 @@ class TestRar5YCache:
 
         import normalizacion.ingesta.precalificacion.contenedores as C
 
-        entradas, ratios = C._parse_json_lsar(json.dumps(self._LSAR))
+        entradas, ratios, desconocidas = C._parse_json_lsar(json.dumps(self._LSAR))
         assert [e.ruta_interna for e in entradas] == ["DBs/a.sql", "b.txt"]
         assert entradas[0].tamano == 1000 and ratios == [10.0, 1.0]
+        assert desconocidas == []
 
     def test_rar5_cae_a_lsar_si_7zz_lo_da_por_corrupto(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -264,6 +275,7 @@ class TestRar5YCache:
         explotar — medido en 'Matrix.rar': 0 de 1215 entradas indexadas."""
         import normalizacion.ingesta.precalificacion.contenedores as C
 
+        _sin_unrar(monkeypatch)
         ruta = tmp_path / "m.rar"
         ruta.write_bytes(b"Rar!\x1a\x07\x01\x00")
         monkeypatch.setattr(
@@ -286,6 +298,7 @@ class TestRar5YCache:
         ni una entrada en 45 min sobre 1132). Se extrae entero UNA vez y se sirve de ahí."""
         import normalizacion.ingesta.precalificacion.contenedores as C
 
+        _sin_unrar(monkeypatch)
         monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
         C._limpiar_cache_7z()
         ruta = tmp_path / "s.rar"
@@ -299,6 +312,7 @@ class TestRar5YCache:
             (dst / "b.txt").write_bytes(b"hola")
 
         monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
+        monkeypatch.setattr(C, "_listado_lsar", lambda rf: {"DBs/a.sql": 8, "b.txt": 4})
         try:
             for entrada, esperado in (("DBs/a.sql", b"INSERT 1"), ("b.txt", b"hola")):
                 spool = C._paso_rar(io.BytesIO(), entrada, 1024, 1 << 20, ruta_fs=ruta)
@@ -341,7 +355,9 @@ class TestRar5YCache:
             vistas.append(fuente)
             return servir(fuente, *a, **kw)
 
+        _sin_unrar(monkeypatch)
         monkeypatch.setattr(C, "_extraer_7z_con_unar", _unar_falso)
+        monkeypatch.setattr(C, "_listado_lsar", lambda rf: {"DBs/a.sql": len(sql)})
         monkeypatch.setattr(C, "_copiar_con_limite", _copiar_contando)
         monkeypatch.setattr(texto_lotes, "servir_lote", _servir_viendo)
         try:
@@ -360,8 +376,9 @@ class TestRar5YCache:
     def test_unar_parcial_conserva_lo_extraido(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """unar sale con rc=1 si UNA entrada viene corrupta (49 de 1215 en 'Matrix.rar'):
-        el árbol con las otras 1166 NO puede tirarse entero."""
+        """unar sale con rc=1 si UNA entrada no decodifica (49 de 1133 en 'Matrix.rar', con
+        el archivo sano): el árbol con las otras 1084 NO se tira entero, pero se devuelve
+        como PARCIAL para que quien llama lo verifique contra el listado."""
         import subprocess
 
         import normalizacion.ingesta.precalificacion.contenedores as C
@@ -375,7 +392,7 @@ class TestRar5YCache:
 
         monkeypatch.setattr(C, "_unar_bin", lambda: "unar")
         monkeypatch.setattr(C.subprocess, "run", _run_falso)
-        C._extraer_7z_con_unar(tmp_path / "x.rar", destino)  # no lanza
+        assert C._extraer_7z_con_unar(tmp_path / "x.rar", destino) is False  # no lanza
         assert (destino / "buena.txt").read_bytes() == b"ok"
 
     def test_unar_sin_nada_extraido_si_es_fallo(
