@@ -232,7 +232,12 @@ services:
       postgres: { condition: service_healthy }
     mem_limit: 512m
     memswap_limit: 512m
-    command: norm exportador --puerto 9108 --intervalo 15
+    # 60 s y no 15: las alertas que leen estos gauges esperan 10 min o más (`for:` en
+    # prometheus-alertas.yml; ExportadorCaido mira `up`, que no depende de esto) y
+    # Grafana no deriva nada en menos de 5 min. Cada pasada abre una conexión y relee
+    # el backlog por índice mientras la cola se mueve. El recorrido del heap entero va
+    # aparte y como mucho cada 5 min (INTERVALO_CARO_S en metricas.py).
+    command: norm exportador --puerto 9108 --intervalo 60
 
   # ⚙K16 — INGESTA AUTOMÁTICA (opcional). Vigila /datos/<fuente> y normaliza lo que
   # cae, sin intervención. DESACTIVADO por defecto: vive en su propio profile
