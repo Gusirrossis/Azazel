@@ -308,8 +308,9 @@ class TestLocalNoCambiaNada:
         # en trozos-contenedor en vez de indexarse truncado. Este test existe justamente
         # para que un cambio de conducta del filtro no pase sin subir la versión — sin ella,
         # dos archivos clasificados con reglas distintas quedan indistinguibles en
-        # `archivos.version_filtro` y en el índice.
-        assert c.filtro.version_filtro == "reglas-v6-lote-hereda-padre"
+        # `archivos.version_filtro` y en el índice. v7: una ventana `texto/…` ya no se
+        # queda con un tipo tabular, hereda el de su padre.
+        assert c.filtro.version_filtro == "reglas-v7-ventana-sin-tabular"
         assert c.filtro.umbral_hot == 65
         assert c.recursos.mem_por_worker_mb == 700
         assert c.recursos.politica == "conservador"

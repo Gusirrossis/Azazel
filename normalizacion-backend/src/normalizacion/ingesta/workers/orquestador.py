@@ -31,6 +31,8 @@ from normalizacion.core.modelo import DocumentoArchivo, Estado, RutaDecision, cl
 from normalizacion.core.observabilidad import obtener_logger
 from normalizacion.entidades import anclas
 from normalizacion.ingesta.precalificacion import contenedores
+from normalizacion.ingesta.precalificacion.precalificador import _es_lote_de_texto
+from normalizacion.ingesta.precalificacion.reglas import TABULARES_PLANOS
 from normalizacion.ingesta.workers import extractores
 
 log = obtener_logger("worker")
@@ -103,6 +105,22 @@ def _persistir(
             destino.close()
 
 
+def _tipo_para_extraer(fila: cola.FilaReclamada) -> str | None:
+    """El tipo con el que se elige el extractor: el de la fila, salvo en una VENTANA de texto
+    (`texto/…`) que trae un tipo tabular. Eso lo decidió un filtro anterior a v7 leyendo como
+    CSV los INSERT con comas de un .sql (un padre CSV/NDJSON se trocea en lotes NDJSON, no en
+    ventanas). Aun con el plugin tabular de hoy, los VALORES de la primera fila de la ventana
+    acaban como nombres de columna en `campos` y `perfil_calidad`, y una ventana JSON/NDJSON
+    cortada revienta sin texto (ver `reglas.precalificar_contenido`). v7 ya no lo decide,
+    pero las filas PRECALIFICADO de v6 —y las que `reprocesar-errores` devuelve con su tipo—
+    llegan aquí sin volver a pasar por el filtro, igual que las ventanas sin tipo de padre.
+    Todo padre de ventana es texto (text/*, SQL, XML, correo) y va al plugin de texto, así
+    que `text/plain` da lo mismo que el tipo del padre."""
+    if fila.tipo_real in TABULARES_PLANOS and _es_lote_de_texto(fila):
+        return "text/plain"
+    return fila.tipo_real
+
+
 def _extraer_o_reusar(
     config: Config,
     conn_ctl: psycopg.Connection[Any],
@@ -118,13 +136,23 @@ def _extraer_o_reusar(
 
     Todo el camino de la caché es best-effort: si Postgres parpadea, se extrae y punto.
     Perder la caché encarece la corrida; hacerla obligatoria la detendría.
+
+    Una ventana de texto NO se busca en la caché: son ≤64 KB de texto nativo que se extraen
+    en milisegundos. Lo que hay guardado de ventanas puede venir del plugin tabular —medido
+    en la matriz el 25-09: 63.252 extracciones `text/csv` nativas en `extracciones`, cota
+    superior que incluye CSV de verdad— y, como la caché va por hash y no por tipo, se le
+    serviría también a la ventana ya re-decidida con el tipo de su padre, que se quedaría
+    con la tabla de siempre. Esas filas viejas siguen ahí para `norm reextraer`, que no pasa
+    por aquí y re-extrae con el tipo guardado: hay que purgarlas antes de usarlo.
     """
+    tipo = _tipo_para_extraer(fila)
     version = cache_extraccion.clave_version(config)
-    try:
-        guardada = cache_extraccion.buscar(conn_ctl, hash_contenido, version=version)
-    except Exception as exc:
-        log.warning("cache_extraccion_no_disponible", error=str(exc)[:150])
-        guardada = None
+    guardada = None
+    if not _es_lote_de_texto(fila):
+        try:
+            guardada = cache_extraccion.buscar(conn_ctl, hash_contenido, version=version)
+        except Exception as exc:
+            log.warning("cache_extraccion_no_disponible", error=str(exc)[:150])
 
     if guardada is not None:
         return (
@@ -150,12 +178,15 @@ def _extraer_o_reusar(
     extraccion = extractores.extraer(
         config.worker,
         spool,
-        tipo_real=fila.tipo_real,
+        tipo_real=tipo,
         nombre=fila.nombre,
         tamano=fila.tamano,
         ocr_activo=config.filtro.ocr_activo,
         es_contenedor_explotado=explotado,
     )
+    if tipo != fila.tipo_real:
+        # Contable en el índice: cuántas llegaron así, y cuándo esta defensa ya sobra.
+        extraccion.flags = [*extraccion.flags, "ventana_tabular_como_texto"]
     ms = int((time.monotonic() - inicio) * 1000)
     # Un resultado incompleto o fallido NO se cachea. Guardarlo convertía un problema
     # transitorio —tesseract todavía sin instalar, un timeout puntual, OpenSearch
@@ -176,7 +207,7 @@ def _extraer_o_reusar(
             cache_extraccion.guardar(
                 conn_ctl,
                 hash_contenido,
-                tipo_real=fila.tipo_real,
+                tipo_real=tipo,  # con el que se extrajo: `reextraer` re-extrae con este
                 texto=extraccion.texto,
                 campos=extraccion.campos,
                 perfil_calidad=extraccion.perfil_calidad,

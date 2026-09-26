@@ -121,6 +121,11 @@ CONTENEDORES: frozenset[str] = frozenset(
 #: y el flag `hoja`), o los lotes de SQLite se re-explorarían en bucle infinito.
 CONTENEDORES_TABULARES: frozenset[str] = frozenset({"text/csv", "application/x-ndjson"})
 
+#: Tablas escritas como TEXTO: lo que reclama el extractor tabular (`tabular.py`). Sin firma
+#: binaria, solo T2 (o libmagic) las reconoce por la forma del head, así que en una ventana
+#: `texto/…` nunca son su tipo real (ver `precalificar_contenido`).
+TABULARES_PLANOS: frozenset[str] = CONTENEDORES_TABULARES | frozenset({"application/json"})
+
 #: Texto grande que se trocea en VENTANAS de bytes (ver `texto_lotes`) para no truncarlo a
 #: `extractor_max_chars`. Como no tienen firma binaria, se detectan tras T2. A diferencia de
 #: los tabulares, SOLO se trocean por encima de `t3_troceo_min_bytes` (un texto que ya cabe
@@ -713,14 +718,12 @@ def _rutear_imagen(
 
 # ---------------------------------------------------------------- lotes de ventana de texto
 
-#: Lo que una VENTANA de texto puede ser de verdad, además de `text/*`. Un lote `texto/…`
-#: es un rango de bytes de un texto ya aceptado; si T1 le ve otra cosa —una firma corta
-#: (ORC, TAPE, 'ustar' en el offset 257), una imagen, un contenedor— es una coincidencia
-#: de los bytes de esa ventana. Medido en Matrix: un lote con 'ustar' en el offset 257 se
-#: exploró como tar y quedó INDEXADO sin contenido.
-_TIPOS_VENTANA_TEXTO: frozenset[str] = (
-    CONTENEDORES_TEXTO | CONTENEDORES_TABULARES | frozenset({"application/json"})
-)
+#: Lo que una VENTANA de texto puede ser de verdad, además de `text/*` (menos las tablas de
+#: `TABULARES_PLANOS`). Un lote `texto/…` es un rango de bytes de un texto ya aceptado; si
+#: T1 le ve otra cosa —una firma corta (ORC, TAPE, 'ustar' en el offset 257), una imagen, un
+#: contenedor, una tabla— es una coincidencia de los bytes de esa ventana. Medido en Matrix:
+#: un lote con 'ustar' en el offset 257 se exploró como tar y quedó INDEXADO sin contenido.
+_TIPOS_VENTANA_TEXTO: frozenset[str] = CONTENEDORES_TEXTO
 
 #: Candado de binario al heredar. `ratio_imprimibles` solo no basta: las 3.644 ventanas
 #: de BLOBs de Matrix (fotos JPEG dentro de INSERT) llegan a 0,896 de imprimibles —233
@@ -765,6 +768,7 @@ def _t1_cabe_en_ventana_de_texto(perillas: PerillasFiltro, deteccion: DeteccionT
         deteccion.detector == "libmagic"
         and not deteccion.es_contenedor
         and pasa_lista(perillas, deteccion.tipo)
+        and deteccion.tipo not in TABULARES_PLANOS  # `text/csv` también empieza por text/
         and (deteccion.tipo.startswith("text/") or deteccion.tipo in _TIPOS_VENTANA_TEXTO)
     )
 
@@ -782,7 +786,17 @@ def _heredar_tipo_padre(
     motivo propio. Devuelve (tipo, None) para seguir a puntuar, o (tipo, decisión de frío).
 
     Legible es lo de siempre (`texto_legible`) más el candado de control C0, sobre el texto
-    decodificado si la ventana es UTF-16: esas ventanas son un 50 % de NUL en crudo."""
+    decodificado si la ventana es UTF-16: esas ventanas son un 50 % de NUL en crudo.
+
+    Una ventana que T2 o libmagic leen como TABLA (`TABULARES_PLANOS`) no pasa por el
+    candado, solo por `texto_legible`. Ya es texto por construcción —T2 solo busca filas en
+    un head legible y libmagic solo prueba CSV sobre bytes que ya ve como texto— y v6, que
+    le dejaba su tipo, la mandaba a HOT sin candado. Con él, heredar le quitaba recall:
+    filas de INSERT con una foto al final de la ventana, un 20-40 % de foto (2,2-4,3 % de
+    C0), iban a frío como `lote_ilegible` con el 60-80 % de la ventana en filas de texto
+    (reproducido con heads sintéticos; en v6, HOT como text/csv). Con más foto deja de ser
+    legible, T2 ya no ve tabla y el candado vuelve a aplicar. Sigue igual para lo que la
+    ventana dice ser binario, imagen o un tipo rechazado, que es para lo que se midió."""
     utf16 = decodificar_utf16(head, imprimibles_min=perillas.ratio_imprimibles_min)
     muestra = _sin_caracter_cortado(head) if utf16 is None else utf16[0].encode("utf-8")
     senales.update(analizar_head(perillas, muestra, preferir_sql=preferir_sql))
@@ -794,7 +808,8 @@ def _heredar_tipo_padre(
     senales["tipo_ventana"] = tipo_ventana
     control = _ratio_control_c0(muestra)
     senales["control_c0"] = round(control, 4)
-    if senales["texto_legible"] and control < _CONTROL_C0_MAX_LOTE:
+    candado = tipo_ventana not in TABULARES_PLANOS
+    if senales["texto_legible"] and (not candado or control < _CONTROL_C0_MAX_LOTE):
         senales["tipo_heredado"] = True
         return tipo_padre, None
     return tipo_ventana, ResultadoPrecalificacion(
@@ -830,10 +845,22 @@ def precalificar_contenido(
     fuera un .sql aceptado. Medido en Matrix: 6.311 ventanas de SQL con HTML en sus
     columnas fueron a frío como `text/html`, 6.562 de un .sql UTF-16 como binario (sus
     ventanas empiezan sin BOM) y 29 por falsos positivos de libmagic (javascript, zlib…).
-    Solo se hereda cuando el tipo propio de la ventana se rechazaría o no puede ser el de
-    un trozo de texto; las ventanas que hoy entran conservan su tipo (el de 255.614 lotes
-    SQL indexados como `text/csv` es otra decisión, sin medir). No se hereda en lotes de
-    SQLite/CSV/PDF: esos se sirven como NDJSON o mini-PDF, no como bytes del padre."""
+    Se hereda cuando el tipo propio de la ventana se rechazaría, no puede ser el de un trozo
+    de texto o es una TABLA (`TABULARES_PLANOS`, lo diga libmagic en T1 o T2); el resto
+    (text/plain, SQL, XML…) conserva su tipo. Una ventana nunca es una tabla: un padre
+    CSV/NDJSON se trocea en lotes NDJSON, no en `texto/`, así que un tipo tabular en una
+    ventana es siempre el head leído a contrapelo de su padre —los INSERT con comas de un
+    .sql tomados por CSV: 255.614 ventanas de 'Matrix.rar' indexadas como `text/csv`—. Con
+    la imagen v6 (sin 801345f) el extractor tabular las dejaba sin texto o vacías (859 por
+    ComputeError, 322 de 0 filas) y perdía los campos de las filas desiguales (12 de 40
+    muestreadas); `tabular.py` ya pasa todo eso a texto. Lo que sigue con el extractor de
+    hoy: los VALORES de la primera fila de la ventana como NOMBRES de columna en `campos` y
+    `perfil_calidad` (datos personales en las claves), una ventana JSON/NDJSON cortada que
+    revienta en el parser (`extraccion_fallida`, sin texto), un `tipo_real` que falsea los
+    filtros por tipo y bytes que libmagic llama text/csv puntuando como tabla. Una tabla
+    hereda sin el candado de C0 (ver `_heredar_tipo_padre`): v6 la mandaba a HOT sin él.
+    No se hereda en lotes de SQLite/CSV/PDF: esos se sirven como NDJSON o mini-PDF, no
+    como bytes del padre (y un lote NDJSON conserva su `application/x-ndjson`)."""
     # T0 — sin tocar el contenido
     kill = evaluar_t0(
         perillas, nombre=nombre, extension=extension, ruta=ruta_relativa, tamano=tamano
@@ -870,8 +897,8 @@ def precalificar_contenido(
     tipo_libmagic: str | None = None
     heredado = False
     if padre is not None and not _t1_cabe_en_ventana_de_texto(perillas, deteccion):
-        # Firma binaria, imagen, contenedor o tipo rechazado en un trozo de texto: no se
-        # explora ni se rutea como tal; decide si la ventana se puede leer.
+        # Firma binaria, imagen, contenedor, tabla o tipo rechazado en un trozo de texto: no
+        # se explora ni se rutea como tal; decide si la ventana se puede leer.
         tipo, frio = _heredar_tipo_padre(
             perillas,
             head=head,
@@ -921,7 +948,11 @@ def precalificar_contenido(
                     5, RutaDecision.COLD, tipo_libmagic, motivo_lista(perillas), senales
                 )
             senales["tipo_libmagic"] = tipo_libmagic
-        if not pasa_lista(perillas, tipo):
+        # En una ventana, una tabla vista por T2 tampoco se queda (ver el docstring): iría
+        # al extractor tabular, que tomaría la primera fila de la ventana por cabecera o
+        # reventaría con el JSON/NDJSON cortado por los bordes de la ventana.
+        tabla_en_ventana = padre is not None and tipo in TABULARES_PLANOS
+        if tabla_en_ventana or not pasa_lista(perillas, tipo):
             if padre is None:
                 return ResultadoPrecalificacion(
                     5, RutaDecision.COLD, tipo, motivo_lista(perillas), senales

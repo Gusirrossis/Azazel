@@ -117,12 +117,13 @@ class TestHerenciaEnReglas:
         assert r.motivo != "fuera_de_lista_blanca"
 
     def test_ventana_que_ya_entra_conserva_su_tipo(self) -> None:
-        """La herencia solo cambia lo que hoy se rechaza: los 255.614 lotes SQL indexados
-        como text/csv no se tocan."""
-        csv = b"id,nombre,monto\n" + b"1,ana,10.5\n2,luis,22.0\n3,eva,9.99\n" * 50
-        r_csv = _lote(csv)
-        assert r_csv.tipo_real == "text/csv"
-        assert "tipo_heredado" not in r_csv.senales
+        """La herencia no toca una ventana cuyo tipo propio entra y puede ser el de un trozo
+        de texto. La excepción son las tablas (text/csv, NDJSON, JSON), que en una ventana
+        son siempre una detección contra el padre: ver `test_ventana_no_tabular.py`."""
+        xml = b"<registro><nombre>ana</nombre><monto>10.5</monto></registro>\n" * 200
+        r_xml = _lote(xml)
+        assert r_xml.tipo_real == "application/xml"
+        assert "tipo_heredado" not in r_xml.senales
 
     def test_ventana_de_blob_binario_sigue_en_frio_como_lote_ilegible(self) -> None:
         r = _lote(_blob())
