@@ -28,9 +28,27 @@ from normalizacion.core.config import Config
 from normalizacion.core.modelo import DocumentoArchivo, RutaDecision, clave_almacen
 from normalizacion.core.observabilidad import obtener_logger
 from normalizacion.entidades import anclas
+from normalizacion.ingesta.precalificacion.precalificador import es_ventana_de_texto
+from normalizacion.ingesta.precalificacion.reglas import TABULARES_PLANOS
 from normalizacion.ingesta.workers import extractores
 
 log = obtener_logger("reextraccion")
+
+
+def _tipo_para_reextraer(tipo: str | None, documentos: list[dict[str, Any]]) -> str | None:
+    """El tipo con el que se re-extrae: el guardado, salvo una tabla que es de una VENTANA
+    `texto/…`. La misma defensa que `orquestador._tipo_para_extraer`, aquí porque este
+    camino no pasa por el worker: re-extrae con el tipo de la caché, y las 66.247
+    extracciones tabulares de antes de v7 (ventanas de .sql de 'Matrix.rar' leídas como
+    CSV) volverían a meter los valores de la primera fila como nombres de columna en el
+    índice, pisando el doc que v7 ya extrajo como texto. Basta con que UNO de los docs del
+    contenido sea ventana: extraída como texto, una tabla de verdad conserva todo su texto
+    y solo pierde el perfil; al revés, una ventana mete datos personales en las claves."""
+    if tipo in TABULARES_PLANOS and any(
+        es_ventana_de_texto(d.get("origen_contenedor")) for d in documentos
+    ):
+        return "text/plain"
+    return tipo
 
 
 @dataclass
@@ -180,6 +198,7 @@ def _reextraer_uno(
         return  # el contenido ya no tiene documentos vivos: nada que reindexar
 
     referencia = documentos[0]
+    tipo = _tipo_para_reextraer(tipo_real or referencia["tipo_real"], documentos)
     inicio = time.monotonic()
     # El blob se vuelca a un spool ANTES de extraer. `almacen.leer` de MinIO devuelve
     # una respuesta HTTP en streaming, que no es seekable, y todos los extractores la
@@ -196,7 +215,7 @@ def _reextraer_uno(
         extraccion = extractores.extraer(
             config.worker,
             spool,
-            tipo_real=tipo_real or referencia["tipo_real"],
+            tipo_real=tipo,
             nombre=referencia["nombre"],
             tamano=referencia["tamano"],
             ocr_activo=config.filtro.ocr_activo,
@@ -236,7 +255,7 @@ def _reextraer_uno(
         conn,
         hash_contenido,
         version=cache_extraccion.clave_version(config),
-        tipo_real=tipo_real or referencia["tipo_real"],
+        tipo_real=tipo,  # con el que se extrajo: la próxima pasada re-extrae con este
         texto=extraccion.texto,
         campos=extraccion.campos,
         perfil_calidad=extraccion.perfil_calidad,

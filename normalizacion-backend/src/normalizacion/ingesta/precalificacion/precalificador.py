@@ -95,15 +95,19 @@ def _filas_de_entradas(
     return nuevas
 
 
-def _es_lote_de_texto(fila: cola.FilaReclamada) -> bool:
-    """Ventana de bytes de un texto troceado (`texto/…`): el único lote que es un rango de
-    bytes CRUDOS de su padre. Los de SQLite/CSV se sirven como NDJSON y los de PDF/DOCX
-    como mini-PDF o texto: heredarles el tipo mandaría un NDJSON al extractor de SQLite."""
-    origen = fila.origen_contenedor
+def es_ventana_de_texto(origen: dict[str, Any] | None) -> bool:
+    """¿Este `origen_contenedor` es el de una ventana de bytes de un texto troceado
+    (`texto/…`)? Es el único lote que es un rango de bytes CRUDOS de su padre. Los de
+    SQLite/CSV se sirven como NDJSON y los de PDF/DOCX como mini-PDF o texto: heredarles
+    el tipo mandaría un NDJSON al extractor de SQLite."""
     if not origen or not origen.get("hoja"):
         return False
     cadena = origen.get("cadena") or []
     return bool(cadena) and str(cadena[-1]).startswith("texto/")
+
+
+def _es_lote_de_texto(fila: cola.FilaReclamada) -> bool:
+    return es_ventana_de_texto(fila.origen_contenedor)
 
 
 def _tipos_de_padres(
