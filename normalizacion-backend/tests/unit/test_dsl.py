@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from normalizacion.api.busqueda import buscar, construir_consulta
 from normalizacion.api.esquemas import SolicitudBusqueda
 from normalizacion.core.config import Config
@@ -317,3 +319,41 @@ class TestParcial:
     def test_una_respuesta_completa_no_es_parcial(self) -> None:
         r = buscar(_ClienteFake(_respuesta()), Config(_env_file=None), SolicitudBusqueda())
         assert r.parcial is False
+
+
+class _ClienteLento:
+    """Guarda con qué plazo se le llamó y, si se le pide, vence como OpenSearch."""
+
+    def __init__(self, *, vence: bool) -> None:
+        self.vence = vence
+        self.plazos: list[object] = []
+
+    def search(self, **kwargs: object) -> dict:
+        from opensearchpy.exceptions import ConnectionTimeout
+
+        self.plazos.append(kwargs.get("request_timeout"))
+        if self.vence:
+            raise ConnectionTimeout("TIMEOUT", "Read timed out", Exception("lento"))
+        return _respuesta()
+
+
+class TestPlazoDelCliente:
+    """Con el disco de la matriz saturado, una búsqueda en frío tardaba 16-37 s y el
+    cliente cortaba a los 30 s de fábrica: la API daba un 500 mudo a Lilith, que espera
+    60 s (26-09, 2 de 65 búsquedas federadas)."""
+
+    def test_se_espera_mas_que_los_30_s_de_fabrica_y_menos_que_lilith(self) -> None:
+        cliente = _ClienteLento(vence=False)
+        buscar(cliente, Config(_env_file=None), SolicitudBusqueda(texto="garcia"))
+        (plazo,) = cliente.plazos
+        assert isinstance(plazo, int | float) and 30 < plazo < 60
+
+    def test_si_aun_asi_vence_es_un_504_con_motivo_no_un_500(self) -> None:
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            buscar(
+                _ClienteLento(vence=True), Config(_env_file=None), SolicitudBusqueda(texto="x")
+            )
+        assert exc.value.status_code == 504
+        assert "reintenta" in str(exc.value.detail)

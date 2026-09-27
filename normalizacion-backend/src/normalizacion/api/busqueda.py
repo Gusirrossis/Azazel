@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import HTTPException
+from opensearchpy.exceptions import ConnectionTimeout
+
 from normalizacion.api.esquemas import (
     Estadisticas,
     RespuestaBusqueda,
@@ -117,6 +120,14 @@ _MIN_COMODIN_INICIAL = 4
 #: encontrado marcándolo como parcial, en vez de agotar el hilo y dar un 500.
 #: Es una red de seguridad para el término que se escape del umbral de arriba.
 _TIMEOUT_BUSQUEDA = "15s"
+
+#: Lo que la API espera a OpenSearch. Ese "15s" solo acota la fase de CONSULTA: la de
+#: recuperar los documentos (y leer el texto entero de cada uno para el resaltado) no
+#: tiene tope, y con el disco de la matriz saturado —presión de IO ~78 %— una búsqueda
+#: en frío tardaba 16-37 s. El cliente cortaba a los 30 s de fábrica y la API devolvía
+#: un 500 mudo: medido el 26-09, 2 de 65 búsquedas federadas de Lilith, que espera 60 s.
+#: 55 s queda por debajo de ese plazo, así que una búsqueda lenta pero viva llega entera.
+_PLAZO_CLIENTE_S = 55
 
 
 def _ramas_de_texto(texto: str) -> list[dict[str, Any]]:
@@ -242,11 +253,23 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
     pit_id = solicitud.pit_id
     if pit_id is None and solicitud.abrir_pit:
         pit_id = _abrir_pit(cliente, config.indice_alias)
-    if pit_id:
-        cuerpo["pit"] = {"id": pit_id, "keep_alive": "2m"}
-        respuesta = cliente.search(body=cuerpo)  # con PIT no se pasa índice
-    else:
-        respuesta = cliente.search(index=config.indice_alias, body=cuerpo)
+    try:
+        if pit_id:
+            cuerpo["pit"] = {"id": pit_id, "keep_alive": "2m"}
+            # con PIT no se pasa índice
+            respuesta = cliente.search(body=cuerpo, request_timeout=_PLAZO_CLIENTE_S)
+        else:
+            respuesta = cliente.search(
+                index=config.indice_alias, body=cuerpo, request_timeout=_PLAZO_CLIENTE_S
+            )
+    except ConnectionTimeout as exc:
+        # Un 504 con motivo, no un 500: quien federa tiene que poder distinguir "tardó
+        # demasiado, reintenta" de "Azazel está roto".
+        log.warning("busqueda_plazo_agotado", plazo_s=_PLAZO_CLIENTE_S)
+        raise HTTPException(
+            status_code=504,
+            detail=f"la búsqueda tardó más de {_PLAZO_CLIENTE_S} s; reintenta en unos segundos",
+        ) from exc
 
     # ¿Resultados INCOMPLETOS? OpenSearch con timeout devuelve lo que alcanzó y marca
     # `timed_out`; un shard que falla cuenta en `_shards.failed`. (`skipped` NO es pérdida:
