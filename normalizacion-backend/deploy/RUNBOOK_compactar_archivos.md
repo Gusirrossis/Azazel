@@ -76,7 +76,13 @@ se liberan al terminar. Medido: 20 TB libres.
 
 ```bash
 cd /srv/azazel/normalizacion-backend
-C="docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod --profile datos --profile app --profile obs"
+# El override NO está versionado y SÍ está en uso: los contenedores de la matriz se crearon
+# con los dos archivos (etiqueta com.docker.compose.project.config_files). Sin él, el
+# `up` del paso 9 recrearía `api` con los techos del compose base (6g en vez de 12g).
+OVR=$([ -f docker-compose.override.yml ] && echo "-f docker-compose.override.yml")
+C="docker compose -f deploy/docker-compose.prod.yml $OVR --env-file .env.prod --profile datos --profile app --profile obs"
+$C config --hash api   # tiene que coincidir con la etiqueta del contenedor que corre:
+docker inspect normalizacion-api-1 --format '{{index .Config.Labels "com.docker.compose.config-hash"}}'
 PG="docker exec -i normalizacion-postgres-1 psql -U norm -d normalizacion -v ON_ERROR_STOP=1"
 ```
 
