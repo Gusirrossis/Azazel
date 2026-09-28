@@ -108,6 +108,18 @@ class TestCsvComillas:
         assert recogidos[1]["notas"] == 'dijo "hola" y se fue'
         assert recogidos[2]["curp"] == "C00003"
 
+    def test_un_campo_mas_largo_que_el_tope_del_modulo_csv_se_sirve(self) -> None:
+        """`csv` corta un campo en 131.072 caracteres por defecto y lanza `_csv.Error`:
+        en 'Matrix.rar' dejó sin indexar un lote de 6,9 MB (el 16 % de un CSV de 43 MB)
+        como «cadena irresoluble»."""
+        enorme = "x" * 300_000
+        datos = f'id,curp,notas\n1,C00001,"{enorme}"\n2,C00002,corta\n'.encode()
+        lotes = planificar_csv(io.BytesIO(datos), registros_por_lote=1)
+        recogidos = _servir_todo(datos, lotes)
+        assert len(recogidos) == 2
+        assert recogidos[0]["notas"] == enorme
+        assert recogidos[1]["curp"] == "C00002"
+
     def test_delimitador_punto_y_coma(self) -> None:
         cab = "id;curp;nombre\n"
         filas = [f"{i};C{i:05d};P{i}" for i in range(12)]

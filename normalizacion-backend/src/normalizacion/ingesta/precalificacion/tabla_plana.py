@@ -55,6 +55,15 @@ MAX_LOTES_POR_ARCHIVO = 1_000_000
 _BLOQUE = 1024 * 1024
 _NL = 0x0A  # '\n'
 
+# El módulo `csv` corta un CAMPO en 131.072 caracteres por defecto y lanza `_csv.Error`,
+# que no es un fallo de disco pero `abrir_entrada` lo envolvía como tal: tres reintentos
+# y a ERROR («cadena irresoluble»). Medido en 'Matrix.rar' (26-09): un lote de 6,9 MB de
+# un CSV de 43 MB —el 16 % del archivo— sin indexar por un campo enorme. El tamaño real
+# ya lo acota el lote, que se lee entero en memoria; el tope del módulo solo lo rompía.
+# Es global del proceso, así que vale también para `reglas._es_tabular` (una muestra de
+# cabecera, siempre por debajo). 2**31 - 1: el máximo que acepta en Windows (C long).
+csv.field_size_limit(2**31 - 1)
+
 
 @dataclass(frozen=True)
 class LotePlano:
