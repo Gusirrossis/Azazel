@@ -8,15 +8,24 @@
 
 from __future__ import annotations
 
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import HTTPException
-from opensearchpy.exceptions import ConnectionTimeout
+from opensearchpy.exceptions import ConnectionError as ErrorConexionOS
+from opensearchpy.exceptions import ConnectionTimeout, TransportError
 
 from normalizacion.api.esquemas import (
+    ConsultaLote,
     Estadisticas,
+    ModoTexto,
     RespuestaBusqueda,
+    RespuestaLote,
+    ResultadoLote,
     SolicitudBusqueda,
+    SolicitudLote,
 )
 from normalizacion.core.config import Config
 from normalizacion.core.observabilidad import obtener_logger
@@ -129,8 +138,49 @@ _TIMEOUT_BUSQUEDA = "15s"
 #: 55 s queda por debajo de ese plazo, así que una búsqueda lenta pero viva llega entera.
 _PLAZO_CLIENTE_S = 55
 
+#: Techo de la fase de consulta cuando quien pregunta manda su `presupuesto_ms`. Queda
+#: por debajo del plazo del cliente para que la fase de recuperar documentos (que no
+#: tiene tope) aún quepa, y no se pierda entera una búsqueda que ya había encontrado.
+_TECHO_CONSULTA_MS = 50_000
+#: Plazo del cliente con `presupuesto_ms`: el presupuesto más un margen para esa fase,
+#: y nunca por encima de 58 s (Lilith corta cada intento a los 60).
+_MARGEN_RECUPERAR_S = 5
+_PLAZO_CLIENTE_MAX_S = 58
 
-def _ramas_de_texto(texto: str) -> list[dict[str, Any]]:
+#: Posiciones de holgura del modo `cerca`: alcanza para reordenar un nombre de 3-4
+#: palabras («PEREZ LOPEZ JUAN») y para un campo intermedio corto de un volcado.
+_HOLGURA_CERCA = 6
+
+#: Segundos que se sugieren en `Retry-After` cuando OpenSearch rechaza por saturación.
+_REINTENTO_S = 5
+
+
+def _plazo_cliente_s(presupuesto_ms: int | None) -> float:
+    if presupuesto_ms is None:
+        return _PLAZO_CLIENTE_S
+    return min(presupuesto_ms / 1000 + _MARGEN_RECUPERAR_S, _PLAZO_CLIENTE_MAX_S)
+
+
+def _timeout_consulta(presupuesto_ms: int | None) -> str:
+    if presupuesto_ms is None:
+        return _TIMEOUT_BUSQUEDA
+    return f"{min(presupuesto_ms, _TECHO_CONSULTA_MS)}ms"
+
+
+def _rama_contenido(texto: str, modo: ModoTexto | None) -> dict[str, Any]:
+    """Cómo casa el texto con el CONTENIDO según el modo (ver `ModoTexto`)."""
+    if modo == "frase":
+        return {"match_phrase": {"texto_indexable": {"query": texto}}}
+    if modo == "cerca":
+        # Frase con holgura y no `intervals`: el resaltado sigue a la consulta, y con una
+        # frase el fragmento enseña las palabras JUNTAS. Quien federa decide con ese
+        # fragmento (¿es esta persona?); con palabras sueltas no puede.
+        return {"match_phrase": {"texto_indexable": {"query": texto, "slop": _HOLGURA_CERCA}}}
+    # `None` y `todas`: cada palabra en algún sitio del documento (el de siempre).
+    return {"match": {"texto_indexable": {"query": texto, "operator": "and"}}}
+
+
+def _ramas_de_texto(texto: str, modo: ModoTexto | None = None) -> list[dict[str, Any]]:
     """Las formas de casar el texto del usuario. Solo viaja como VALOR, nunca como
     sintaxis: el DSL lo construye el servidor entero (allowlist implícita)."""
     limpio = texto.lower().strip()
@@ -149,7 +199,7 @@ def _ramas_de_texto(texto: str) -> list[dict[str, Any]]:
         por_nombre,
         # El contenido extraído: usa el índice invertido y es barata a cualquier
         # longitud, así que esta rama nunca se quita.
-        {"match": {"texto_indexable": {"query": texto, "operator": "and"}}},
+        _rama_contenido(texto, modo),
     ]
 
 
@@ -163,7 +213,12 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
     debe: list[dict[str, Any]] = []
     if solicitud.texto:
         debe.append(
-            {"bool": {"should": _ramas_de_texto(solicitud.texto), "minimum_should_match": 1}}
+            {
+                "bool": {
+                    "should": _ramas_de_texto(solicitud.texto, solicitud.modo),
+                    "minimum_should_match": 1,
+                }
+            }
         )
     if solicitud.tipo_real:
         filtros.append({"term": {"tipo_real": solicitud.tipo_real}})
@@ -208,7 +263,7 @@ def construir_consulta(solicitud: SolicitudBusqueda, pagina_max: int) -> dict[st
         "track_total_hits": True,
         # Devuelve lo que lleve encontrado en vez de agotar el hilo: un 500 tras 30 s
         # es indistinguible de "el servicio esta caido" para quien federa.
-        "timeout": _TIMEOUT_BUSQUEDA,
+        "timeout": _timeout_consulta(solicitud.presupuesto_ms),
     }
     fuente = _source_de(solicitud)
     if fuente is not None:
@@ -247,44 +302,16 @@ def _abrir_pit(cliente: Any, alias: str) -> str | None:
         return None
 
 
-def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> RespuestaBusqueda:
-    cuerpo = construir_consulta(solicitud, config.api_pagina_max)
-
-    pit_id = solicitud.pit_id
-    if pit_id is None and solicitud.abrir_pit:
-        pit_id = _abrir_pit(cliente, config.indice_alias)
-    try:
-        if pit_id:
-            cuerpo["pit"] = {"id": pit_id, "keep_alive": "2m"}
-            # con PIT no se pasa índice
-            respuesta = cliente.search(body=cuerpo, request_timeout=_PLAZO_CLIENTE_S)
-        else:
-            respuesta = cliente.search(
-                index=config.indice_alias, body=cuerpo, request_timeout=_PLAZO_CLIENTE_S
-            )
-    except ConnectionTimeout as exc:
-        # Un 504 con motivo, no un 500: quien federa tiene que poder distinguir "tardó
-        # demasiado, reintenta" de "Azazel está roto".
-        log.warning("busqueda_plazo_agotado", plazo_s=_PLAZO_CLIENTE_S)
-        raise HTTPException(
-            status_code=504,
-            detail=f"la búsqueda tardó más de {_PLAZO_CLIENTE_S} s; reintenta en unos segundos",
-        ) from exc
-
-    # ¿Resultados INCOMPLETOS? OpenSearch con timeout devuelve lo que alcanzó y marca
-    # `timed_out`; un shard que falla cuenta en `_shards.failed`. (`skipped` NO es pérdida:
-    # son shards podados en can-match por no poder casar.) Sin leer esto, `buscar` armaba
-    # la respuesta como si estuviera completa.
+def _es_parcial(respuesta: dict[str, Any]) -> bool:
+    """¿Resultados INCOMPLETOS? OpenSearch con timeout devuelve lo que alcanzó y marca
+    `timed_out`; un shard que falla cuenta en `_shards.failed`. (`skipped` NO es pérdida:
+    son shards podados en can-match por no poder casar.) Sin leer esto, `buscar` armaba
+    la respuesta como si estuviera completa."""
     shards = respuesta.get("_shards", {})
-    parcial = bool(respuesta.get("timed_out")) or bool(shards.get("failed"))
+    return bool(respuesta.get("timed_out")) or bool(shards.get("failed"))
 
-    hits = respuesta["hits"]["hits"]
-    facetas: dict[str, dict[str, int]] | None = None
-    if solicitud.facetas and "aggregations" in respuesta:
-        facetas = {
-            nombre: {b["key"]: b["doc_count"] for b in agg["buckets"]}
-            for nombre, agg in respuesta["aggregations"].items()
-        }
+
+def _documentos_de(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     documentos = []
     for h in hits:
         doc = dict(h["_source"])
@@ -292,6 +319,63 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         if fragmentos:
             doc["_resaltado"] = fragmentos
         documentos.append(doc)
+    return documentos
+
+
+def _no_disponible(exc: Exception) -> None:
+    """OpenSearch no puede atender AHORA: un 503 con `Retry-After`, no un 500.
+
+    Dos casos: rechaza por saturación (429, su cola de búsquedas llena) o no se le puede
+    ni conectar (reiniciándose, caído). Los dos se arreglan esperando, y quien federa
+    reintenta un 503 pero no debe reintentar un error de verdad. Cualquier otro error de
+    OpenSearch sigue su camino: esconderlo como «vuelve luego» sería mentir."""
+    estado = getattr(exc, "status_code", None)
+    if isinstance(exc, ErrorConexionOS) or estado == 429:
+        log.warning("busqueda_opensearch_no_disponible", estado=estado, tipo=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="el índice no puede atender ahora; reintenta en unos segundos",
+            headers={"Retry-After": str(_REINTENTO_S)},
+        ) from exc
+    raise exc
+
+
+def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> RespuestaBusqueda:
+    cuerpo = construir_consulta(solicitud, config.api_pagina_max)
+
+    pit_id = solicitud.pit_id
+    if pit_id is None and solicitud.abrir_pit:
+        pit_id = _abrir_pit(cliente, config.indice_alias)
+    plazo = _plazo_cliente_s(solicitud.presupuesto_ms)
+    try:
+        if pit_id:
+            cuerpo["pit"] = {"id": pit_id, "keep_alive": "2m"}
+            # con PIT no se pasa índice
+            respuesta = cliente.search(body=cuerpo, request_timeout=plazo)
+        else:
+            respuesta = cliente.search(
+                index=config.indice_alias, body=cuerpo, request_timeout=plazo
+            )
+    except ConnectionTimeout as exc:
+        # Un 504 con motivo, no un 500: quien federa tiene que poder distinguir "tardó
+        # demasiado, reintenta" de "Azazel está roto".
+        log.warning("busqueda_plazo_agotado", plazo_s=plazo)
+        raise HTTPException(
+            status_code=504,
+            detail=f"la búsqueda tardó más de {plazo:.0f} s; reintenta en unos segundos",
+        ) from exc
+    except (ErrorConexionOS, TransportError) as exc:
+        _no_disponible(exc)
+
+    parcial = _es_parcial(respuesta)
+    hits = respuesta["hits"]["hits"]
+    facetas: dict[str, dict[str, int]] | None = None
+    if solicitud.facetas and "aggregations" in respuesta:
+        facetas = {
+            nombre: {b["key"]: b["doc_count"] for b in agg["buckets"]}
+            for nombre, agg in respuesta["aggregations"].items()
+        }
+    documentos = _documentos_de(hits)
     # Las entidades se buscan con los documentos COMPLETOS (llevan los campos de
     # anclas), y solo despues se poda lo que el consumidor no pidio.
     entidades = (
@@ -309,6 +393,186 @@ def buscar(cliente: Any, config: Config, solicitud: SolicitudBusqueda) -> Respue
         origen=config.despliegue.nodo_id,
         entidades=entidades,
         parcial=parcial,
+    )
+
+
+# ------------------------------------------------------------------ búsqueda por lotes
+
+#: Búsquedas simultáneas del lote. OpenSearch tiene 4 CPUs (7 hilos de búsqueda) y cada
+#: búsqueda toca los 6 índices del alias: más no va más rápido, solo pone en cola a las
+#: búsquedas sueltas de los demás.
+_CONCURRENCIA_LOTE = 3
+#: Por debajo de esto una consulta ya no se lanza: no le daría tiempo ni a la fase de
+#: consulta. Vuelve con `ejecutada: false`.
+_MINIMO_CONSULTA_S = 1.0
+#: Orden de EJECUCIÓN (los resultados salen en el orden pedido): lo barato primero, para
+#: que un presupuesto corto se gaste en lo que cabe. Medido en frío el 29-09: una CURP
+#: en el contenido, 0,2 s; un teléfono, 1,7 s seguido y 5-7 s cada forma partida («55»
+#: y los grupos de 4 cifras son términos frecuentísimos en los volcados SQL).
+_ORDEN_COSTE: dict[str | None, int] = {
+    "curp": 0, "rfc": 0, "nss": 0, "correo": 1, None: 2, "nombre": 3, "telefono": 4,
+}
+
+#: Identificadores que se buscan también en el nombre del archivo (ver `consulta_lote`).
+_NOMBRE_DE_ARCHIVO = frozenset({"curp", "rfc", "correo"})
+
+_NO_ALFANUM = re.compile(r"[^0-9A-ZÑ]")
+_NO_DIGITO = re.compile(r"\D")
+
+
+def normalizar_identificador(tipo: str | None, texto: str) -> str | None:
+    """El identificador en su forma canónica, o None si no queda nada que buscar.
+
+    curp/rfc/nss: mayúsculas y alfanuméricos. telefono: solo dígitos y, si trae lada
+    internacional, los 10 últimos. correo: minúsculas y sin espacios. nombre / sin tipo:
+    el texto tal cual (lo normaliza el analizador del índice)."""
+    if tipo in ("curp", "rfc", "nss"):
+        valor = _NO_ALFANUM.sub("", texto.upper())
+    elif tipo == "telefono":
+        digitos = _NO_DIGITO.sub("", texto)
+        valor = digitos[-10:] if len(digitos) > 10 else digitos
+    elif tipo == "correo":
+        valor = "".join(texto.split()).lower()
+    else:
+        valor = texto.strip()
+    return valor or None
+
+
+def _variantes_telefono(diez: str) -> list[str]:
+    """Cómo aparece escrito un teléfono en un texto. El analizador parte «55 1234 5678»
+    en tres términos, así que cada forma es una FRASE distinta; la de 10 dígitos
+    seguidos es un término solo. Con la lada (52) pegada también es un término aparte."""
+    if len(diez) != 10:
+        return [diez]
+    return [
+        diez,
+        f"{diez[:2]} {diez[2:6]} {diez[6:]}",  # 55 1234 5678 (CDMX, GDL, MTY)
+        f"{diez[:3]} {diez[3:6]} {diez[6:]}",  # 222 123 4567 (resto del país)
+        f"52{diez}",
+    ]
+
+
+def consulta_lote(consulta: ConsultaLote) -> dict[str, Any] | None:
+    """La parte `query` de UNA consulta del lote, o None si el texto no deja nada.
+
+    Con tipo de identificador, la coincidencia es EXACTA sobre el término normalizado
+    (frase sobre el contenido, más el nombre del archivo: las fotos de INE suelen
+    llamarse como la CURP). Sin la rama de `nombre` con comodín del texto libre, que es
+    lo caro de /buscar para un identificador. Sin tipo, o con `nombre`, se busca como
+    en /buscar con su `modo` (con `nombre`, `frase` por omisión)."""
+    valor = normalizar_identificador(consulta.tipo, consulta.texto)
+    if valor is None:
+        return None
+    if consulta.tipo is None or consulta.tipo == "nombre":
+        modo = consulta.modo or ("frase" if consulta.tipo == "nombre" else None)
+        ramas = _ramas_de_texto(valor, modo)
+    else:
+        frases = _variantes_telefono(valor) if consulta.tipo == "telefono" else [valor]
+        ramas = [{"match_phrase": {"texto_indexable": {"query": f}}} for f in frases]
+        # El nombre del archivo, solo para lo que suele dar nombre a un archivo (la foto
+        # de una INE se llama como la CURP). Con cifras no: el comodín se filtra por
+        # trigramas, y «000» o «555» están en casi todos los nombres, así que revisa uno
+        # a uno millones de candidatos (medido: un NSS agotó 20 s solo con esta rama).
+        if consulta.tipo in _NOMBRE_DE_ARCHIVO and len(valor) >= _MIN_COMODIN_INICIAL:
+            ramas.append(
+                {"wildcard": {"nombre": {"value": f"*{valor.lower()}*", "case_insensitive": True}}}
+            )
+    return {"bool": {"should": ramas, "minimum_should_match": 1}}
+
+
+def _cuerpo_lote(
+    consulta: ConsultaLote, query: dict[str, Any], fuente: list[str] | None,
+    pagina_max: int, timeout_ms: int,
+) -> dict[str, Any]:
+    """Mismo cuerpo que /buscar (orden, resaltado, total exacto) con la query del lote."""
+    cuerpo: dict[str, Any] = {
+        "size": min(consulta.tamano_pagina, pagina_max),
+        "sort": _SORT_RELEVANCIA,
+        "query": query,
+        "track_total_hits": True,
+        "timeout": f"{timeout_ms}ms",
+        "highlight": {
+            "fields": {"texto_indexable": {"fragment_size": 180, "number_of_fragments": 2}},
+            "pre_tags": [MARCA_INICIO],
+            "post_tags": [MARCA_FIN],
+            "encoder": "default",
+        },
+    }
+    if fuente is not None:
+        cuerpo["_source"] = fuente
+    if consulta.cursor:
+        cuerpo["search_after"] = consulta.cursor
+    return cuerpo
+
+
+def buscar_lote(cliente: Any, config: Config, solicitud: SolicitudLote) -> RespuestaLote:
+    """Muchas consultas en una petición, con un presupuesto de tiempo COMÚN.
+
+    Cada consulta va por su lado (`_CONCURRENCIA_LOTE` a la vez) con el plazo que le
+    quede al presupuesto. Así una lenta —un teléfono partido cuesta 5-7 s en frío— solo
+    se marca ella como parcial: con `_msearch` la respuesta llega entera o no llega, y
+    la más lenta de la tanda se llevaba por delante a las demás (medido: 12 consultas
+    perdidas por un teléfono). La que ya no cabe vuelve sin lanzar (`ejecutada: false`).
+    Nunca un 5xx por tiempo: se devuelve lo que cupo. Se ejecuta lo barato primero
+    (`_ORDEN_COSTE`), pero los resultados salen en el orden de las consultas."""
+    inicio = time.monotonic()
+    limite = inicio + solicitud.presupuesto_ms / 1000
+    fuente = _source_de(SolicitudBusqueda(campos=solicitud.campos))
+    pedidos = [c for c in (solicitud.campos or []) if c in _campos_permitidos()] or None
+    resultados: dict[str, ResultadoLote] = {}
+
+    def _vacio(c: ConsultaLote, **extra: Any) -> ResultadoLote:
+        return ResultadoLote(id=c.id, documentos=[], total=0, **extra)
+
+    def _una(c: ConsultaLote, query: dict[str, Any]) -> ResultadoLote:
+        restante = limite - time.monotonic()
+        if restante < _MINIMO_CONSULTA_S:
+            return _vacio(c, parcial=True, ejecutada=False)
+        # El 80 % para la fase de consulta; el resto, para recuperar los documentos.
+        cuerpo = _cuerpo_lote(c, query, fuente, config.api_pagina_max, int(restante * 800))
+        try:
+            item = cliente.search(
+                index=config.indice_alias,
+                body=cuerpo,
+                request_timeout=min(restante, _PLAZO_CLIENTE_MAX_S),
+            )
+        except ConnectionTimeout:
+            return _vacio(c, parcial=True, error="plazo")
+        except (ErrorConexionOS, TransportError) as exc:
+            tipo = str(getattr(exc, "error", "") or type(exc).__name__)
+            log.warning("lote_consulta_fallida", tipo=tipo)
+            return _vacio(c, parcial=True, error=tipo)
+        hits = item["hits"]["hits"]
+        return ResultadoLote(
+            id=c.id,
+            documentos=_podar_documentos(_documentos_de(hits), pedidos),
+            total=item["hits"]["total"]["value"],
+            parcial=_es_parcial(item),
+            cursor=hits[-1]["sort"] if hits else None,
+        )
+
+    pendientes: list[tuple[ConsultaLote, dict[str, Any]]] = []
+    for c in solicitud.consultas:
+        query = consulta_lote(c)
+        if query is None:  # el texto no dejó nada que buscar: no hay nada, y es exacto
+            resultados[c.id] = _vacio(c)
+        else:
+            pendientes.append((c, query))
+    pendientes.sort(key=lambda par: _ORDEN_COSTE.get(par[0].tipo, 2))  # estable
+
+    # Cada tarea mira el presupuesto al empezar y lleva un plazo que no pasa de él, así
+    # que el `with` (que espera a las que corren) no alarga la respuesta más allá.
+    with ThreadPoolExecutor(max_workers=_CONCURRENCIA_LOTE) as ejecutor:
+        futuros = [(c, ejecutor.submit(_una, c, q)) for c, q in pendientes]
+    for c, futuro in futuros:
+        resultados[c.id] = futuro.result()
+
+    ordenados = [resultados[c.id] for c in solicitud.consultas]
+    return RespuestaLote(
+        origen=config.despliegue.nodo_id,
+        resultados=ordenados,
+        parcial=any(r.parcial for r in ordenados),
+        ms=int((time.monotonic() - inicio) * 1000),
     )
 
 

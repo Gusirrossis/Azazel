@@ -228,6 +228,21 @@ def marcar_corridas_huerfanas(config: Config) -> int:
         return cur.rowcount
 
 
+def corrida_en_curso_desde(config: Config) -> datetime | None:
+    """Desde cuándo hay una corrida EN_CURSO en este nodo, o None si no hay ninguna.
+
+    Para `/salud`, que se llama sin cesar y tiene que seguir siendo barata: la tabla
+    `corridas` son decenas de filas, y los plazos cortos hacen que un Postgres atascado
+    lo diga lanzando (quien llama lo traduce a «no se sabe») en vez de colgar la sonda."""
+    with psycopg.connect(
+        config.postgres_dsn, connect_timeout=2, options="-c statement_timeout=2000"
+    ) as conn:
+        fila = conn.execute(
+            "SELECT min(iniciada_en) FROM corridas WHERE estado = 'EN_CURSO'"
+        ).fetchone()
+    return fila[0] if fila else None
+
+
 def iniciar_corrida(
     config: Config, ruta: Path, disco_id: str | None = None, destino: str | None = None
 ) -> tuple[int, str]:

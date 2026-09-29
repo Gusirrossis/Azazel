@@ -151,6 +151,9 @@ def test_ninguna_escritura_se_queda_en_lector(rutas: dict[tuple[str, str], str |
         # porque escriba nada: `/buscar` es de solo lectura y tiene que estar al
         # alcance de un lector — es la razón de ser del rol.
         ("/buscar", "post"),
+        # Lo mismo en lote: muchas búsquedas de solo lectura en un cuerpo, para quien
+        # federa y sigue un rastro con su clave de lector.
+        ("/buscar/lote", "post"),
         # Mismo caso que `/buscar`: POST porque la lista de contenedores viaja en el
         # CUERPO —una llamada por búsqueda, no una por base— y no porque escriba nada.
         # Sólo LEE el estado de la cola para responder "¿la tengo entera?", y quien

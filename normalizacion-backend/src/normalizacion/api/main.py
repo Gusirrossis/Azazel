@@ -34,6 +34,7 @@ from normalizacion.api.esquemas import (
     RespuestaColaArchivos,
     RespuestaEntidades,
     RespuestaFiltro,
+    RespuestaLote,
     RespuestaPreservados,
     RespuestaReprocesar,
     RespuestaTablero,
@@ -49,6 +50,7 @@ from normalizacion.api.esquemas import (
     SolicitudDestino,
     SolicitudFiltro,
     SolicitudLogin,
+    SolicitudLote,
     SolicitudPipeline,
     SolicitudProponerMapeo,
     SolicitudProyectar,
@@ -428,14 +430,27 @@ def crear_app(config: Config) -> FastAPI:
         prefiere saberlo antes de gastar su presupuesto de tiempo.
 
         Sin autenticar a propósito: es lo que llama un balanceador o un consumidor
-        ANTES de tener contexto. Por eso devuelve dos booleanos y nada más — ni
-        versión, ni recuentos, ni el identificador del nodo.
+        ANTES de tener contexto. Por eso devuelve booleanos y nada más — ni versión,
+        ni recuentos, ni el identificador del nodo.
+
+        `ocupado`: hay una corrida en curso, así que las búsquedas en frío van lentas y
+        quien federa puede avisarlo o repartir su presupuesto. Con la hora de inicio y
+        nada más de la corrida. None si Postgres no contesta en 2 s: la sonda no se
+        cuelga por él ni dice «libre» sin saberlo.
         """
+        from normalizacion.ingesta.pipeline import corrida_en_curso_desde
+
         try:
             indice = bool(_cliente(request).ping())
         except Exception:
             indice = False
-        return Salud(ok=True, indice=indice)
+        ocupado: bool | None
+        try:
+            desde = corrida_en_curso_desde(request.app.state.config)
+            ocupado = desde is not None
+        except Exception:
+            desde, ocupado = None, None
+        return Salud(ok=True, indice=indice, ocupado=ocupado, ocupado_desde=desde)
 
     @aplicacion.post("/auth/login", response_model=Identidad)
     def post_login(
@@ -661,6 +676,18 @@ def crear_app(config: Config) -> FastAPI:
     ) -> RespuestaBusqueda:
         """Búsqueda con filtros, facetas y paginación profunda (pasa `cursor` de vuelta)."""
         return busqueda.buscar(_cliente(request), request.app.state.config, solicitud)
+
+    @aplicacion.post("/buscar/lote", response_model=RespuestaLote)
+    def post_buscar_lote(
+        solicitud: SolicitudLote, _: Autorizado, request: Request
+    ) -> RespuestaLote:
+        """Hasta 150 consultas en una petición, con un presupuesto de tiempo común.
+
+        Para quien federa y sigue un rastro (CURP, RFC, NSS, teléfono, correo, nombre):
+        una petición por lote en vez de una por dato. Con `tipo`, coincidencia EXACTA
+        del identificador normalizado. Al vencer el presupuesto devuelve lo que haya,
+        marcado `parcial` por consulta; nunca un 5xx por tiempo."""
+        return busqueda.buscar_lote(_cliente(request), request.app.state.config, solicitud)
 
     @aplicacion.get("/seguridad/claves-busqueda", response_model=list[ClaveBusqueda])
     def get_claves_busqueda(_: Admin, request: Request) -> list[dict[str, Any]]:

@@ -9,7 +9,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: Cómo casar un texto de VARIAS palabras con el contenido. `None` = el de siempre.
+#:   todas — cada palabra en algún sitio del documento (lo que ya hace el de siempre en
+#:           el contenido; se puede pedir por su nombre).
+#:   frase — las palabras juntas y en orden.
+#:   cerca — las palabras a pocas posiciones unas de otras, en cualquier orden
+#:           («PEREZ LOPEZ JUAN» casa con «juan perez lopez»).
+#: Medido el 29-09 con «juan perez lopez»: el de siempre, 951.693 documentos (las
+#: palabras sueltas por un volcado SQL, de personas distintas); frase, 1.266; cerca,
+#: 22.188.
+ModoTexto = Literal["todas", "frase", "cerca"]
+
+#: Qué es el texto de una consulta del lote. Decide cómo se NORMALIZA antes de buscar.
+TipoIdentificador = Literal["curp", "rfc", "nss", "telefono", "correo", "nombre"]
 
 
 class SolicitudBusqueda(BaseModel):
@@ -62,6 +76,23 @@ class SolicitudBusqueda(BaseModel):
         ),
     )
     pit_id: str | None = Field(default=None, description="PIT de una búsqueda anterior")
+    modo: ModoTexto | None = Field(
+        default=None,
+        description=(
+            "Cómo casar un texto de varias palabras con el contenido: `todas` (cada"
+            " palabra en algún sitio), `frase` (juntas y en orden) o `cerca` (a pocas"
+            " posiciones, en cualquier orden). Por omisión, el de siempre."
+        ),
+    )
+    presupuesto_ms: int | None = Field(
+        default=None,
+        ge=1000,
+        le=55000,
+        description=(
+            "Tiempo que puede usar la fase de consulta antes de devolver lo encontrado"
+            " marcado `parcial`. Por omisión, 15 s (el de siempre)."
+        ),
+    )
 
 
 class RespuestaBusqueda(BaseModel):
@@ -86,11 +117,86 @@ class RespuestaBusqueda(BaseModel):
     parcial: bool = False
 
 
+class ConsultaLote(BaseModel):
+    """Una consulta dentro de POST /buscar/lote."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64, description="Lo devuelve tal cual")
+    texto: str = Field(min_length=1, max_length=200)
+    tipo: TipoIdentificador | None = Field(
+        default=None,
+        description=(
+            "curp/rfc/nss: mayúsculas y alfanuméricos; telefono: dígitos, los 10 últimos;"
+            " correo: minúsculas. Sin tipo, se busca como en /buscar."
+        ),
+    )
+    modo: ModoTexto | None = Field(
+        default=None, description="Para `nombre` o sin tipo. Con `nombre`, por omisión `frase`."
+    )
+    tamano_pagina: int = Field(default=51, ge=1, description="Se acota al máximo del servidor")
+    cursor: list[Any] | None = Field(default=None, description="search_after de su página anterior")
+
+
+class SolicitudLote(BaseModel):
+    """POST /buscar/lote — muchas consultas en una petición, con un presupuesto común."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    consultas: list[ConsultaLote] = Field(min_length=1, max_length=150)
+    campos: list[str] | None = Field(
+        default=None, max_length=40, description="Como en /buscar: allowlist, lo demás se ignora"
+    )
+    presupuesto_ms: int = Field(
+        default=20000,
+        ge=1000,
+        le=55000,
+        description="Al vencer se devuelve lo que haya, con `parcial` por consulta. Nunca un 5xx.",
+    )
+
+    @field_validator("consultas")
+    @classmethod
+    def _ids_unicos(cls, consultas: list[ConsultaLote]) -> list[ConsultaLote]:
+        # Los resultados vuelven en el mismo orden, pero quien lee por `id` necesita que
+        # no se repitan: con dos iguales no sabría a cuál corresponde cada respuesta.
+        ids = [c.id for c in consultas]
+        if len(ids) != len(set(ids)):
+            raise ValueError("los `id` de las consultas tienen que ser únicos")
+        return consultas
+
+
+class ResultadoLote(BaseModel):
+    id: str
+    documentos: list[dict[str, Any]]
+    total: int
+    #: La consulta se cortó por el presupuesto, un shard falló o no llegó a lanzarse:
+    #: `total` y `documentos` son una cota inferior.
+    parcial: bool = False
+    cursor: list[Any] | None = None
+    #: False = no dio tiempo ni a lanzarla (presupuesto agotado antes de su tanda).
+    ejecutada: bool = True
+    #: Solo el TIPO de error de OpenSearch si esa consulta falló (nunca su mensaje).
+    error: str | None = None
+
+
+class RespuestaLote(BaseModel):
+    origen: str = "azazel"
+    resultados: list[ResultadoLote]
+    #: Alguna consulta quedó parcial o sin lanzar.
+    parcial: bool = False
+    ms: int
+
+
 class Salud(BaseModel):
     """Sonda de disponibilidad BARATA. Ver el endpoint `/salud` para el porqué."""
 
     ok: bool
     indice: bool
+    #: Hay una corrida de normalización EN CURSO en este nodo: las búsquedas en frío van
+    #: más lentas. None = no se pudo saber (Postgres no contestó a tiempo).
+    ocupado: bool | None = False
+    #: Desde cuándo (ISO 8601, UTC), si `ocupado`.
+    ocupado_desde: datetime | None = None
 
 
 class SolicitudLogin(BaseModel):
