@@ -333,8 +333,18 @@ def crear_app(config: Config) -> FastAPI:
         raise HTTPException(status_code=401, detail="Sesión requerida")
 
     def _con_limite(request: Request, quien: QuienEs) -> QuienEs:
-        if not request.app.state.limitador.permitir(quien.identidad):
-            raise HTTPException(status_code=429, detail="Límite de solicitudes excedido")
+        limitador = request.app.state.limitador
+        if not limitador.permitir(quien.identidad):
+            espera = limitador.espera(quien.identidad)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Límite de solicitudes excedido"
+                    f" ({request.app.state.config.api_solicitudes_por_minuto} por minuto y"
+                    f" clave); reintenta en {espera} s"
+                ),
+                headers={"Retry-After": str(espera)},
+            )
         return quien
 
     def _exige(minimo: Rol) -> Any:
@@ -468,7 +478,12 @@ def crear_app(config: Config) -> FastAPI:
         # señuelo se verifica igual), y basta un bucle para llevarse el VPS por
         # delante — los endpoints síncronos corren en el threadpool de Starlette.
         if not request.app.state.limitador.permitir(f"login:{ip}"):
-            raise HTTPException(status_code=429, detail="Demasiadas peticiones de login")
+            espera = request.app.state.limitador.espera(f"login:{ip}")
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiadas peticiones de login",
+                headers={"Retry-After": str(espera)},
+            )
 
         # Se frena por usuario Y por IP: ver `FrenoDeIntentos` para el porqué.
         espera = freno.bloqueado(f"u:{usuario_norm}", f"ip:{ip}")

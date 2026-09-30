@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections import OrderedDict, deque
 
@@ -26,6 +27,16 @@ class LimitadorPorMinuto:
             return False
         eventos.append(ahora)
         return True
+
+    def espera(self, llave: str) -> int:
+        """Segundos hasta que esta llave vuelva a tener hueco (0 si ya lo tiene): lo que
+        va en `Retry-After`. Sin él, quien federa reintentaba a ciegas a los 2 y 5 s en
+        una ventana de 60, y seguía en 429 (medido por Lilith el 29-09: 2 consultas de
+        un rastro de 122 perdidas)."""
+        eventos = self._eventos.get(llave)
+        if not eventos or len(eventos) < self._max:
+            return 0
+        return max(1, math.ceil(eventos[0] + 60.0 - time.monotonic()))
 
 
 class FrenoDeIntentos:
