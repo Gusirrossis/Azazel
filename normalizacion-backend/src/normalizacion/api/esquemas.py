@@ -136,6 +136,14 @@ class ConsultaLote(BaseModel):
     )
     tamano_pagina: int = Field(default=51, ge=1, description="Se acota al máximo del servidor")
     cursor: list[Any] | None = Field(default=None, description="search_after de su página anterior")
+    formas_partidas: bool = Field(
+        default=False,
+        description=(
+            "Solo con `telefono`: buscar también «55 1234 5678» y «551 234 5678». Por"
+            " omisión solo las formas seguidas (10 dígitos y 52+10), que es como aparecen"
+            " en los volcados SQL. Cada forma partida cuesta 5-20 s en frío."
+        ),
+    )
 
 
 class SolicitudLote(BaseModel):

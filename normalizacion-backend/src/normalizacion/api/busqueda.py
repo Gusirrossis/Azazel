@@ -438,18 +438,22 @@ def normalizar_identificador(tipo: str | None, texto: str) -> str | None:
     return valor or None
 
 
-def _variantes_telefono(diez: str) -> list[str]:
-    """Cómo aparece escrito un teléfono en un texto. El analizador parte «55 1234 5678»
-    en tres términos, así que cada forma es una FRASE distinta; la de 10 dígitos
-    seguidos es un término solo. Con la lada (52) pegada también es un término aparte."""
+def _variantes_telefono(diez: str, *, partidas: bool = False) -> list[str]:
+    """Cómo aparece escrito un teléfono en un texto. Seguido (10 dígitos, o con la lada
+    52 pegada) es UN término: barato. El analizador parte «55 1234 5678» en tres, así que
+    cada forma partida es una FRASE, y cara: «55» y los grupos de 4 cifras están en casi
+    todos los volcados SQL. Medido en frío el 30-09: 4,3 s seguido y 19-23 s cada forma
+    partida; con las cuatro, un solo teléfono se comía el presupuesto de un lote. Por eso
+    las partidas solo si se piden (`formas_partidas`)."""
     if len(diez) != 10:
         return [diez]
-    return [
-        diez,
-        f"{diez[:2]} {diez[2:6]} {diez[6:]}",  # 55 1234 5678 (CDMX, GDL, MTY)
-        f"{diez[:3]} {diez[3:6]} {diez[6:]}",  # 222 123 4567 (resto del país)
-        f"52{diez}",
-    ]
+    formas = [diez, f"52{diez}"]
+    if partidas:
+        formas += [
+            f"{diez[:2]} {diez[2:6]} {diez[6:]}",  # 55 1234 5678 (CDMX, GDL, MTY)
+            f"{diez[:3]} {diez[3:6]} {diez[6:]}",  # 222 123 4567 (resto del país)
+        ]
+    return formas
 
 
 def consulta_lote(consulta: ConsultaLote) -> dict[str, Any] | None:
@@ -467,7 +471,11 @@ def consulta_lote(consulta: ConsultaLote) -> dict[str, Any] | None:
         modo = consulta.modo or ("frase" if consulta.tipo == "nombre" else None)
         ramas = _ramas_de_texto(valor, modo)
     else:
-        frases = _variantes_telefono(valor) if consulta.tipo == "telefono" else [valor]
+        frases = (
+            _variantes_telefono(valor, partidas=consulta.formas_partidas)
+            if consulta.tipo == "telefono"
+            else [valor]
+        )
         ramas = [{"match_phrase": {"texto_indexable": {"query": f}}} for f in frases]
         # El nombre del archivo, solo para lo que suele dar nombre a un archivo (la foto
         # de una INE se llama como la CURP). Con cifras no: el comodín se filtra por

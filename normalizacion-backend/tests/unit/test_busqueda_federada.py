@@ -152,10 +152,25 @@ def _frases(query: dict[str, Any]) -> list[str]:
 
 
 class TestConsultaLote:
-    def test_un_telefono_se_busca_en_sus_formas_escritas(self) -> None:
+    def test_un_telefono_por_omision_solo_en_sus_formas_seguidas(self) -> None:
+        """Las partidas son frases de términos frecuentísimos: 19-23 s cada una en frío."""
         q = busqueda.consulta_lote(ConsultaLote(id="t", texto="+52 55 1234 5678", tipo="telefono"))
         assert q is not None
-        assert set(_frases(q)) >= {"5512345678", "55 1234 5678", "551 234 5678"}
+        assert set(_frases(q)) == {"5512345678", "525512345678"}
+
+    def test_las_formas_partidas_si_se_piden(self) -> None:
+        q = busqueda.consulta_lote(
+            ConsultaLote(id="t", texto="55 1234 5678", tipo="telefono", formas_partidas=True)
+        )
+        assert q is not None
+        assert set(_frases(q)) == {"5512345678", "525512345678", "55 1234 5678", "551 234 5678"}
+
+    def test_formas_partidas_no_cambia_otros_tipos(self) -> None:
+        con = busqueda.consulta_lote(
+            ConsultaLote(id="c", texto="PEGJ850315HDFRRN09", tipo="curp", formas_partidas=True)
+        )
+        sin = busqueda.consulta_lote(ConsultaLote(id="c", texto="PEGJ850315HDFRRN09", tipo="curp"))
+        assert con == sin
 
     def test_una_curp_es_exacta_y_mira_tambien_el_nombre_del_archivo(self) -> None:
         q = busqueda.consulta_lote(ConsultaLote(id="c", texto="pegj850315hdfrrn09", tipo="curp"))
