@@ -312,7 +312,20 @@ class TestBuscarLote:
     def test_el_plazo_de_cada_consulta_no_pasa_del_presupuesto(self) -> None:
         cliente = _Cliente({})
         busqueda.buscar_lote(cliente, Config(_env_file=None), _lote(1, presupuesto_ms=20000))
-        assert int(cliente.cuerpos[0]["timeout"].removesuffix("ms")) <= 16000
+        # 20 s menos el margen de respuesta (2 s), y de eso el 80 % para la consulta.
+        assert int(cliente.cuerpos[0]["timeout"].removesuffix("ms")) <= 14400
+
+    def test_cierra_antes_del_presupuesto_para_que_la_respuesta_quepa(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lilith pidió 55 s y la respuesta llegó a los 59 (30-09), con su corte a 60."""
+        monkeypatch.setattr(busqueda, "_CONCURRENCIA_LOTE", 1)
+        reloj = [0.0]
+        monkeypatch.setattr(busqueda.time, "monotonic", lambda: reloj[0])
+        cliente = _Cliente({}, dura_s=26.0, reloj=reloj)
+        r = busqueda.buscar_lote(cliente, Config(_env_file=None), _lote(3, presupuesto_ms=55000))
+        # t=0 y t=26 caben; a t=52 quedan 3 s de presupuesto, pero el cierre es a 52 s.
+        assert [x.ejecutada for x in r.resultados] == [True, True, False]
 
     def test_un_texto_que_no_deja_nada_no_se_lanza_y_no_es_parcial(self) -> None:
         cliente = _Cliente({})

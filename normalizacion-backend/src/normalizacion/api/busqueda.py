@@ -405,6 +405,11 @@ _CONCURRENCIA_LOTE = 3
 #: Por debajo de esto una consulta ya no se lanza: no le daría tiempo ni a la fase de
 #: consulta. Vuelve con `ejecutada: false`.
 _MINIMO_CONSULTA_S = 1.0
+#: El lote cierra ANTES de su presupuesto, para que la respuesta llegue dentro de él: armar
+#: y mandar 120 resultados también cuesta. Medido por Lilith el 30-09: pidió 55 s y la
+#: respuesta llegó a los 59, con su intento cortando a los 60. El 10 % del presupuesto,
+#: como mucho 3 s.
+_MARGEN_RESPUESTA_S = 3.0
 #: Orden de EJECUCIÓN (los resultados salen en el orden pedido): lo barato primero, para
 #: que un presupuesto corto se gaste en lo que cabe. Medido en frío el 29-09: una CURP
 #: en el contenido, 0,2 s; un teléfono, 1,7 s seguido y 5-7 s cada forma partida («55»
@@ -524,7 +529,8 @@ def buscar_lote(cliente: Any, config: Config, solicitud: SolicitudLote) -> Respu
     Nunca un 5xx por tiempo: se devuelve lo que cupo. Se ejecuta lo barato primero
     (`_ORDEN_COSTE`), pero los resultados salen en el orden de las consultas."""
     inicio = time.monotonic()
-    limite = inicio + solicitud.presupuesto_ms / 1000
+    presupuesto_s = solicitud.presupuesto_ms / 1000
+    limite = inicio + presupuesto_s - min(_MARGEN_RESPUESTA_S, presupuesto_s * 0.1)
     fuente = _source_de(SolicitudBusqueda(campos=solicitud.campos))
     pedidos = [c for c in (solicitud.campos or []) if c in _campos_permitidos()] or None
     resultados: dict[str, ResultadoLote] = {}
