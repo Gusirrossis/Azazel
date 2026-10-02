@@ -1800,8 +1800,47 @@ def _paso_tar(fobj: IO[bytes], entrada: str, umbral: int, limite: int) -> IO[byt
     return spool
 
 
+def _dir_flujo_extraido(ruta_fs: Path, formato: str, limite: int) -> Path:
+    """gz/bz2/xz de UN miembro que vive en disco: lo descomprime ENTERO una sola vez a la
+    caché persistente compartida y sirve 'contenido' desde ahí — O(N), no O(N²).
+
+    `_paso_flujo` lo descomprimía completo a un spool en CADA petición, y un `.sql.gz`
+    grande se trocea en lotes de texto: cada lote pagaba la descompresión entera. Es el
+    mismo desastre que ya se curó para 7z y RAR (ver `_servir_desde_arbol`), que aquí no
+    había llegado. Medido en la luna kubo el 02-10: un `.gz` de 3,9 GB (~26 GB dentro) se
+    re-descomprimía cada ~60 s a un temporal, el precalificador no avanzó en horas y la
+    corrida escribía a 150-250 MB/s sin terminar un solo archivo.
+
+    Misma caché que 7z/RAR (mismo cupo, mismo LRU, rename atómico, candado por clave);
+    la clave lleva el formato. El tope `limite` se aplica mientras se descomprime."""
+    clave = _clave_persistente(ruta_fs, f"flujo-{formato}")
+    with _CACHE_7Z_LOCK:
+        memo = _CACHE_7Z.get(clave)
+        if memo is not None and (memo / _MARCADOR).exists():
+            return memo
+
+    def _descomprimir(rf: Path, dst: Path) -> None:
+        with (
+            rf.open("rb") as crudo,
+            _ABRIDORES_FLUJO[formato](crudo) as flujo,
+            (dst / "contenido").open("wb") as salida,
+        ):
+            _copiar_con_limite(flujo, salida, limite, "contenido")
+
+    destino = _CACHE_BASE / clave
+    if not (destino / _MARCADOR).exists():
+        with _candado_extraccion(clave):
+            if not (destino / _MARCADOR).exists():  # otro la terminó mientras se esperaba
+                _extraer_a_persistente(ruta_fs, clave, destino, _descomprimir)
+    _tocar(destino)
+    with _CACHE_7Z_LOCK:
+        _CACHE_7Z[clave] = destino
+    return destino
+
+
 def _paso_flujo(fobj: IO[bytes], formato: str, entrada: str, umbral: int, limite: int) -> IO[bytes]:
-    """gz/bz2/xz de un solo miembro: la entrada es siempre 'contenido'."""
+    """gz/bz2/xz de un solo miembro: la entrada es siempre 'contenido'. Solo para flujos
+    ANIDADOS (sin ruta en disco); el de disco va por `_dir_flujo_extraido`."""
     fobj.seek(0)
     spool: IO[bytes] = SpooledTemporaryFile(max_size=umbral)  # noqa: SIM115
     with _ABRIDORES_FLUJO[formato](fobj) as flujo:
@@ -1936,7 +1975,14 @@ def abrir_entrada(
                 # tar comprimido (tgz/tbz/txz) o flujo de un miembro: la exploración
                 # nombra "contenido" a los miembros únicos — eso decide la rama
                 formato = "gz" if cab[:2] == b"\x1f\x8b" else ("bz2" if cab[:3] == b"BZh" else "xz")
-                if entrada == "contenido":
+                if entrada == "contenido" and ruta_fs_actual is not None:
+                    siguiente = _servir_desde_arbol(
+                        _dir_flujo_extraido(ruta_fs_actual, formato, limite_bytes),
+                        entrada,
+                        limite_bytes,
+                        formato,
+                    )
+                elif entrada == "contenido":
                     siguiente = _paso_flujo(fobj, formato, entrada, umbral_memoria, limite_bytes)
                 else:
                     siguiente = _paso_tar(fobj, entrada, umbral_memoria, limite_bytes)

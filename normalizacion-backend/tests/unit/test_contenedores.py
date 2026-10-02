@@ -463,15 +463,79 @@ class TestTarYFlujos:
         ) as f:
             assert f.read() == contenido
 
-    def test_abrir_entrada_de_gz_simple(self, tmp_path: Path) -> None:
+    def test_abrir_entrada_de_gz_simple(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import gzip as gz_mod
 
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
         contenido = b"INSERT INTO t VALUES (1);\n" * 20
         (tmp_path / "dump.sql.gz").write_bytes(gz_mod.compress(contenido))
-        with abrir_entrada(
-            tmp_path, ["dump.sql.gz", "contenido"], umbral_memoria=65_536, limite_bytes=1_000_000
-        ) as f:
-            assert f.read() == contenido
+        cadena = ["dump.sql.gz", "contenido"]
+        try:
+            with abrir_entrada(
+                tmp_path, cadena, umbral_memoria=65_536, limite_bytes=1_000_000
+            ) as f:
+                assert f.read() == contenido
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_gz_en_disco_se_descomprime_una_sola_vez(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un `.sql.gz` grande se trocea en lotes y cada lote pide 'contenido': se
+        descomprimía ENTERO por lote. Luna kubo, 02-10: un .gz de 3,9 GB (~26 GB dentro)
+        re-descomprimido cada ~60 s y el precalificador horas sin avanzar. Ahora se
+        descomprime una vez a la caché persistente y se sirve de ahí."""
+        import gzip as gz_mod
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
+        contenido = b"INSERT INTO t VALUES (1);\n" * 50
+        (tmp_path / "dump.sql.gz").write_bytes(gz_mod.compress(contenido))
+        aperturas = {"n": 0}
+        original = C._ABRIDORES_FLUJO["gz"]
+
+        def _contando(f: Any) -> Any:
+            aperturas["n"] += 1
+            return original(f)
+
+        monkeypatch.setitem(C._ABRIDORES_FLUJO, "gz", _contando)
+        cadena = ["dump.sql.gz", "contenido"]
+        topes = {"umbral_memoria": 64, "limite_bytes": 1_000_000}
+        try:
+            for _ in range(3):
+                with abrir_entrada(tmp_path, cadena, **topes) as f:
+                    assert f.read() == contenido
+            C._CACHE_7Z.clear()  # «proceso nuevo»: solo el disco sobrevive
+            with abrir_entrada(tmp_path, cadena, **topes) as f:
+                assert f.read() == contenido
+            assert aperturas["n"] == 1
+        finally:
+            C._limpiar_cache_7z()
+
+    def test_gz_en_disco_respeta_el_limite_y_no_deja_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gzip as gz_mod
+
+        import normalizacion.ingesta.precalificacion.contenedores as C
+
+        monkeypatch.setattr(C, "_CACHE_BASE", tmp_path / "cache")
+        C._limpiar_cache_7z()
+        (tmp_path / "g.gz").write_bytes(gz_mod.compress(b"\x00" * 50_000))
+        try:
+            with pytest.raises(C.ContenedorInseguro):
+                abrir_entrada(tmp_path, ["g.gz", "contenido"], umbral_memoria=64, limite_bytes=1000)
+            restos = list((tmp_path / "cache").iterdir()) if (tmp_path / "cache").exists() else []
+            assert [p.name for p in restos if not p.name.endswith(".lock")] == []
+        finally:
+            C._limpiar_cache_7z()
 
     def test_cadena_tar_dentro_de_zip(self, tmp_path: Path) -> None:
         contenido = b"x,y\n7,7\n"
