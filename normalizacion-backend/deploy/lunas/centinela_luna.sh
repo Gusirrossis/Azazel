@@ -23,10 +23,25 @@ PGU=$(docker exec normalizacion-postgres-1 printenv POSTGRES_USER 2>/dev/null)
 PGD=$(docker exec normalizacion-postgres-1 printenv POSTGRES_DB 2>/dev/null)
 sql() { docker exec normalizacion-postgres-1 psql -U "$PGU" -d "$PGD" -tAc "$1" 2>/dev/null; }
 
-docker stats --no-stream --format '{{.Name}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null \
-| while IFS='|' read -r n p u; do
-    v=${p%\%}; v=${v%.*}; [ -z "$v" ] && continue
-    [ "$v" -ge 85 ] && alerta "MEMORIA $n al $p ($u)"
+# Memoria: la que NO se puede liberar (anon) frente al límite del contenedor. `docker
+# stats` suma también la caché de archivos activa, que el kernel recupera solo: una
+# corrida que recorre millones de carpetas la llena y daba «95 %» con 260 MB reales
+# (luna kubo, 02-10). Y un OOM se avisa una vez, cuando sube el contador, no cada 2 min.
+docker ps -q --no-trunc -f name='^normalizacion-' -f name='^norm-' 2>/dev/null \
+| while read -r id; do
+    CG=/sys/fs/cgroup/system.slice/docker-$id.scope
+    [ -r "$CG/memory.stat" ] || continue
+    n=$(docker inspect -f '{{.Name}}' "$id" | tr -d /)
+    max=$(cat "$CG/memory.max")
+    if [ "$max" != max ]; then
+      anon=$(awk '$1 == "anon" {print $2}' "$CG/memory.stat")
+      p=$(( anon * 100 / max ))
+      [ "$p" -ge 85 ] && alerta "MEMORIA $n: ${p}% de su limite es memoria no liberable ($(( anon >> 20 )) de $(( max >> 20 )) MiB)"
+    fi
+    oom=$(awk '$1 == "oom_kill" {print $2}' "$CG/memory.events")
+    previo=$(cat "$LOGS/.oom_$n" 2>/dev/null || echo 0)
+    [ "${oom:-0}" -gt "$previo" ] && alerta "OOM $n: el kernel mato $(( oom - previo )) proceso(s) dentro por falta de memoria"
+    echo "${oom:-0}" > "$LOGS/.oom_$n"
   done
 docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null | grep -E '^normalizacion-' \
 | while IFS='|' read -r n s; do
