@@ -112,6 +112,12 @@ ssh -i "C:\Users\Asus Xeon\.ssh\nextcloud_secureadm" -o IdentitiesOnly=yes secur
 >   imágenes de minio y mc se copiaron de la matriz con `docker save | docker load`.
 > - El usuario de Postgres es `normalizacion`, no `norm`: los scripts lo leen del
 >   contenedor (`POSTGRES_USER`).
+> - Postgres lleva `max_wal_size=16GB` y `checkpoint_timeout=15min` por `ALTER SYSTEM`
+>   (viven en `postgresql.auto.conf` del volumen, **no** en el compose). Con el 1 GB de
+>   fábrica, catalogar millones de archivos forzaba un checkpoint tras otro (201 forzados
+>   frente a 4 programados): 1800 escrituras/s y el catálogo a la mitad. Medido al
+>   cambiarlo: 509 escrituras/s y el catálogo de 47k a 89k filas/min. Se deshace con
+>   `ALTER SYSTEM RESET max_wal_size; ALTER SYSTEM RESET checkpoint_timeout; SELECT pg_reload_conf();`.
 > - Corrida en el contenedor `norm-corrida` (`deploy/lanzar_corrida.sh`) con tope de
 >   disco; el disco aguanta 1300 lecturas/s a 0,5 ms sin que Nextcloud lo note
 >   (presión de E/S de sus contenedores: 0,00 %).
