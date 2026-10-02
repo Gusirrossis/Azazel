@@ -63,19 +63,33 @@ log "3/4 rsync a la matriz"
 rsync -az -e "$SSHP" "$EXPORT/" "root@$MATRIZ:/srv/azazel/_import_$NOMBRE/" || { log "ERROR rsync"; exit 1; }
 
 log "4/4 inyectar + restaurar + entidades"
-$SSHP "root@$MATRIZ" NOMBRE="$NOMBRE" bash -s <<'REMOTO'
-set -u
+if ! $SSHP "root@$MATRIZ" NOMBRE="$NOMBRE" bash -s <<'REMOTO'
+set -u -o pipefail
 E=/srv/azazel/normalizacion-backend/.env.prod
 U=$(grep '^NORM_MINIO_ROOT_USER=' "$E" | cut -d= -f2-)
 P=$(grep '^NORM_MINIO_ROOT_PASSWORD=' "$E" | cut -d= -f2-)
 RED=$(docker inspect normalizacion-minio-1 -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
 # Credenciales por variables y `mc alias set`, no dentro de una URL: la contraseña de la
 # matriz podría llevar @, : o / y romperla.
-docker run --rm --network "$RED" -v "/srv/azazel/_import_$NOMBRE:/entrada:ro" \
-  -e MU="$U" -e MP="$P" -e NOMBRE="$NOMBRE" --entrypoint sh minio/mc -c '
-    mc alias set prod http://minio:9000 "$MU" "$MP" >/dev/null 2>&1
-    mc mb -p "prod/snapshots-$NOMBRE" >/dev/null 2>&1
-    mc mirror --overwrite --quiet /entrada "prod/snapshots-$NOMBRE" >/dev/null 2>&1' 2>&1 | tail -2
+#
+# La inyección TIENE que terminar bien antes de restaurar. Antes su salida iba a
+# /dev/null y nadie miraba el código: el 02-10 un `mc mirror` se quedó a medias con el
+# disco de la matriz saturado y la restauración arrancó igual → 404 NoSuchKey de un blob
+# de 103 MB, el índice nuevo en ROJO y el clúster entero en rojo. Ahora se reintenta y,
+# si no lo logra, el ciclo se para aquí: lo que ya sirve sigue intacto.
+LOGI=/tmp/inyectar_$NOMBRE.log
+for intento in 1 2 3; do
+  if docker run --rm --network "$RED" -v "/srv/azazel/_import_$NOMBRE:/entrada:ro" \
+      -e MU="$U" -e MP="$P" -e NOMBRE="$NOMBRE" --entrypoint sh minio/mc -c '
+        mc alias set prod http://minio:9000 "$MU" "$MP" >/dev/null || exit 3
+        mc mb -p "prod/snapshots-$NOMBRE" >/dev/null
+        mc mirror --overwrite --quiet /entrada "prod/snapshots-$NOMBRE"' > "$LOGI" 2>&1; then
+    echo "   inyeccion ok (intento $intento)"; break
+  fi
+  echo "   inyeccion FALLO (intento $intento): $(tail -1 "$LOGI" | cut -c1-200)"
+  [ "$intento" = 3 ] && { echo "   ERROR: no se restaura con el bucket incompleto"; exit 1; }
+  sleep 60
+done
 docker exec -e NOMBRE="$NOMBRE" normalizacion-api-1 python -c "
 import os
 from normalizacion.core.config import cargar_config
@@ -95,6 +109,10 @@ r = replicacion.restaurar_ajenos(config, c, refrescar=True, repositorio=REPO)
 print('   restaurado:', r.indices, '| sin_cambios:', r.sin_cambios, '| ok:', r.ok, '| motivo:', r.motivo)
 c.indices.refresh(index=config.indice_alias+'-*')
 print('   docs en el alias:', c.count(index=config.indice_alias)['count'])
+raise SystemExit(0 if r.ok else 2)  # un restore fallido tiene que verse en el codigo de salida
 " 2>&1 | grep -v '^{'
 REMOTO
+then
+  log "ERROR en la matriz (ver arriba): ciclo NO completado"; exit 1
+fi
 log "ciclo terminado"
