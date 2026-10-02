@@ -7,13 +7,21 @@ siga sirviendo; no se inventa una URL nueva.
 
 ---
 
-## Los tres nodos
+## Los nodos
 
 | Nodo | Qué es | URL |
 |---|---|---|
 | **Matriz** | El planeta. Resuelve entidades y sirve a Lilith | https://162-35-188-181.sslip.io |
 | **Luna storage** | Normaliza `/home` del VPS de almacenamiento | **https://205.209.102.101:8443** |
 | **Luna Lilith** | Normaliza los datos de Lilith sin moverlos | http://162.35.188.166:3000 |
+| **Luna kubo** | Normaliza `KUBOMAMALON` (~24 TB) en el VPS de Nextcloud, sin moverlo | *sin URL* (ver abajo) |
+
+> **Luna kubo (69.169.104.58, desde 2026-10-02) no tiene panel ni API publicada**: solo
+> postgres, opensearch, minio y api, sin front, sin caddy y sin puertos al host. Esa
+> máquina sirve el Nextcloud de producción (traefik en 80/443) y no se le abre nada. Lo
+> que normaliza llega a la matriz por la réplica nocturna y se consulta allí. Sus
+> secretos (`.env.prod`, clave de API) se generaron en el propio servidor y no han
+> salido de él; por eso no figuran en este documento.
 
 **Credenciales del panel — las mismas en los tres** (verificado con login + panel en
 cada uno; la anterior da 401 en los tres):
@@ -85,6 +93,9 @@ sshpass -e ssh secureuser@205.209.102.101        # SSHPASS en el entorno
 
 # Luna Lilith
 ssh -i "C:\Users\Asus Xeon\.ssh\azazel_vps2" -o IdentitiesOnly=yes root@162.35.188.166
+
+# Luna kubo — usuario sin sudo (en el grupo docker)
+ssh -i "C:\Users\Asus Xeon\.ssh\nextcloud_secureadm" -o IdentitiesOnly=yes secureadm@69.169.104.58
 ```
 
 | Nodo | Código | Compose |
@@ -92,6 +103,22 @@ ssh -i "C:\Users\Asus Xeon\.ssh\azazel_vps2" -o IdentitiesOnly=yes root@162.35.1
 | Matriz | `/srv/azazel` | `docker compose` (v2 plugin) |
 | Luna storage | `/srv/azazel` | `docker-compose` (v2 binario) |
 | Luna Lilith | `/opt/azazel-luna` | `docker compose` (v2 plugin) |
+| Luna kubo | `/home/secureadm/azazel-luna` | `docker compose` (v2 plugin) |
+
+> **Luna kubo, lo que la hace distinta** (medido al montarla, 2026-10-02):
+> - `vm.max_map_count` es 65530 y sin sudo no se sube → OpenSearch va con
+>   `node.store.allow_mmap: "false"` en el override.
+> - `minio/minio` ya no se puede descargar de Docker Hub (*pull access denied*): las
+>   imágenes de minio y mc se copiaron de la matriz con `docker save | docker load`.
+> - El usuario de Postgres es `normalizacion`, no `norm`: los scripts lo leen del
+>   contenedor (`POSTGRES_USER`).
+> - Corrida en el contenedor `norm-corrida` (`deploy/lanzar_corrida.sh`) con tope de
+>   disco; el disco aguanta 1300 lecturas/s a 0,5 ms sin que Nextcloud lo note
+>   (presión de E/S de sus contenedores: 0,00 %).
+> - Cron de `secureadm` (debajo de las 7 tareas de Nextcloud, que no se tocan):
+>   centinela cada 2 min (`deploy/lunas/centinela_luna.sh`, relanza la corrida si
+>   muere) y réplica a la matriz a la 01:00 hora local (`deploy/lunas/replicar_a_matriz.sh`;
+>   a las 03:00 corre el backup de Nextcloud). Logs en `~/azazel-luna/logs/`.
 
 > Ojo: en la luna storage es `docker-compose` **con guion**; en los otros dos, sin él.
 > Usar el que no toca da un `Usage: docker [OPTIONS]` que despista.
