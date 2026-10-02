@@ -35,7 +35,25 @@ c.indices.flush(index='archivos-*', wait_if_ongoing=True); print('   flush ok')
 " 2>&1 | grep -v '^{'
 
 log "1/4 snapshot"
-docker exec normalizacion-api-1 norm replicar 2>&1 | grep -E "snapshot:|OK|FALL" || true
+# Con el código del REPO (montado), no con el horneado en la imagen de la API: un arreglo
+# de `replicacion` llega sin reconstruir ni reiniciar la API, y reiniciarla marca FALLIDA
+# la corrida en curso. Misma configuración que la API, en un archivo que solo lee el
+# dueño y se borra al salir.
+ENVR=$(mktemp)
+chmod 600 "$ENVR"
+trap 'rm -f "$ENVR"' EXIT
+docker inspect normalizacion-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -E '^NORM_' > "$ENVR"
+SNAP=$(docker run --rm --network normalizacion_interna --env-file "$ENVR" \
+  -v "$B/src:/app/src:ro" normalizacion-api norm replicar 2>&1)
+echo "$SNAP" | grep -E "snapshot:|OK|FALL"
+# Un snapshot fallido NO puede acabar en «ciclo terminado»: el 02-10 el cliente cortó a
+# los 30 s, el ciclo exportó el snapshot ANTERIOR y la matriz dijo «sin cambios» con
+# 166 000 documentos sin llegar.
+if ! echo "$SNAP" | grep -q "snapshot:" || echo "$SNAP" | grep -q "FALL"; then
+  log "ERROR: el snapshot no se tomó; no se replica uno viejo"
+  exit 1
+fi
 
 log "1b/4 purga (deja los 3 ultimos)"
 docker exec -e EMISOR="$EMISOR" normalizacion-api-1 python -c "
@@ -44,9 +62,9 @@ from normalizacion.core.config import cargar_config
 from normalizacion.core import replicacion
 from normalizacion.core.indexador.opensearch import crear_cliente
 c=crear_cliente(cargar_config()); R=replicacion.REPOSITORIO; pref=os.environ['EMISOR']+'-'
-mios=sorted(s['snapshot'] for s in c.transport.perform_request('GET','/_snapshot/'+R+'/_all').get('snapshots',[]) if s['snapshot'].startswith(pref))
+mios=sorted(s['snapshot'] for s in c.transport.perform_request('GET','/_snapshot/'+R+'/_all',timeout=300).get('snapshots',[]) if s['snapshot'].startswith(pref))
 for v in mios[:-3]:
-    c.transport.perform_request('DELETE','/_snapshot/'+R+'/'+v); print('   purgado',v)
+    c.transport.perform_request('DELETE','/_snapshot/'+R+'/'+v,timeout=900); print('   purgado',v)
 print('   vivos:', len(mios[-3:]))
 " 2>&1 | grep -v '^{'
 

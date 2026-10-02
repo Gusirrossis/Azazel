@@ -241,6 +241,15 @@ def _indices_propios(config: Config) -> str:
     return f"{config.indice_alias}-*" if d.es_local() else f"{config.indice_alias}-{d.nodo_id}-*"
 
 
+#: Lo que el CLIENTE espera a que el snapshot termine (`wait_for_completion`). Sin un
+#: tiempo propio, opensearch-py corta a los 30 s con un ConnectionTimeout: el snapshot
+#: sigue en el servidor, pero el ciclo de réplica ya ha seguido y exporta el anterior.
+#: Luna kubo, 02-10: 3,5 min con la luna indexando, y el ciclo replicó el snapshot viejo
+#: dándolo por bueno (la matriz, «sin cambios»). Es el mismo fallo que ya se curó en el
+#: restore (ver `restaurar_ajenos`), que aquí no había llegado.
+_ESPERA_SNAPSHOT_S = 3600
+
+
 def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica:
     """Snapshot de los índices de ESTE nodo hacia el repositorio compartido."""
     from normalizacion.core.indexador.opensearch import crear_cliente
@@ -261,6 +270,7 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
                 # se excluyen a propósito (ver `restaurar_ajenos`).
                 "include_global_state": False,
             },
+            timeout=_ESPERA_SNAPSHOT_S,
         )
     except Exception as exc:
         r.motivo = f"{type(exc).__name__}: {exc}"[:250]
