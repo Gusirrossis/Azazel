@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import io
+import re
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -384,6 +385,25 @@ class TestRenovarLease:
         sql, _ = _sql_de(conn, lambda: cola.recuperar_huerfanos(conn))
         assert "SKIP LOCKED" in sql
         assert "ORDER BY archivo_id" in sql
+
+
+class TestClaimUsaElIndice:
+    def test_el_orden_va_en_el_sentido_del_indice(self) -> None:
+        """`ix_archivos_claim (estado, prioridad, archivo_id)` recorrido hacia atrás da
+        `prioridad DESC, archivo_id DESC`. Con `archivo_id` ascendente Postgres ordenaba el
+        grupo de prioridad ENTERO en cada claim: ~50 s con 15,86 M de PENDIENTE en la
+        luna kubo (02-10), y la ingesta cayó de ~1500 a ~30 documentos por minuto."""
+        conn = _BD().conectar()
+        sql, _ = _sql_de(
+            conn,
+            lambda: cola.claim(
+                conn, worker_id="w1", estado=Estado.PENDIENTE, lote=25, lease_segundos=300
+            ),
+        )
+        # La subconsulta que bloquea y el re-orden del lote: las dos, en el mismo sentido.
+        sentidos = re.findall(r"ORDER BY prioridad DESC, archivo_id( DESC)?\b", sql)
+        assert len(sentidos) == 2, sql
+        assert sentidos == [" DESC", " DESC"], sentidos
 
 
 # ------------------------------------------------------------------ 3) exigir dueño

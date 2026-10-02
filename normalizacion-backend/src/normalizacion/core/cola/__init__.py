@@ -283,6 +283,14 @@ def claim(
     filtro_hash = " AND hash_contenido IS NULL" if solo_sin_hash else ""
     # El RETURNING de un UPDATE no garantiza orden: el CTE re-ordena el lote para
     # que el worker también procese DENTRO del lote por prioridad (txt, 7z, rar…).
+    #
+    # `archivo_id DESC`, en el MISMO sentido que `prioridad DESC`: así el índice
+    # `ix_archivos_claim (estado, prioridad, archivo_id)` recorrido hacia atrás ya da el
+    # orden y el LIMIT corta en las primeras filas. Con `archivo_id` ascendente el plan
+    # era un Incremental Sort que ordenaba el grupo de prioridad ENTERO en cada claim.
+    # Luna kubo, 02-10: 15,86 M de PENDIENTE con prioridad 0 → ~50 s por claim (coste de
+    # arranque 221 369 frente a 0,56) y la ingesta de ~1500 a ~30 docs/min. El orden
+    # dentro de una prioridad da igual: `archivo_id` es un hash.
     filas = conn.execute(
         f"""
         WITH reclamadas AS (
@@ -294,7 +302,7 @@ def claim(
                    SELECT archivo_id FROM archivos
                     WHERE estado = %s
                       AND (lease_hasta IS NULL OR lease_hasta < clock_timestamp()){filtro_hash}
-                    ORDER BY prioridad DESC, archivo_id
+                    ORDER BY prioridad DESC, archivo_id DESC
                       FOR UPDATE SKIP LOCKED
                     LIMIT %s
              )
@@ -306,7 +314,7 @@ def claim(
                estado, intentos, origen_contenedor,
                tipo_real, puntaje, senales, motivo, version_filtro, hash_contenido
           FROM reclamadas
-         ORDER BY prioridad DESC, archivo_id
+         ORDER BY prioridad DESC, archivo_id DESC
         """,
         (worker_id, lease_segundos, estado.value, lote),
     ).fetchall()
