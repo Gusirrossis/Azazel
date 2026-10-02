@@ -18,8 +18,10 @@ LOGS="$LUNA_DIR/logs"; mkdir -p "$LOGS"
 ALERTAS="$LOGS/centinela-alertas.log"
 TS=$(date -Is)
 alerta() { echo "$TS [$EMISOR] $*" >> "$ALERTAS"; }
-PGU=$(grep '^NORM_PG_USER=' "$B/.env.prod" | cut -d= -f2-)
-sql() { docker exec normalizacion-postgres-1 psql -U "$PGU" -d normalizacion -tAc "$1" 2>/dev/null; }
+# Usuario y base, del propio contenedor (cambian de nodo a nodo).
+PGU=$(docker exec normalizacion-postgres-1 printenv POSTGRES_USER 2>/dev/null)
+PGD=$(docker exec normalizacion-postgres-1 printenv POSTGRES_DB 2>/dev/null)
+sql() { docker exec normalizacion-postgres-1 psql -U "$PGU" -d "$PGD" -tAc "$1" 2>/dev/null; }
 
 docker stats --no-stream --format '{{.Name}}|{{.MemPerc}}|{{.MemUsage}}' 2>/dev/null \
 | while IFS='|' read -r n p u; do

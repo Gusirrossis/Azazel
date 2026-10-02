@@ -32,7 +32,11 @@ WORKERS=${3:-4}
 API=${API:-normalizacion-api-1}
 IMAGEN=${IMAGEN:-normalizacion-api}
 NOMBRE=${NOMBRE:-norm-corrida}
-PG=(docker exec normalizacion-postgres-1 psql -U norm -d normalizacion -tAc)
+# Usuario y base cambian de nodo a nodo (norm en la matriz, normalizacion en kubo): se
+# leen del propio contenedor de Postgres en vez de suponerlos.
+PGU=$(docker exec normalizacion-postgres-1 printenv POSTGRES_USER)
+PGD=$(docker exec normalizacion-postgres-1 printenv POSTGRES_DB)
+PG=(docker exec normalizacion-postgres-1 psql -U "$PGU" -d "$PGD" -tAc)
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NOMBRE"; then
   echo "ABORTO: ya existe un contenedor '$NOMBRE' (docker rm si terminó)"; exit 2
