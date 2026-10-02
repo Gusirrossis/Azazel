@@ -24,6 +24,18 @@
 #   FRENO_LEER_MBS=40  FRENO_ESCRIBIR_MBS=30  FRENO_LEER_IOPS=400  FRENO_ESCRIBIR_IOPS=300
 #   CPUS=4  MEMORIA=8g  IMAGEN=normalizacion-api  NOMBRE=norm-corrida  API=normalizacion-api-1
 #   CACHE_T3=<carpeta del host para la caché de extracción; sin ella, /tmp del contenedor>
+#   CODIGO=<carpeta src/ del repo: se monta sobre /app/src y corre el código actual sin
+#          reconstruir la imagen>
+#   SIN_CATALOGO=1  retoma un disco ya catalogado (norm pipeline --sin-catalogo)
+#
+# FRENO_ESCRIBIR_*=0 QUITA el tope de escritura (se recomienda en disco compartido).
+# Medido en la luna kubo el 02-10: la precalificación vuelca a /tmp cada entrada de más
+# de 8 MB y escribía al tope (50 MB/s). Topar escrituras CON caché no frena al proceso:
+# frena el volcado de sus páginas sucias, y ext4 (data=ordered) no cierra un commit del
+# journal sin volcarlas. Resultado: un `fsync` ajeno a 276 ms, un kworker 21 min en D y
+# dockerd sin poder crear contenedores (la réplica colgada). Matar la corrida lo
+# deshizo en el acto. Lo que escribe la corrida sale de lo que lee: el tope de LECTURA
+# basta para acotarla.
 set -euo pipefail
 
 RUTA=${1:?falta la ruta dentro del contenedor (p. ej. /datos/bases)}
@@ -63,18 +75,26 @@ if [ -n "${CACHE_T3:-}" ]; then
   mkdir -p "$CACHE_T3"
   CACHE=(-v "$CACHE_T3:/cache_t3" -e NORM_T3_CACHE_DIR=/cache_t3)
 fi
+CODIGO_V=()
+if [ -n "${CODIGO:-}" ]; then
+  [ -d "$CODIGO/normalizacion" ] || { echo "ABORTO: $CODIGO no es la carpeta src/ del repo"; exit 2; }
+  CODIGO_V=(-v "$CODIGO:/app/src:ro")
+fi
+FRENOS=(--device-read-bps "$DISCO:${FRENO_LEER_MBS:-40}mb" --device-read-iops "$DISCO:${FRENO_LEER_IOPS:-400}")
+EM=${FRENO_ESCRIBIR_MBS:-30}
+EI=${FRENO_ESCRIBIR_IOPS:-300}
+[ "$EM" != 0 ] && FRENOS+=(--device-write-bps "$DISCO:${EM}mb")
+[ "$EI" != 0 ] && FRENOS+=(--device-write-iops "$DISCO:${EI}")
+EXTRA=()
+[ "${SIN_CATALOGO:-0}" = 1 ] && EXTRA=(--sin-catalogo)
 
 docker run -d --name "$NOMBRE" --network normalizacion_interna --volumes-from "$API" \
-  --env-file "$ENVF" -e NORM_WORKER__LOTE_CLAIM=25 "${CACHE[@]}" \
-  --device-read-bps "$DISCO:${FRENO_LEER_MBS:-40}mb" \
-  --device-write-bps "$DISCO:${FRENO_ESCRIBIR_MBS:-30}mb" \
-  --device-read-iops "$DISCO:${FRENO_LEER_IOPS:-400}" \
-  --device-write-iops "$DISCO:${FRENO_ESCRIBIR_IOPS:-300}" \
+  --env-file "$ENVF" -e NORM_WORKER__LOTE_CLAIM=25 "${CACHE[@]}" "${CODIGO_V[@]}" "${FRENOS[@]}" \
   --cpus "${CPUS:-4}" --memory "${MEMORIA:-8g}" --memory-swap "${MEMORIA:-8g}" --restart no \
-  "$IMAGEN" norm pipeline "$RUTA" --disco-id "$DISCO_ID" --workers "$WORKERS"
+  "$IMAGEN" norm pipeline "$RUTA" --disco-id "$DISCO_ID" --workers "$WORKERS" "${EXTRA[@]}"
 
-echo "lanzada '$NOMBRE' sobre $RUTA ($DISCO_ID), tope en $DISCO:" \
+echo "lanzada '$NOMBRE' sobre $RUTA ($DISCO_ID)${EXTRA:+ sin catalogo}${CODIGO:+ con el codigo de $CODIGO}, tope en $DISCO:" \
   "lectura ${FRENO_LEER_MBS:-40} MB/s y ${FRENO_LEER_IOPS:-400} IOPS," \
-  "escritura ${FRENO_ESCRIBIR_MBS:-30} MB/s y ${FRENO_ESCRIBIR_IOPS:-300} IOPS"
+  "escritura $([ "$EM" = 0 ] && echo 'sin tope MB/s' || echo "$EM MB/s") y $([ "$EI" = 0 ] && echo 'sin tope IOPS' || echo "$EI IOPS")"
 echo "seguir:  docker logs -f $NOMBRE | grep -E 'fase_|corrida_'   ·   /salud → ocupado"
 echo "tope en vivo:  cat /sys/fs/cgroup/system.slice/docker-\$(docker inspect -f '{{.Id}}' $NOMBRE).scope/io.max"

@@ -439,6 +439,14 @@ def pipeline(
     workers: int | None = typer.Option(
         None, "--workers", min=1, max=64, help="Procesos worker en paralelo (default: auto)"
     ),
+    sin_catalogo: bool = typer.Option(
+        False,
+        "--sin-catalogo",
+        help=(
+            "Retomar un disco YA catalogado sin volver a recorrerlo. Re-catalogar es"
+            " idempotente pero no gratis: en la luna kubo (16 M de archivos) son horas."
+        ),
+    ),
 ) -> None:
     """TODO el ciclo: catálogo → filtro → blobs+índice → frío → verificar → puerta."""
     from pathlib import Path
@@ -458,6 +466,7 @@ def pipeline(
         id_disco,
         usar_indice=not sin_indice,
         workers=workers,
+        catalogar=not sin_catalogo,
     )
     for f in fases:
         tasa = f.get("archivos_por_segundo")

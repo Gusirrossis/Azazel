@@ -305,10 +305,12 @@ def ejecutar_corrida(
     disco_id: str,
     usar_indice: bool = True,
     workers: int | None = None,
+    catalogar: bool = True,
 ) -> list[dict[str, Any]]:
     """Corre las 6 fases registrando duración + métricas de cada una. Síncrona
     (la API la lanza en un hilo). `usar_indice=False` = SinkNulo (tests sin OS).
-    `workers`: nº de PROCESOS worker en paralelo (None = perilla/auto)."""
+    `workers`: nº de PROCESOS worker en paralelo (None = perilla/auto).
+    `catalogar=False`: retoma un disco ya catalogado sin volver a recorrerlo."""
     from normalizacion.core.indexador import Sink, SinkNulo
     from normalizacion.ingesta.catalogo.walker import catalogar_disco
     from normalizacion.ingesta.precalificacion.precalificador import precalificar_pendientes
@@ -349,7 +351,10 @@ def ejecutar_corrida(
         return resumen
 
     try:
-        correr("catalogo", lambda: catalogar_disco(config, ruta, disco_id))
+        if catalogar:
+            correr("catalogo", lambda: catalogar_disco(config, ruta, disco_id))
+        else:
+            log.info("catalogo_omitido", corrida=corrida_id, disco=disco_id)
 
         # FILTRO ∥ WORKER en paralelo (como los procesos continuos de producción):
         # los primeros documentos quedan BUSCABLES a segundos de iniciar, en vez
