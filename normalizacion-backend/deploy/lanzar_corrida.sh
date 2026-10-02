@@ -34,8 +34,11 @@
 # frena el volcado de sus páginas sucias, y ext4 (data=ordered) no cierra un commit del
 # journal sin volcarlas. Resultado: un `fsync` ajeno a 276 ms, un kworker 21 min en D y
 # dockerd sin poder crear contenedores (la réplica colgada). Matar la corrida lo
-# deshizo en el acto. Lo que escribe la corrida sale de lo que lee: el tope de LECTURA
-# basta para acotarla.
+# deshizo en el acto; sin el tope, el fsync ajeno bajó a 3 ms.
+# OJO: sin tope, la escritura NO queda acotada por la lectura cuando se descomprime
+# (medido: un .gz de 3,9 GB volcado a un temporal de ~30 GB a 150-250 MB/s). Es el
+# precio de no bloquear al resto; en disco compartido, vigilar el espacio libre (el
+# centinela frena al 93 %).
 set -euo pipefail
 
 RUTA=${1:?falta la ruta dentro del contenedor (p. ej. /datos/bases)}
