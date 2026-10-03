@@ -95,13 +95,21 @@ RED=$(docker inspect normalizacion-minio-1 -f '{{range $k,$v := .NetworkSettings
 # disco de la matriz saturado y la restauración arrancó igual → 404 NoSuchKey de un blob
 # de 103 MB, el índice nuevo en ROJO y el clúster entero en rojo. Ahora se reintenta y,
 # si no lo logra, el ciclo se para aquí: lo que ya sirve sigue intacto.
+#
+# En un repositorio de snapshots nada cambia de contenido: cada archivo nace con nombre
+# nuevo, salvo `index.latest`, el puntero al último. Por eso se suben SOLO los que faltan
+# (sin --overwrite), con reintento por objeto, y el puntero AL FINAL: nunca apunta a un
+# snapshot a medio subir. 03-10: con --overwrite y en cualquier orden, un corte a mitad de
+# un .part1 de 158 MB (IncompleteBody) tumbó la copia, cada reintento re-subió 23,5 GiB, y
+# un puntero subido antes que sus datos es justo el `snapshot_missing` de Lilith.
 LOGI=/tmp/inyectar_$NOMBRE.log
 for intento in 1 2 3; do
   if docker run --rm --network "$RED" -v "/srv/azazel/_import_$NOMBRE:/entrada:ro" \
       -e MU="$U" -e MP="$P" -e NOMBRE="$NOMBRE" --entrypoint sh minio/mc -c '
         mc alias set prod http://minio:9000 "$MU" "$MP" >/dev/null || exit 3
         mc mb -p "prod/snapshots-$NOMBRE" >/dev/null
-        mc mirror --overwrite --quiet /entrada "prod/snapshots-$NOMBRE"' > "$LOGI" 2>&1; then
+        mc mirror --retry --quiet --exclude index.latest /entrada "prod/snapshots-$NOMBRE" || exit 4
+        mc cp --quiet /entrada/index.latest "prod/snapshots-$NOMBRE/index.latest"' > "$LOGI" 2>&1; then
     echo "   inyeccion ok (intento $intento)"; break
   fi
   echo "   inyeccion FALLO (intento $intento): $(tail -1 "$LOGI" | cut -c1-200)"
