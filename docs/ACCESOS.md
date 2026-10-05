@@ -120,16 +120,23 @@ ssh -i "C:\Users\Asus Xeon\.ssh\nextcloud_secureadm" -o IdentitiesOnly=yes secur
 >   `ALTER SYSTEM RESET max_wal_size; ALTER SYSTEM RESET checkpoint_timeout; SELECT pg_reload_conf();`.
 > - Corrida en el contenedor `norm-corrida` (`deploy/lanzar_corrida.sh`) con tope de
 >   LECTURA solamente (1500 IOPS, 120 MB/s): el de escritura bloqueaba a dockerd (ver el
->   script). Se relanza con `SIN_CATALOGO=1` (el catálogo, 16,3 M de archivos, ya está),
+>   script). Desde el 05-10: `CPUS=10 MEMORIA=14g`, 6 workers y `PRECALIFICA=3` (filtro
+>   en 3 procesos: de 14 969 a 27 392 archivos/h, medido 10 min antes y después). Se
+>   relanza con `SIN_CATALOGO=1` (el catálogo, 16,3 M de archivos, ya está),
 >   `CODIGO=<src del repo>` (corre el código actual sin reconstruir la imagen) y
 >   `T3_TOPE_BYTES=1e12` (caché de extracción a 1 TB, no a la mitad del disco).
 > - Cron de `secureadm` (debajo de las 7 tareas de Nextcloud, que no se tocan):
 >   centinela cada 2 min (`deploy/lunas/centinela_luna.sh`, relanza la corrida si
->   muere, con las mismas variables) y réplica a la matriz a las **07:05 hora local**
->   (12:05 UTC; `deploy/lunas/replicar_a_matriz.sh`): justo después de que se congele
->   el borrado nocturno de la matriz, que a la 01:00 la hizo fallar el 02-10. Cuando ese
->   borrado termine puede volver a la 01:00 (a las 03:00 corre el backup de Nextcloud).
+>   muere, con las mismas variables) y réplica a la matriz a la **01:00 hora local**
+>   (`deploy/lunas/replicar_a_matriz.sh`; restaurar en la matriz tarda ~1 h, así cae de
+>   madrugada en México; a las 03:00 corre el backup de Nextcloud).
 >   Logs en `~/azazel-luna/logs/`.
+>
+> **Luna Lilith, réplica (05-10):** usa el mismo script versionado (cron */20 con
+> `LUNA_DIR=/opt/azazel-luna EMISOR=lilith-luna-01 NOMBRE=lilith`). El viejo
+> (`/opt/azazel-luna/replicar_a_matriz.sh`, ya fuera del cron) llamaba a un `mc` que no
+> existe en esa máquina y tiraba el error: el export no se actualizaba. La imagen
+> `minio/mc` se copió de la matriz (Docker Hub ya no la sirve).
 
 > Ojo: en la luna storage es `docker-compose` **con guion**; en los otros dos, sin él.
 > Usar el que no toca da un `Usage: docker [OPTIONS]` que despista.
