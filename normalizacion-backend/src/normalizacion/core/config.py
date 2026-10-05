@@ -236,6 +236,11 @@ class PerillasWorker(BaseModel):
     # Workers en PARALELO del pipeline (procesos reales — el GIL de Python no
     # limita): 0 = automático (núcleos - 2). El front lo puede fijar por corrida.
     procesos: int = Field(default=0, ge=0, le=64)
+    # Procesos del FILTRO (precalificación) en paralelo con los workers. 1 = como
+    # siempre, un solo hilo en el proceso de la corrida. En un disco de millones de
+    # archivos el filtro es el cuello de botella (luna kubo, 10-2026: ~14 000/h con
+    # 15,8 M pendientes), y reparte igual que los workers: SKIP LOCKED + lease.
+    procesos_precalifica: int = Field(default=1, ge=1, le=32)
 
     # ⚙ K10 — claim y leases (plaso: abandono por inactividad)
     lote_claim: int = Field(default=500, ge=1)

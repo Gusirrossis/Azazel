@@ -199,6 +199,67 @@ def _correr_workers_en_paralelo(
     return agregado
 
 
+def _precalifica_en_proceso(config: Config, resultados: Any, indice: int) -> None:
+    """Target de cada PROCESO del filtro. Como los workers: su propio worker_id y su
+    propia conexión; la cola reparte sin duplicar (SKIP LOCKED + lease)."""
+    from normalizacion.core import cola
+    from normalizacion.ingesta.precalificacion.precalificador import precalificar_pendientes
+
+    resumen = precalificar_pendientes(
+        config, worker_id=cola.identificador_worker(f"precalifica-{indice}")
+    )
+    resultados.put(asdict(resumen))
+
+
+def sumar_resumenes_precalificacion(parciales: list[dict[str, int]]) -> Any:
+    from normalizacion.ingesta.precalificacion.precalificador import ResumenPrecalificacion
+
+    total: dict[str, int] = {}
+    for parcial in parciales:
+        for clave, valor in parcial.items():
+            total[clave] = total.get(clave, 0) + int(valor)
+    return ResumenPrecalificacion(**total)
+
+
+def precalificar_en_paralelo(config: Config, n: int, contexto: Any | None = None) -> Any:
+    """El filtro en N procesos y su resumen sumado. Con n == 1, como siempre: en este
+    mismo proceso. Un proceso muerto = corrida FALLIDA (jamás silencio).
+
+    Un proceso que se queda sin PENDIENTE sale, pero no se pierde nada: quien re-encola
+    entradas internas (T3) sigue en su bucle y las reclama él. `contexto` es el de
+    multiprocessing (spawn por omisión); los tests pasan uno que corre en el sitio."""
+    from normalizacion.ingesta.precalificacion.precalificador import precalificar_pendientes
+
+    if n <= 1:
+        return precalificar_pendientes(config)
+    import multiprocessing as mp
+    import queue as queue_mod
+
+    ctx = contexto or mp.get_context("spawn")
+    resultados = ctx.Queue()
+    procesos = [
+        ctx.Process(target=_precalifica_en_proceso, args=(config, resultados, i + 1), daemon=True)
+        for i in range(n)
+    ]
+    for p in procesos:
+        p.start()
+    parciales: list[dict[str, int]] = []
+    while len(parciales) < n:
+        try:
+            parciales.append(resultados.get(timeout=2))
+        except queue_mod.Empty:
+            muertos = [p for p in procesos if p.exitcode not in (None, 0)]
+            if muertos:
+                raise RuntimeError(
+                    f"{len(muertos)} proceso(s) del filtro murieron (exitcode != 0)"
+                ) from None
+            if all(p.exitcode == 0 for p in procesos):
+                raise RuntimeError("el filtro terminó sin reportar resultados") from None
+    for p in procesos:
+        p.join()
+    return sumar_resumenes_precalificacion(parciales)
+
+
 def _tasa(metricas: dict[str, Any], duracion_s: float) -> float | None:
     base = (
         metricas.get("procesados")
@@ -313,7 +374,6 @@ def ejecutar_corrida(
     `catalogar=False`: retoma un disco ya catalogado sin volver a recorrerlo."""
     from normalizacion.core.indexador import Sink, SinkNulo
     from normalizacion.ingesta.catalogo.walker import catalogar_disco
-    from normalizacion.ingesta.precalificacion.precalificador import precalificar_pendientes
     from normalizacion.ingesta.workers.orquestador import procesar_hot
     from normalizacion.ingesta.workers.verificador import (
         evaluar_puerta,
@@ -366,7 +426,7 @@ def ejecutar_corrida(
         def _precalificar_en_paralelo() -> None:
             inicio_pre = time.monotonic()
             try:
-                resumen_pre = precalificar_pendientes(config)
+                resumen_pre = precalificar_en_paralelo(config, config.worker.procesos_precalifica)
                 entrada_pre: dict[str, Any] = {
                     "fase": "precalificacion",
                     "duracion_s": round(time.monotonic() - inicio_pre, 2),

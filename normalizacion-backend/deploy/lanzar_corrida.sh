@@ -29,6 +29,7 @@
 #   SIN_CATALOGO=1  retoma un disco ya catalogado (norm pipeline --sin-catalogo)
 #   T3_TOPE_BYTES=<tope de la caché de extracción; sin él, la mitad del disco libre, que
 #          en un disco compartido puede ser demasiado (kubo: ~2,7 TB → disco al 91 %)>
+#   PRECALIFICA=<procesos del filtro en paralelo; sin él, 1 (un solo hilo, como siempre)>
 #
 # FRENO_ESCRIBIR_*=0 QUITA el tope de escritura (se recomienda en disco compartido).
 # Medido en la luna kubo el 02-10: la precalificación vuelca a /tmp cada entrada de más
@@ -81,6 +82,7 @@ if [ -n "${CACHE_T3:-}" ]; then
   CACHE=(-v "$CACHE_T3:/cache_t3" -e NORM_T3_CACHE_DIR=/cache_t3)
 fi
 [ -n "${T3_TOPE_BYTES:-}" ] && CACHE+=(-e "NORM_T3_CACHE_DISCO_BYTES=$T3_TOPE_BYTES")
+[ -n "${PRECALIFICA:-}" ] && CACHE+=(-e "NORM_WORKER__PROCESOS_PRECALIFICA=$PRECALIFICA")
 CODIGO_V=()
 if [ -n "${CODIGO:-}" ]; then
   [ -d "$CODIGO/normalizacion" ] || { echo "ABORTO: $CODIGO no es la carpeta src/ del repo"; exit 2; }
