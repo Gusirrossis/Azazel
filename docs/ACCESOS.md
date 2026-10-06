@@ -127,9 +127,11 @@ ssh -i "C:\Users\Asus Xeon\.ssh\nextcloud_secureadm" -o IdentitiesOnly=yes secur
 >   `T3_TOPE_BYTES=1e12` (caché de extracción a 1 TB, no a la mitad del disco).
 > - Cron de `secureadm` (debajo de las 7 tareas de Nextcloud, que no se tocan):
 >   centinela cada 2 min (`deploy/lunas/centinela_luna.sh`, relanza la corrida si
->   muere, con las mismas variables) y réplica a la matriz a la **01:00 hora local**
->   (`deploy/lunas/replicar_a_matriz.sh`; restaurar en la matriz tarda ~1 h, así cae de
->   madrugada en México; a las 03:00 corre el backup de Nextcloud).
+>   muere, con las mismas variables) y réplica a la matriz **cada 6 h: 01:00, 07:00,
+>   13:00 y 19:00 hora local** (`deploy/lunas/replicar_a_matriz.sh`, con flock: si un
+>   ciclo se alarga, el siguiente se salta). Desde el 06-10, a petición del usuario: el
+>   desfase máximo baja de ~24 h a ~6 h; cada ciclo restaura en la matriz solo el índice
+>   activo (los cerrados salen «sin cambios») y carga su disco ~30-60 min.
 >   Logs en `~/azazel-luna/logs/`.
 >
 > **Luna Lilith, réplica (05-10):** usa el mismo script versionado (cron */20 con
