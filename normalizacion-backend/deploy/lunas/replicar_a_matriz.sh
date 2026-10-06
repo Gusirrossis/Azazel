@@ -133,8 +133,14 @@ if not ya:
     c.transport.perform_request('PUT','/_snapshot/'+REPO,body={'type':'s3','settings':{'bucket':'snapshots-'+n,'client':'default'}})
 r = replicacion.restaurar_ajenos(config, c, refrescar=True, repositorio=REPO)
 print('   restaurado:', r.indices, '| sin_cambios:', r.sin_cambios, '| ok:', r.ok, '| motivo:', r.motivo)
-c.indices.refresh(index=config.indice_alias+'-*')
-print('   docs en el alias:', c.count(index=config.indice_alias)['count'])
+# El recuento es INFORMATIVO: no puede tumbar un ciclo que ya restauró bien. El 06-10 la
+# matriz, ocupada restaurando el índice de kubo, no respondió al refresh en 30 s y el
+# ciclo de Lilith salió «NO completado» con ok=True y todo sin cambios.
+try:
+    c.indices.refresh(index=config.indice_alias+'-*', request_timeout=300)
+    print('   docs en el alias:', c.count(index=config.indice_alias, request_timeout=300)['count'])
+except Exception as exc:
+    print('   docs en el alias: (no se pudo contar:', type(exc).__name__ + ')')
 raise SystemExit(0 if r.ok else 2)  # un restore fallido tiene que verse en el codigo de salida
 " 2>&1 | grep -v '^{'
 REMOTO
