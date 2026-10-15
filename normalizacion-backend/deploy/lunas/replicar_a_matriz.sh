@@ -13,8 +13,9 @@
 #              repositorio azazel-snapshots-<NOMBRE>
 #   MATRIZ     IP de la matriz (162.35.188.181)
 #   FLUJOS     conexiones en paralelo del rsync (4)
-#   LOTE_MB    tamaño de cada lote de la cola del rsync (256)
-#   LOTE_MAX_S tope de un lote antes de cortarlo y reintentarlo en otra conexión (600)
+#   LOTE_MB    tamaño de cada lote de la cola del rsync (128)
+#   LOTE_MAX_S tope de un intento antes de cortarlo y reintentarlo en otra conexión (150)
+#   RONDAS     rondas de la cola antes de dar el ciclo por fallido (40)
 #
 # Ojo con la frecuencia: restaurar_ajenos restaura el índice ENTERO cuando cambia. Para
 # una luna que normaliza sin parar, una vez al día y de noche; cada 20 min saturaría el
@@ -96,47 +97,59 @@ docker run --rm --network normalizacion_interna -v "$EXPORT:/salida" \
 repo_coherente "$EXPORT" || { log "ERROR: el export no es un repositorio entero; no se replica"; exit 1; }
 
 log "3/4 rsync a la matriz ($FLUJOS flujos)"
-# En PARALELO y por LOTES. Desde kubo hay pérdida de paquetes a ratos (13-10: 0,9 % de
-# segmentos retransmitidos en el host) y una conexión TCP que la sufre se hunde y NO se
-# recupera: el rsync de una sola conexión pasó horas con cwnd 8 a ~0,5 MB/s, y el ciclo
-# de la 01:00 del 14-10 tardó 13 h en este paso y se comió los dos siguientes.
+# En PARALELO, por LOTES y por RONDAS. La salida de kubo hacia la matriz pierde paquetes
+# por RACHAS: el 14-10, de 16 conexiones nuevas de 8 MB seguidas, 1-6 y 14-16 no pasaron
+# de 320 KB/s y 7-13 fueron a 5,8-7,8 MB/s; con 0 % de pérdida en ping y a la vez que
+# otra ruta (kubo -> fuera) iba bien en 7 de 8. Una conexión TCP que cae en una racha
+# mala se hunde (cwnd 1) y no se recupera aunque la racha pase: el rsync de una sola
+# conexión del ciclo de la 01:00 del 14-10 tardó 13 h y se comió los dos siguientes, y de
+# 4 conexiones fijas dos se quedaron a ~70 KB/s.
 #
-# Repartir en 4 conexiones fijas no basta: el 14-10, de 4 flujos de 3,45 GB, uno terminó
-# en menos de 5 min y dos se quedaron con cwnd 1 a ~70 KB/s (~14 h para su parte). Por eso
-# una COLA: lotes de LOTE_MB que cada conexión toma al quedar libre, cada lote en una
-# conexión NUEVA y con LOTE_MAX_S de tope. Un lote que se hunde se corta y se reintenta
-# en otra conexión, y `--partial-dir` conserva lo ya enviado (los ficheros llegan a 1 GiB).
-# Los blobs de un snapshot nunca cambian de contenido: el orden da igual.
-LOTE_MB=${LOTE_MB:-256}
-LOTE_MAX_S=${LOTE_MAX_S:-600}
+# Por eso: lotes de LOTE_MB que cada conexión toma al quedar libre, cada intento en una
+# conexión NUEVA y con LOTE_MAX_S de tope (con 10 min, un lote que arrancaba en racha
+# mala se quedaba hundido 10 min). Tras cada ronda se vuelve a listar lo que falta;
+# `--partial-dir` conserva lo ya enviado de un fichero cortado (llegan a 1 GiB). Si en
+# RONDAS rondas no termina, el ciclo falla sin tocar la matriz y el siguiente sigue donde
+# este lo dejó, en vez de colgarse horas. Los blobs de un snapshot nunca cambian de
+# contenido: el orden da igual.
+LOTE_MB=${LOTE_MB:-128}
+LOTE_MAX_S=${LOTE_MAX_S:-150}
+RONDAS=${RONDAS:-40}
 LISTAS=$(mktemp -d)
 trap 'rm -f "$ENVR"; rm -rf "$LISTAS"' EXIT
-rsync -a --dry-run --out-format='%l %n' -e "$SSHP" "$EXPORT/" "root@$MATRIZ:$IMPORT/" > "$LISTAS/todo" \
-  || { log "ERROR rsync (listado)"; exit 1; }
-# De mayor a menor, en lotes de hasta LOTE_MB (un fichero mayor va solo). Las carpetas,
-# que acaban en «/», las crea rsync.
-grep -v '/$' "$LISTAS/todo" | sort -rn | awk -v d="$LISTAS" -v tope=$((LOTE_MB * 1048576)) '
-  { if (!n || (t + $1 > tope && c)) { if (f) close(f); n++; t = 0; c = 0; f = sprintf("%s/lote%05d", d, n) }
-    t += $1; c++; s += $1; sub(/^[0-9]+ /, ""); print > f }
-  END { printf "   %d ficheros, %.1f MB, en %d lotes\n", NR, s / 1e6, n }'
 subir_lote() {
-  local intento
-  for intento in 1 2 3; do
-    timeout "$LOTE_MAX_S" rsync -az --partial-dir=.rsync-parcial --files-from="$1" \
-      -e "$SSHP" "$EXPORT/" "root@$MATRIZ:$IMPORT/" && return 0
-  done
-  echo "   ${1##*/}: sin terminar tras 3 intentos"
-  return 1
+  timeout "$LOTE_MAX_S" rsync -az --partial-dir=.rsync-parcial --files-from="$1" \
+    -e "$SSHP" "$EXPORT/" "root@$MATRIZ:$IMPORT/" 2>/dev/null
 }
 export -f subir_lote
 export SSHP EXPORT MATRIZ IMPORT LOTE_MAX_S
-find "$LISTAS" -name 'lote*' | sort | xargs -r -P "$FLUJOS" -I{} bash -c 'subir_lote "$1"' _ {} \
-  || log "   algún lote no terminó: el repaso lo reenvía"
-# Repaso en UN flujo: reenvía lo que un lote no terminara (y es quien dice si el paso fue
-# bien), y `--delete` quita de `_import` lo que la luna ya purgó y las `.rsync-parcial`
-# que hubieran quedado: nada a medias llega a la inyección.
-log "3b/4 repaso y limpieza de _import"
-rsync -az --delete -e "$SSHP" "$EXPORT/" "root@$MATRIZ:$IMPORT/" || { log "ERROR rsync"; exit 1; }
+ronda=0
+while :; do
+  ronda=$((ronda + 1))
+  [ "$ronda" -gt "$RONDAS" ] && { log "ERROR rsync: quedan ficheros tras $RONDAS rondas (lo enviado se conserva)"; exit 1; }
+  rm -f "$LISTAS"/lote*
+  if ! timeout 300 rsync -a --dry-run --out-format='%l %n' -e "$SSHP" "$EXPORT/" \
+      "root@$MATRIZ:$IMPORT/" > "$LISTAS/todo" 2>/dev/null; then
+    log "   ronda $ronda: el listado no respondió"; sleep 30; continue
+  fi
+  # De mayor a menor, en lotes de hasta LOTE_MB (un fichero mayor va solo). Las carpetas,
+  # que acaban en «/», las crea rsync.
+  log "   ronda $ronda: quedan $(grep -v '/$' "$LISTAS/todo" | sort -rn | awk -v d="$LISTAS" -v tope=$((LOTE_MB * 1048576)) '
+    { if (!n || (t + $1 > tope && c)) { if (f) close(f); n++; t = 0; c = 0; f = sprintf("%s/lote%05d", d, n) }
+      t += $1; c++; s += $1; sub(/^[0-9]+ /, ""); print > f }
+    END { printf "%d ficheros, %.1f MB, en %d lotes", NR, s / 1e6, n }')"
+  [ -n "$(find "$LISTAS" -name 'lote*' -print -quit)" ] || break
+  find "$LISTAS" -name 'lote*' | sort | xargs -r -P "$FLUJOS" -I{} bash -c 'subir_lote "$1"' _ {}
+done
+# Todo enviado. `--delete` quita de `_import` lo que la luna ya purgó y las
+# `.rsync-parcial` que quedaran: nada a medias llega a la inyección. No transfiere
+# datos, pero también va con tope y reintento: una racha mala lo colgaría igual.
+log "3b/4 limpieza de _import"
+for intento in 1 2 3 4 5; do
+  timeout 600 rsync -az --delete -e "$SSHP" "$EXPORT/" "root@$MATRIZ:$IMPORT/" && break
+  [ "$intento" = 5 ] && { log "ERROR rsync (limpieza de _import)"; exit 1; }
+  sleep 30
+done
 
 log "4/4 inyectar + restaurar + entidades"
 if ! $SSHP "root@$MATRIZ" NOMBRE="$NOMBRE" bash -s <<'REMOTO'
