@@ -290,6 +290,14 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
 #: así que esperar no le cuesta nada a nadie.
 _ESPERA_VERDE = "60m"
 
+#: Lo que el CLIENTE espera en cada petición del restore que no es la espera a verde:
+#: listar el repositorio, mirar/borrar la ranura, lanzar el restore y cambiar el alias.
+#: `crear_cliente` corta a los 30 s, y la matriz con el disco ocupado tarda más en
+#: ACEPTAR un restore. 15-10: el primer restore del índice nuevo de kubo (000008) se cortó
+#: a los 30 s, el servidor lo aceptó igual, y el índice se quedó restaurando FUERA del
+#: alias (invisible para Lilith) con el ciclo dado por fallido.
+_ESPERA_PETICION_S = 300
+
 
 #: Sufijo de la ranura de repuesto. Cada índice de origen tiene SU par.
 _SUF_RANURA = "-r"
@@ -543,9 +551,9 @@ def _retirar_huerfano(cliente: Any, huerfano: str) -> None:
     `…-000003-r` restaurando 10,4 GB idénticos. Borrarlo cancela ese restore. Con el
     `flock` de cada luna ningún otro ciclo del mismo repositorio puede estar usándolo."""
     try:
-        if not cliente.indices.exists(index=huerfano):
+        if not cliente.indices.exists(index=huerfano, request_timeout=_ESPERA_PETICION_S):
             return
-        cliente.indices.delete(index=huerfano)
+        cliente.indices.delete(index=huerfano, request_timeout=_ESPERA_PETICION_S)
     except Exception as exc:
         log.warning("replica_huerfano_no_retirado", indice=huerfano, error=str(exc)[:150])
         return
@@ -603,9 +611,9 @@ def restaurar_ajenos(
     try:
         if repositorio is None:
             asegurar_repositorio(config, cliente)
-        snapshots = cliente.transport.perform_request("GET", f"/_snapshot/{repo}/_all").get(
-            "snapshots", []
-        )
+        snapshots = cliente.transport.perform_request(
+            "GET", f"/_snapshot/{repo}/_all", timeout=_ESPERA_PETICION_S
+        ).get("snapshots", [])
     except Exception as exc:
         r.motivo = f"{type(exc).__name__}: {exc}"[:250]
         log.warning("restore_sin_repositorio", error=r.motivo)
@@ -687,14 +695,16 @@ def restaurar_ajenos(
             # un HUÉRFANO de un ciclo roto: restaurar sobre él falla con
             # "an open index with same name already exists" y el ciclo entero muere.
             destino = (
-                indice if not cliente.indices.exists(index=indice) else _ranura_alterna(indice)
+                indice
+                if not cliente.indices.exists(index=indice, request_timeout=_ESPERA_PETICION_S)
+                else _ranura_alterna(indice)
             )
         try:
             # Sin `suppress`: si la ranura no se puede liberar, el restore va a fallar
             # de todas formas y con un error que no dice por qué. Antes esto se tragaba
             # el fallo y la excepción aparecía tres líneas después, desorientando.
-            if cliente.indices.exists(index=destino):
-                cliente.indices.delete(index=destino)
+            if cliente.indices.exists(index=destino, request_timeout=_ESPERA_PETICION_S):
+                cliente.indices.delete(index=destino, request_timeout=_ESPERA_PETICION_S)
             # `wait_for_completion=false`: la petición vuelve en cuanto el restore se
             # ACEPTA. Con `true` la conexión se queda abierta mientras dura —minutos
             # con decenas de GB— y el cliente la corta a los 30 s con un
@@ -711,6 +721,7 @@ def restaurar_ajenos(
                     "rename_pattern": ".+",
                     "rename_replacement": destino,
                 },
+                timeout=_ESPERA_PETICION_S,  # aceptarlo, no terminarlo (ver la constante)
             )
             # `wait_for_completion` vuelve cuando el shard está ASIGNADO, no cuando
             # terminó de recuperarse. Sin esta espera el swap metería en el alias
@@ -724,7 +735,7 @@ def restaurar_ajenos(
             # El restore ya fue aceptado, pero el índice puede tardar un instante en
             # aparecer. Se espera a que EXISTA comprobándolo, no durmiendo a ciegas.
             for _ in range(12):
-                if cliente.indices.exists(index=destino):
+                if cliente.indices.exists(index=destino, request_timeout=_ESPERA_PETICION_S):
                     break
                 time.sleep(5)
             cliente.cluster.health(
@@ -745,10 +756,12 @@ def restaurar_ajenos(
             ]
             if sirviendo and sirviendo != destino:
                 acciones.append({"remove": {"index": sirviendo, "alias": config.indice_alias}})
-            cliente.indices.update_aliases(body={"actions": acciones})
+            cliente.indices.update_aliases(
+                body={"actions": acciones}, request_timeout=_ESPERA_PETICION_S
+            )
             if sirviendo and sirviendo != destino:
                 with contextlib.suppress(Exception):
-                    cliente.indices.delete(index=sirviendo)
+                    cliente.indices.delete(index=sirviendo, request_timeout=_ESPERA_PETICION_S)
                 existentes.discard(sirviendo)
             existentes.add(destino)
             r.indices.append(destino)

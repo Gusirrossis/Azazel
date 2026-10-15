@@ -69,6 +69,9 @@ class _OpenSearchFalso:
         #: índice → estado de `cluster.health`; sin entrada, verde.
         self.salud: dict[str, str] = {}
         self.borrados: list[str] = []
+        #: Matriz con el disco ocupado: tarda más de los 30 s del cliente en contestar, y
+        #: toda petición del restore sin tiempo propio caduca como en opensearch-py.
+        self.lenta = False
         self._contador = itertools.count(1)
         self.indices = self
         self.transport = self
@@ -85,11 +88,22 @@ class _OpenSearchFalso:
                 "repository": repo, "snapshot": desde, "index": ORIGEN,
             }
 
+    def _aguanta(self, espera: float | None) -> None:
+        if self.lenta and (espera is None or espera < 60):
+            raise _ErrorHttp("TIMEOUT")
+
     # --------------------------------------------------------------- transport
     def perform_request(
-        self, metodo: str, ruta: str, params: Any = None, body: Any = None
+        self,
+        metodo: str,
+        ruta: str,
+        params: Any = None,
+        body: Any = None,
+        timeout: float | None = None,
     ) -> Any:
         partes = ruta.strip("/").split("/")
+        if metodo == "POST" or ruta.endswith("/_all"):
+            self._aguanta(timeout)
         if metodo == "GET" and ruta.startswith("/_snapshot/") and ruta.endswith("/_all"):
             return {
                 "snapshots": [
@@ -150,10 +164,12 @@ class _OpenSearchFalso:
             candidatos = sorted(self.presentes)
         return {i: {"aliases": {"archivos": {}} if i in self.colgados else {}} for i in candidatos}
 
-    def exists(self, index: str | None = None) -> bool:
+    def exists(self, index: str | None = None, request_timeout: float | None = None) -> bool:
+        self._aguanta(request_timeout)
         return str(index) in self.presentes
 
-    def delete(self, index: str | None = None) -> None:
+    def delete(self, index: str | None = None, request_timeout: float | None = None) -> None:
+        self._aguanta(request_timeout)
         self.borrados.append(str(index))
         for d in (self.presentes, self.colgados):
             d.discard(str(index))
@@ -163,7 +179,10 @@ class _OpenSearchFalso:
     def get_settings(self, index: str | None = None, name: str | None = None) -> dict[str, Any]:
         return {str(index): {"settings": {"index": {"uuid": self.uuids[str(index)]}}}}
 
-    def update_aliases(self, body: Any = None) -> dict[str, Any]:
+    def update_aliases(
+        self, body: Any = None, request_timeout: float | None = None
+    ) -> dict[str, Any]:
+        self._aguanta(request_timeout)
         for accion in body["actions"]:
             if "add" in accion:
                 self.colgados.add(accion["add"]["index"])
@@ -634,3 +653,36 @@ class TestSelloPorLuna:
         lag = replicacion.lag_segundos(_matriz(perfil))
 
         assert lag == pytest.approx(3600, abs=60)
+
+
+# ------------------------------------------------------------------ una matriz lenta no corta el ciclo
+
+
+class TestMatrizLenta:
+    """15-10: el primer restore del índice nuevo de kubo (000008) se cortó a los 30 s del
+    cliente con la matriz ocupada; el servidor lo aceptó igual y el índice se quedó
+    restaurando fuera del alias, con el ciclo dado por fallido."""
+
+    def test_el_restore_de_un_indice_nuevo_llega_al_alias(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({"kubo-luna-01-20261015-033326": {ORIGEN: QUIETO}})
+        cliente.lenta = True
+
+        r = _ciclo(cliente)
+
+        assert r.ok, r.motivo
+        assert r.indices == [ORIGEN]
+        assert cliente.colgados == {ORIGEN}
+
+    def test_el_refresco_azul_verde_cambia_de_ranura(self, control: _Control) -> None:
+        """Con copia sirviendo: borrar la ranura libre, restaurar, cambiar el alias y
+        retirar la vieja, todo con la matriz lenta."""
+        cliente = _OpenSearchFalso({"kubo-luna-01-20261015-033326": {ORIGEN: QUIETO}})
+        _ciclo(cliente)
+        cliente.snapshots["kubo-luna-01-20261015-060036"] = {ORIGEN: {"0": (251, 35_857_990_001, 7)}}
+        cliente.lenta = True
+
+        r = _ciclo(cliente)
+
+        assert r.ok, r.motivo
+        assert cliente.colgados == {RANURA}
+        assert ORIGEN in cliente.borrados

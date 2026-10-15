@@ -273,7 +273,7 @@ class _ClienteFalso:
         self.cluster = self
 
     def perform_request(
-        self, metodo: str, ruta: str, params: Any = None, body: Any = None
+        self, metodo: str, ruta: str, params: Any = None, body: Any = None, **_: Any
     ) -> Any:
         if metodo == "GET":
             return {"snapshots": self._snapshots}
@@ -296,10 +296,10 @@ class _ClienteFalso:
             i: {"aliases": {self._alias: {}} if i in self._colgados else {}} for i in candidatos
         }
 
-    def exists(self, index: str | None = None) -> bool:
+    def exists(self, index: str | None = None, **_: Any) -> bool:
         return str(index) in self._presentes
 
-    def delete(self, index: str | None = None) -> None:
+    def delete(self, index: str | None = None, **_: Any) -> None:
         self.borrados.append(str(index))
         self._presentes.discard(str(index))
         self._colgados.discard(str(index))
@@ -312,7 +312,7 @@ class _ClienteFalso:
         self.esperas.append((str(index), kw.get("wait_for_status"), kw.get("request_timeout")))
         return {"status": "green"}
 
-    def update_aliases(self, body: Any = None) -> dict[str, Any]:
+    def update_aliases(self, body: Any = None, **_: Any) -> dict[str, Any]:
         """El swap atómico: en UNA operación entra el nuevo y sale el viejo."""
         self.swaps.append(body)
         for accion in (body or {}).get("actions", []):
