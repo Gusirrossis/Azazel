@@ -63,12 +63,18 @@ if [ "$USO" -ge 93 ] && [ "$PAUSADO" != "true" ]; then
   fi
 fi
 
-# Relanzar la corrida si murió sin terminar. Nunca con el freno puesto (terminaría al
-# instante y se relanzaría cada 2 min) ni si su contenedor sigue vivo.
+# Relanzar la corrida si murió sin terminar, o si terminó con trabajo pendiente. Nunca
+# con el freno puesto (terminaría al instante y se relanzaría cada 2 min) ni si su
+# contenedor sigue vivo.
+#
+# «Terminó con pendientes» es lo que deja el propio freno: con el sistema pausado los
+# workers vacían y la corrida acaba COMPLETADA. Antes solo se relanzaba una EN_CURSO o
+# FALLIDA, así que tras un freno nadie la levantaba: 16-10, corrida 8 COMPLETADA con
+# 40 067 610 archivos pendientes y la luna parada tras el `norm reanudar`.
 if [ "$PAUSADO" != "true" ] && ! docker ps -q -f name='^norm-corrida$' | grep -q .; then
   ULTIMA=$(sql "SELECT estado FROM corridas ORDER BY id DESC LIMIT 1")
   PEND=$(sql "SELECT count(*) FROM archivos WHERE estado IN ('PENDIENTE', 'PRECALIFICADO', 'EN_PROCESO')")
-  if [ "$ULTIMA" = "EN_CURSO" ] || { [ "$ULTIMA" = "FALLIDA" ] && [ "${PEND:-0}" -gt 0 ]; }; then
+  if [ "$ULTIMA" = "EN_CURSO" ] || [ "${PEND:-0}" -gt 0 ]; then
     SELLO="$LOGS/.ultimo_relanzamiento"
     if [ ! -f "$SELLO" ] || [ $(( $(date +%s) - $(stat -c %Y "$SELLO") )) -ge 3600 ]; then
       [ "$ULTIMA" = "EN_CURSO" ] && sql "UPDATE corridas SET estado = 'FALLIDA', terminada_en = now(), error = 'contenedor muerto: lo relanza el centinela' WHERE estado = 'EN_CURSO'" >/dev/null
