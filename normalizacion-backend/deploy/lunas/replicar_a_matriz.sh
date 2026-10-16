@@ -41,12 +41,22 @@ repo_coherente() {
 }
 
 log "0/4 flush del indice"
-docker exec normalizacion-api-1 python -c "
+# El snapshot se lleva el último COMMIT de cada shard, no lo último indexado: sin este
+# flush viaja lo de antes. 16-10: con el disco de kubo saturado el flush se cortó a los 30 s
+# del cliente, el ciclo siguió, y el snapshot salió idéntico al anterior —«sin cambios»—
+# con 504 000 documentos del índice activo sin llegar a la matriz y el ciclo «terminado».
+# Ahora espera lo que haga falta y, si aun así no termina, el ciclo para aquí.
+FLUSH=$(docker exec normalizacion-api-1 python -c "
 from normalizacion.core.config import cargar_config
 from normalizacion.core.indexador.opensearch import crear_cliente
-c=crear_cliente(cargar_config()); c.indices.refresh(index='archivos-*')
-c.indices.flush(index='archivos-*', wait_if_ongoing=True); print('   flush ok')
-" 2>&1 | grep -v '^{'
+c=crear_cliente(cargar_config()); c.indices.refresh(index='archivos-*', request_timeout=900)
+c.indices.flush(index='archivos-*', wait_if_ongoing=True, request_timeout=900); print('   flush ok')
+" 2>&1 | grep -v '^{')
+echo "$FLUSH" | tail -3
+if ! echo "$FLUSH" | grep -q "flush ok"; then
+  log "ERROR: el flush no terminó; un snapshot ahora llevaría lo de antes"
+  exit 1
+fi
 
 log "1/4 snapshot"
 # Con el código del REPO (montado), no con el horneado en la imagen de la API: un arreglo
