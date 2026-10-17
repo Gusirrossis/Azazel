@@ -285,10 +285,14 @@ def tomar_snapshot(config: Config, cliente: Any | None = None) -> ResumenReplica
 # ------------------------------------------------------------------ restore (receptor)
 
 
-#: Espera máxima a que el índice restaurado quede VERDE. Alta a propósito: con 24,4 GB
-#: el shard tarda ~12 min y crece con el corpus. El viejo sigue sirviendo mientras tanto,
-#: así que esperar no le cuesta nada a nadie.
-_ESPERA_VERDE = "60m"
+#: Espera máxima a que el índice restaurado quede VERDE. Alta a propósito: el viejo sigue
+#: sirviendo mientras tanto, así que esperar no le cuesta nada a nadie, y cortar sí: el
+#: restore sigue en el servidor, el ciclo sale fallido y el SIGUIENTE borra esa ranura
+#: (ya completa) para volver a empezar. 17-10: el índice activo de kubo (23,6 GB) tardó
+#: algo más de 60 min con el disco de la matriz al ~50 %, y la ISM no lo rota hasta los
+#: 30 GB (~85 min a ese ritmo). Con 60 min cada ciclo habría fallado igual.
+_ESPERA_VERDE_S = 3 * 3600
+_ESPERA_VERDE = f"{_ESPERA_VERDE_S}s"
 
 #: Lo que el CLIENTE espera en cada petición del restore que no es la espera a verde:
 #: listar el repositorio, mirar/borrar la ranura, lanzar el restore y cambiar el alias.
@@ -742,7 +746,7 @@ def restaurar_ajenos(
                 index=destino,
                 wait_for_status="green",
                 timeout=_ESPERA_VERDE,
-                request_timeout=3900,
+                request_timeout=_ESPERA_VERDE_S + 300,
             )
             # NO-escritura: el índice de escritura de este alias es el propio.
             acciones: list[dict[str, Any]] = [

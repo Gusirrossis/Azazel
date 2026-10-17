@@ -267,6 +267,7 @@ class _ClienteFalso:
         self.destinos: list[str] = []
         self.borrados: list[str] = []
         self.esperas: list[tuple[str, Any, Any]] = []
+        self.esperas_servidor: list[Any] = []
         self.swaps: list[Any] = []
         self.indices = self
         self.transport = self
@@ -310,6 +311,7 @@ class _ClienteFalso:
     def health(self, index: str | None = None, **kw: Any) -> dict[str, Any]:
         """`cluster.health` — anota que se esperó, y a qué."""
         self.esperas.append((str(index), kw.get("wait_for_status"), kw.get("request_timeout")))
+        self.esperas_servidor.append(kw.get("timeout"))
         return {"status": "green"}
 
     def update_aliases(self, body: Any = None, **_: Any) -> dict[str, Any]:
@@ -397,6 +399,17 @@ class TestBlueGreen:
         # El timeout del CLIENTE va aparte del de servidor: sin él, esperar 60 min se
         # corta a los 30 s con un ConnectionTimeout que parece un fallo y no lo es.
         assert req_timeout and req_timeout > 60
+
+    def test_la_espera_cubre_un_indice_de_30_gb(self) -> None:
+        """17-10: el índice activo de kubo (23,6 GB) tardó algo más de 60 min en quedar
+        verde en la matriz, el ciclo salió fallido y el siguiente habría borrado la ranura
+        ya completa. La ISM rota a los 30 GB: ~85 min a ese ritmo."""
+        cliente = self._refrescar()
+        servidor = str(cliente.esperas_servidor[0])
+        segundos = int(servidor[:-1]) * {"s": 1, "m": 60, "h": 3600}[servidor[-1]]
+        assert segundos >= 150 * 60
+        _, _, req_timeout = cliente.esperas[0]
+        assert req_timeout > segundos  # el cliente no corta antes que el servidor
 
     def test_el_cambio_de_alias_es_UNA_operacion(self) -> None:
         """Entrar el nuevo y sacar el viejo en llamadas separadas deja un instante con
