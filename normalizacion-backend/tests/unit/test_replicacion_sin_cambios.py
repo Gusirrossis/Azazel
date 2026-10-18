@@ -452,6 +452,9 @@ class TestAnteLaDudaRestaura:
         cliente.health = _health_caducado  # type: ignore[method-assign]
         assert _ciclo(cliente).ok is False
         cliente.health = salud  # type: ignore[method-assign]
+        # Un restore que FALLA deja la ranura sin servir. Si acabara verde, se adoptaría
+        # (ver TestAdoptaRanuraTerminada), y eso es otro caso.
+        cliente.salud[RANURA] = "red"
 
         cliente.snapshots["lilith-luna-01-20260925-224001"] = {
             ORIGEN: {"0": (251, 35_857_990_001, 0)}
@@ -686,3 +689,82 @@ class TestMatrizLenta:
         assert r.ok, r.motivo
         assert cliente.colgados == {RANURA}
         assert ORIGEN in cliente.borrados
+
+
+# ------------------------------------------------------------------ una restauración tardía no se tira
+
+
+class TestAdoptaRanuraTerminada:
+    """17/18-10, matriz: el restore del índice activo de kubo (31 GB) acababa DESPUÉS de la
+    espera —MinIO, con el disco saturado, daba el suyo por caído y devolvía 503, y el shard
+    volvía a empezar— y quedaba verde fuera del alias. El ciclo siguiente lo borraba para
+    restaurar otra vez 31 GB."""
+
+    S1 = "lilith-luna-01-20260925-210002"
+    S2 = "lilith-luna-01-20260925-220001"
+    S3 = "lilith-luna-01-20260925-224001"
+    CAMBIADO = {"0": (251, 35_857_990_001, 7)}
+    IGUAL_A_S2 = {"0": (251, 35_857_990_001, 0)}
+
+    def _restore_que_acaba_tarde(self, cliente: _OpenSearchFalso) -> None:
+        cliente.snapshots[self.S2] = {ORIGEN: self.CAMBIADO}
+        salud = cliente.health
+        cliente.health = _health_caducado  # type: ignore[method-assign]
+        assert _ciclo(cliente).ok is False
+        cliente.health = salud  # type: ignore[method-assign]
+
+    def test_la_ranura_verde_y_mas_nueva_se_adopta_sin_recopiar(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({self.S1: {ORIGEN: QUIETO}})
+        _ciclo(cliente)
+        self._restore_que_acaba_tarde(cliente)
+        cliente.snapshots[self.S3] = {ORIGEN: self.IGUAL_A_S2}
+
+        r = _ciclo(cliente)
+
+        assert r.ok, r.motivo
+        assert cliente.colgados == {RANURA}
+        assert [s for _, s, _ in cliente.restaurados] == [self.S1, self.S2]  # S3 no se recopia
+        assert ORIGEN in cliente.borrados
+        huella = control.huella()
+        assert huella and huella["snapshot"] == self.S2 and huella["destino"] == RANURA
+
+    def test_adoptada_y_aun_desfasada_restaura_en_la_otra(self, control: _Control) -> None:
+        """Adoptar no exime de seguir: si el candidato cambió respecto a lo adoptado, se
+        restaura en la ranura que quedó libre, como siempre."""
+        cliente = _OpenSearchFalso({self.S1: {ORIGEN: QUIETO}})
+        _ciclo(cliente)
+        self._restore_que_acaba_tarde(cliente)
+        cliente.snapshots[self.S3] = {ORIGEN: {"0": (260, 35_900_000_000, 9)}}
+
+        assert _ciclo(cliente).ok
+
+        assert cliente.restaurados[-1] == (ORIGEN, self.S3, ORIGEN)
+        assert cliente.colgados == {ORIGEN}
+
+    def test_una_ranura_roja_no_se_adopta(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({self.S1: {ORIGEN: QUIETO}})
+        _ciclo(cliente)
+        self._restore_que_acaba_tarde(cliente)
+        cliente.salud[RANURA] = "red"
+        cliente.snapshots[self.S3] = {ORIGEN: self.IGUAL_A_S2}
+
+        _ciclo(cliente)
+
+        assert cliente.restaurados[-1] == (ORIGEN, self.S3, RANURA)
+        assert RANURA in cliente.borrados  # la roja se borra y se restaura encima
+
+    def test_una_ranura_mas_vieja_no_se_adopta(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({self.S1: {ORIGEN: QUIETO}})
+        _ciclo(cliente)
+        cliente.snapshots[self.S2] = {ORIGEN: self.CAMBIADO}
+        _ciclo(cliente)  # sirve RANURA desde S2
+        # Una copia VIEJA (de S1) en la ranura libre, verde: no vale aunque esté entera.
+        cliente.presentes.add(ORIGEN)
+        cliente.uuids[ORIGEN] = "uuid-vieja"
+        cliente.recuperado_de[ORIGEN] = {"repository": REPO, "snapshot": self.S1, "index": ORIGEN}
+        cliente.snapshots[self.S3] = {ORIGEN: {"0": (260, 35_900_000_000, 9)}}
+
+        _ciclo(cliente)
+
+        assert cliente.restaurados[-1] == (ORIGEN, self.S3, ORIGEN)
+        assert cliente.colgados == {ORIGEN}

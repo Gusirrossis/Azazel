@@ -564,6 +564,60 @@ def _retirar_huerfano(cliente: Any, huerfano: str) -> None:
     log.info("replica_huerfano_retirado", indice=huerfano)
 
 
+def _adoptar_ranura_nueva(
+    config: Config, cliente: Any, repo: str, indice: str, sirviendo: str, estados: dict[str, Any]
+) -> str | None:
+    """Si la ranura LIBRE ya trae una restauración completa y MÁS NUEVA que lo que sirve,
+    la pone a servir en vez de borrarla para volver a empezar. Devuelve la adoptada.
+
+    Pasa cuando un restore termina después de que el ciclo dejara de esperarlo. 17/18-10,
+    matriz: el índice activo de kubo (31 GB) tardaba más que la espera porque MinIO, con el
+    disco saturado, daba el suyo por caído («unable to write+read for 30s») y devolvía 503;
+    el shard volvía a empezar de cero. Acababa verde FUERA del alias, y el ciclo siguiente
+    la habría borrado para restaurar otra vez 31 GB.
+
+    Solo con pruebas: verde (o amarilla), restaurada de este repositorio según el propio
+    clúster (`_recovery`) y de un snapshot posterior al de la copia que sirve. Ante la
+    duda, nada: sigue el camino de siempre."""
+    libre = _ranura_alterna(sirviendo)
+    try:
+        if not cliente.indices.exists(index=libre, request_timeout=_ESPERA_PETICION_S):
+            return None
+    except Exception:
+        return None
+    if _en_alias(cliente, libre, config.indice_alias):
+        return None  # las dos ranuras sirviendo: lo resuelve el restore
+    origen = _snapshot_de_origen(cliente, libre, repo, indice)
+    viva = _huella_viva(config, cliente, repo, indice, sirviendo, estados)
+    if origen is None or viva is None or not viva.get("snapshot"):
+        return None
+    if origen <= str(viva["snapshot"]) or not _sirve_entera(cliente, libre):
+        return None
+    huella = _huella_snapshot(cliente, repo, origen, indice, estados)
+    cliente.indices.update_aliases(
+        body={
+            "actions": [
+                {"add": {"index": libre, "alias": config.indice_alias, "is_write_index": False}},
+                {"remove": {"index": sirviendo, "alias": config.indice_alias}},
+            ]
+        },
+        request_timeout=_ESPERA_PETICION_S,
+    )
+    with contextlib.suppress(Exception):
+        cliente.indices.delete(index=sirviendo, request_timeout=_ESPERA_PETICION_S)
+    if huella is not None:
+        _guardar_huella(config, cliente, repo, indice, libre, origen, huella["shards"])
+    log.info(
+        "replica_ranura_adoptada",
+        indice=indice,
+        adoptada=libre,
+        retirada=sirviendo,
+        snapshot=origen,
+        sirvia_de=viva.get("snapshot"),
+    )
+    return libre
+
+
 def restaurar_ajenos(
     config: Config,
     cliente: Any | None = None,
@@ -656,6 +710,17 @@ def restaurar_ajenos(
         # sirviendo: es la que se guarda tras restaurar para poder saltarse el siguiente.
         candidata = _huella_snapshot(cliente, repo, nombre, indice, estados)
         if sirviendo is not None:
+            # Precaución 7: una restauración que acabó tarde no se tira (ver la función).
+            try:
+                adoptada = _adoptar_ranura_nueva(config, cliente, repo, indice, sirviendo, estados)
+            except Exception as exc:
+                log.warning("replica_adopcion_fallida", indice=indice, error=str(exc)[:150])
+                adoptada = None
+            if adoptada is not None:
+                r.indices.append(adoptada)
+                existentes.discard(sirviendo)
+                existentes.add(adoptada)
+                sirviendo = adoptada
             viva = _huella_viva(config, cliente, repo, indice, sirviendo, estados)
             libre = _ranura_alterna(sirviendo)
             if viva is None or not _mismo_contenido(viva, nombre, candidata):
