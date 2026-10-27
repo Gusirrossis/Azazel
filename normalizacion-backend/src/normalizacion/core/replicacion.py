@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,11 +59,14 @@ class ResumenReplica:
     motivo: str | None = None
     #: Índices que ya servían el mismo contenido que el snapshot y NO se restauraron.
     sin_cambios: list[str] = field(default_factory=list)
+    #: Índices y snapshots del repositorio que NO son del emisor esperado: no se tocan.
+    rechazados: list[str] = field(default_factory=list)
 
     def como_dict(self) -> dict[str, Any]:
         return {
             "accion": self.accion, "ok": self.ok, "snapshot": self.snapshot,
             "indices": self.indices, "motivo": self.motivo, "sin_cambios": self.sin_cambios,
+            "rechazados": self.rechazados,
         }
 
 
@@ -239,6 +243,25 @@ def _indices_propios(config: Config) -> str:
     """Patrón de los índices que ESTE nodo escribe (no los restaurados del otro)."""
     d = config.despliegue
     return f"{config.indice_alias}-*" if d.es_local() else f"{config.indice_alias}-{d.nodo_id}-*"
+
+
+_EMISOR_VALIDO = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+
+
+def patrones_de_emisor(config: Config, emisor: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """Cómo se llaman los índices y los snapshots que un emisor PUEDE traer.
+
+    Índices `<alias>-<emisor>-NNNNNN` (los de su rollover) y snapshots
+    `<emisor>-AAAAMMDD-HHMMSS` (los que nombra `tomar_snapshot`). Nada más: un repositorio
+    de luna es un fichero que llega de otra máquina, y si esa máquina cae en otras manos lo
+    que traiga no puede llamarse como los índices de OTRA luna. Sin este filtro, la luna
+    storage comprometida podía publicar un `archivos-kubo-luna-01-000005` y la matriz lo
+    habría restaurado en la ranura libre y colgado del alias en lugar del de kubo."""
+    if not _EMISOR_VALIDO.fullmatch(emisor):
+        raise ValueError(f"emisor no válido: {emisor!r}")
+    indice = re.compile(rf"{re.escape(config.indice_alias)}-{re.escape(emisor)}-\d{{6}}")
+    snapshot = re.compile(rf"{re.escape(emisor)}-\d{{8}}-\d{{6}}")
+    return indice, snapshot
 
 
 #: Lo que el CLIENTE espera a que el snapshot termine (`wait_for_completion`). Sin un
@@ -624,8 +647,15 @@ def restaurar_ajenos(
     *,
     refrescar: bool = False,
     repositorio: str | None = None,
+    emisor: str | None = None,
 ) -> ResumenReplica:
     """Restaura los índices de los OTROS nodos y los añade al alias como lectura.
+
+    Con `emisor`, sólo se aceptan los snapshots e índices con el nombre de ESE emisor
+    (`patrones_de_emisor`); lo demás se anota en `rechazados`, no se toca y el ciclo sale
+    `ok=False` para que se vea. Es lo que hace que un repositorio llegado de una luna
+    comprometida no pueda pisar lo que sirve la matriz de otra. Quien trae la réplica de
+    una luna (`deploy/matriz/traer_replica.sh`) lo pasa siempre.
 
     Cinco precauciones, cada una por un fallo concreto:
 
@@ -660,6 +690,8 @@ def restaurar_ajenos(
     from normalizacion.core.indexador.opensearch import crear_cliente
 
     r = ResumenReplica(accion="restore")
+    # Antes de tocar la red: un emisor mal escrito es un error de quien llama, no del ciclo.
+    permitidos = patrones_de_emisor(config, emisor) if emisor is not None else None
     cliente = cliente or crear_cliente(config)
     propio = _indices_propios(config).rstrip("*")
     # Cada luna trae sus snapshots en SU repositorio (`azazel-snapshots-lilith`,
@@ -690,11 +722,29 @@ def restaurar_ajenos(
         if snap.get("state") not in (None, "SUCCESS"):
             continue  # un snapshot a medias o fallido no es una fuente válida
         nombre = str(snap.get("snapshot", ""))
+        if permitidos is not None and not permitidos[1].fullmatch(nombre):
+            # Ni sus índices de nombre correcto: un snapshot que no es del emisor no es
+            # una fuente, por bien que se llame lo que trae dentro.
+            if nombre not in r.rechazados:
+                r.rechazados.append(nombre)
+            continue
         for indice in snap.get("indices", []):
             if indice.startswith(propio):
                 continue
+            if permitidos is not None and not permitidos[0].fullmatch(indice):
+                if indice not in r.rechazados:
+                    r.rechazados.append(indice)
+                continue
             if nombre > ultimo_por_indice.get(indice, ""):
                 ultimo_por_indice[indice] = nombre
+    if r.rechazados:
+        log.warning(
+            "replica_rechazados_por_emisor",
+            emisor=emisor,
+            repositorio=repo,
+            total=len(r.rechazados),
+            ejemplos=[x[:80] for x in r.rechazados[:5]],
+        )
 
     estados: dict[str, Any] = {}  # `_status` por snapshot, para `_huella_snapshot`
     for indice, nombre in sorted(ultimo_por_indice.items()):
@@ -843,6 +893,10 @@ def restaurar_ajenos(
         if candidata is not None:
             _guardar_huella(config, cliente, repo, indice, destino, nombre, candidata["shards"])
 
+    if r.rechazados and r.motivo is None:
+        # Lo legítimo ya se restauró; esto marca el ciclo para que el rechazo no pase
+        # callado (sin sello, el lag de la luna crece y salta su alerta).
+        r.motivo = f"{len(r.rechazados)} snapshots/indices no son de {emisor}: rechazados"
     r.ok = r.motivo is None
     # Antes de sellar: se siembra con el sello único tal como lo dejó el ciclo anterior.
     _sembrar_lunas(config, cliente)

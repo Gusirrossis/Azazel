@@ -127,18 +127,42 @@ ssh -i "C:\Users\Asus Xeon\.ssh\nextcloud_secureadm" -o IdentitiesOnly=yes secur
 >   `T3_TOPE_BYTES=1e12` (caché de extracción a 1 TB, no a la mitad del disco).
 > - Cron de `secureadm` (debajo de las 7 tareas de Nextcloud, que no se tocan):
 >   centinela cada 2 min (`deploy/lunas/centinela_luna.sh`, relanza la corrida si
->   muere, con las mismas variables) y réplica a la matriz **cada 6 h: 01:00, 07:00,
->   13:00 y 19:00 hora local** (`deploy/lunas/replicar_a_matriz.sh`, con flock: si un
->   ciclo se alarga, el siguiente se salta). Desde el 06-10, a petición del usuario: el
->   desfase máximo baja de ~24 h a ~6 h; cada ciclo restaura en la matriz solo el índice
->   activo (los cerrados salen «sin cambios») y carga su disco ~30-60 min.
->   Logs en `~/azazel-luna/logs/`.
->
-> **Luna Lilith, réplica (05-10):** usa el mismo script versionado (cron */20 con
-> `LUNA_DIR=/opt/azazel-luna EMISOR=lilith-luna-01 NOMBRE=lilith`). El viejo
-> (`/opt/azazel-luna/replicar_a_matriz.sh`, ya fuera del cron) llamaba a un `mc` que no
-> existe en esa máquina y tiraba el error: el export no se actualizaba. La imagen
-> `minio/mc` se copió de la matriz (Docker Hub ya no la sirve).
+>   muere, con las mismas variables) y **publicación de la réplica cada 6 h: 01:00,
+>   07:00, 13:00 y 19:00 hora local** (`deploy/lunas/publicar_replica.sh`, con flock).
+>   Cada ciclo restaura en la matriz solo el índice activo (los cerrados salen «sin
+>   cambios») y carga su disco ~30-60 min. Logs en `~/azazel-luna/logs/`.
+
+### Réplica blindada: la matriz TRAE, las lunas no entran (desde el 27-10)
+
+Hasta el 22-10 cada luna empujaba su réplica entrando **como root** en la matriz para
+inyectar y restaurar: quien tomara una luna tenía la matriz. Ahora es al revés.
+
+- **La luna solo publica** (`deploy/lunas/publicar_replica.sh`): flush → snapshot →
+  purga → export del bucket a `<LUNA_DIR>/_export_snapshots` → marca `.azazel-listo`
+  (la generación que está entera; se borra mientras exporta). No tiene llave ni red
+  hacia la matriz: las viejas `~/.ssh/azazel_replica` se borraron el 27-10.
+- **La matriz la trae** (`deploy/matriz/traer_replica.sh`, cron de root cada 30 min,
+  logs en `/srv/azazel/replica-<nombre>.log`, estado en `/srv/azazel/_replica_estado/`).
+  Entra con `/root/.ssh/replica_<nombre>`, que en la luna está así y para nada más:
+  `restrict,from="162.35.188.181",command="/usr/bin/rrsync -ro <export>"` (probado el
+  27-10: sin consola, sin órdenes, sin túneles, sin escribir, sin salir de la carpeta).
+  Las llaves de host de las lunas están fijadas en `/root/.ssh/known_hosts_lunas`: una
+  luna suplantada no recibe ni la conexión.
+- **Lo que llega no se cree:** tope de tamaño y de ficheros ANTES de copiar, sin enlaces
+  ni especiales, repositorio entero y de la generación anunciada, y solo snapshots e
+  índices con el nombre de su emisor, comprobado al copiar y otra vez al restaurar
+  (`restaurar_ajenos(emisor=…)`): una luna no puede pisar lo que la matriz sirve de otra.
+- **Red:** la matriz no abre ninguna entrada nueva; solo SALE al :22 de kubo y de
+  storage. Deshacer la salida a kubo: `/root/blindaje/deshacer-replica.sh`.
+- El restore corre con el código de `/srv/azazel-replica` (checkout de `Moons`) montado
+  en un contenedor efímero: la API de la matriz se recreó el 26-10 desde la imagen del
+  30-09 y perdió los arreglos de réplica que llevaba en caliente.
+
+| Luna | Publica | La matriz trae | Emisor | Tope |
+|---|---|---|---|---|
+| kubo | 01, 07, 13, 19 h locales | cada 30 min si hay generación nueva | `kubo-luna-01` | 1500 GB |
+| storage | cada hora | cada 30 min si hay generación nueva | `vps-storage-01` | 300 GB |
+| Lilith | — (fuera: su VPS se cambió por el incidente del 22-10) | — | — | — |
 
 > Ojo: en la luna storage es `docker-compose` **con guion**; en los otros dos, sin él.
 > Usar el que no toca da un `Usage: docker [OPTIONS]` que despista.
@@ -178,10 +202,13 @@ tail /opt/azazel-luna/centinela-alertas.log   # Lilith
 docker exec normalizacion-api-1 norm pausar
 docker exec normalizacion-api-1 norm reanudar
 
-# Replicar a la matriz a mano (va solo por cron: storage 15 min, Lilith 20 min)
-/srv/azazel/replicar_a_matriz.sh          # storage
-/opt/azazel-luna/replicar_a_matriz.sh     # Lilith
-tail -20 .../replica.log
+# Réplica a mano (va sola por cron; ver «Réplica blindada»)
+#   en la luna: publicar          (con las variables de su línea de cron)
+LUNA_DIR=... EMISOR=... bash <LUNA_DIR>/normalizacion-backend/deploy/lunas/publicar_replica.sh
+#   en la matriz: traer           (copia la línea del cron de root)
+crontab -l | grep traer_replica
+tail -20 /srv/azazel/replica-kubo.log /srv/azazel/replica-storage.log
+cat /srv/azazel/_replica_estado/*        # «<generación> ok|fallo <epoch>»
 ```
 
 **El centinela frena solo.** Si el disco pasa del 93 % ejecuta `norm pausar`: detiene la

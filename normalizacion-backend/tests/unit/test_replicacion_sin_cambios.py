@@ -768,3 +768,82 @@ class TestAdoptaRanuraTerminada:
 
         assert cliente.restaurados[-1] == (ORIGEN, self.S3, ORIGEN)
         assert cliente.colgados == {ORIGEN}
+
+
+# ------------------------------------------------------------------ sólo lo del emisor
+
+
+class TestSoloLoDelEmisor:
+    """La réplica de una luna llega como ficheros desde otra máquina. Si esa máquina cae en
+    otras manos, su repositorio puede traer lo que quiera: lo único que se restaura es lo
+    que lleva el nombre de ESA luna. Antes, la luna storage comprometida podía publicar un
+    índice llamado como uno de kubo y la matriz lo colgaba del alias en su lugar."""
+
+    EMISOR = "lilith-luna-01"
+    BUENO = "lilith-luna-01-20261027-010000"
+    AJENO = "archivos-kubo-luna-01-000005"
+
+    def _ciclo(self, cliente: _OpenSearchFalso, emisor: str | None = EMISOR) -> Any:
+        return replicacion.restaurar_ajenos(
+            _matriz(), cliente, refrescar=True, repositorio=REPO, emisor=emisor
+        )
+
+    def test_un_indice_de_otra_luna_no_se_restaura(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({self.BUENO: {ORIGEN: QUIETO, self.AJENO: QUIETO}})
+
+        r = self._ciclo(cliente)
+
+        assert [i for i, _, _ in cliente.restaurados] == [ORIGEN]
+        assert r.indices == [ORIGEN]
+        assert r.rechazados == [self.AJENO]
+        assert self.AJENO not in cliente.colgados
+        # Lo legítimo llega, pero el ciclo no sale limpio: el rechazo tiene que verse.
+        assert r.ok is False and "rechazados" in (r.motivo or "")
+
+    def test_un_snapshot_de_otro_emisor_no_es_fuente_aunque_su_indice_se_llame_bien(
+        self, control: _Control
+    ) -> None:
+        """El nombre del snapshot también cuenta: uno de «kubo» no aporta nada a lilith."""
+        falso = "kubo-luna-01-20261027-020000"  # más reciente que BUENO: ganaría
+        cliente = _OpenSearchFalso({self.BUENO: {ORIGEN: QUIETO}, falso: {ORIGEN: QUIETO}})
+
+        r = self._ciclo(cliente)
+
+        assert cliente.restaurados == [(ORIGEN, self.BUENO, ORIGEN)]
+        assert r.rechazados == [falso]
+
+    def test_un_nombre_casi_igual_tampoco_vale(self, control: _Control) -> None:
+        """Ni sufijos ni la ranura `-r`: la luna nunca publica esos nombres."""
+        trucos = [ORIGEN + "-r", ORIGEN + "x", "archivos-lilith-luna-01-1", ".opendistro_security"]
+        cliente = _OpenSearchFalso({self.BUENO: {t: QUIETO for t in trucos}})
+
+        r = self._ciclo(cliente)
+
+        assert cliente.restaurados == []
+        assert sorted(r.rechazados) == sorted(trucos)
+
+    def test_con_todo_en_regla_el_ciclo_sale_limpio(self, control: _Control) -> None:
+        cliente = _OpenSearchFalso({self.BUENO: {ORIGEN: QUIETO}})
+
+        r = self._ciclo(cliente)
+
+        assert r.ok is True and r.rechazados == [] and r.indices == [ORIGEN]
+
+    def test_sin_emisor_se_comporta_como_antes(self, control: _Control) -> None:
+        """Quien no lo pasa (la réplica propia, `norm replicar`) no cambia de conducta."""
+        cliente = _OpenSearchFalso({self.BUENO: {ORIGEN: QUIETO, self.AJENO: QUIETO}})
+
+        r = self._ciclo(cliente, emisor=None)
+
+        assert sorted(i for i, _, _ in cliente.restaurados) == sorted([ORIGEN, self.AJENO])
+        assert r.rechazados == [] and r.ok is True
+
+    @pytest.mark.parametrize("emisor", ["", "Kubo", "kubo/../x", "a" * 70, "-kubo"])
+    def test_un_emisor_mal_escrito_falla_antes_de_tocar_nada(
+        self, control: _Control, emisor: str
+    ) -> None:
+        cliente = _OpenSearchFalso({self.BUENO: {ORIGEN: QUIETO}})
+
+        with pytest.raises(ValueError):
+            self._ciclo(cliente, emisor=emisor)
+        assert cliente.restaurados == [] and cliente.status_pedidos == []

@@ -110,18 +110,23 @@ Fuera de la raíz sigue siendo obligatorio: allí no hay unicidad garantizada.
 
 ## 4. El transporte hacia el planeta
 
-`norm replicar` existe y funciona (`core/replicacion.py`), pero el canal hay que
-montarlo. En `vps-storage-01` vive en `/srv/azazel/replicar_a_matriz.sh`, en cron
-cada 15 min, con log en `/srv/azazel/replica.log`:
+`norm replicar` existe y funciona (`core/replicacion.py`). Desde el 27-10 el canal
+va **de la matriz hacia la luna**, no al revés (detalle y motivo en `docs/ACCESOS.md`,
+«Réplica blindada»): la luna no tiene llave ni red hacia el planeta.
 
 ```
+EN LA LUNA  deploy/lunas/publicar_replica.sh
 0. flush del índice      ← sin esto el snapshot deja fuera lo más reciente
-1. norm replicar         ← snapshot de archivos-vps-storage-01-*
+1. norm replicar         ← snapshot de archivos-<emisor>-*
 1b. purga                ← conserva los 3 últimos snapshots
-2. export del bucket     ← mc mirror a /srv/azazel/_export_snapshots
-3. rsync                 → matriz:/srv/azazel/_import_snapshots
-4. inyectar + restaurar  ← mc efímero en la red interna del planeta, sin exponer puertos
-   → restore + backfill de entidades
+2. export del bucket     ← mc mirror a <LUNA_DIR>/_export_snapshots
+3. marca .azazel-listo   ← la generación que está entera
+
+EN LA MATRIZ  deploy/matriz/traer_replica.sh   (llave rrsync -ro, solo esa carpeta)
+1. copia                 ← tope de tamaño antes; sin enlaces ni especiales
+2. comprobaciones        ← repositorio entero, generación anunciada, solo nombres del emisor
+3. inyectar              ← mc efímero en la red interna del planeta
+4. restaurar             ← restaurar_ajenos(emisor=…) + backfill de entidades
 ```
 
 ### La trampa que costó 22 documentos
@@ -287,7 +292,7 @@ se quede esperando sin explicación. Con 100, el avance se ve cinco veces antes.
 | **Medir con volumen grande** | `PT2` son 115.358 entradas sobre HDD SATA (~150 IOPS). El cuello será el **I/O**, y los techos de CPU no protegen de eso: Postgres y MySQL pelean por el mismo disco |
 | **`indexado_en` en el mapping** | Haría el backfill incremental por tiempo en vez de rescan completo por hash (§3.5 de `PLAN_TOPOLOGIA.md`). Hoy cada réplica dispara un barrido entero del índice |
 | **El front no sabe que es una luna** | `/archivo/{id}/contenido` falla con `FileNotFoundError` y la UI lo pinta como error genérico, cuando la respuesta correcta es "este nodo no guarda copia" |
-| **Migrar el script de transporte al repo** | `replicar_a_matriz.sh` vive sólo en `/srv/azazel` del nodo. Debería versionarse en `deploy/` |
+| **Migrar el script de transporte al repo** | HECHO: `deploy/lunas/publicar_replica.sh` (luna) y `deploy/matriz/traer_replica.sh` (matriz), desde el 27-10 con la matriz trayendo |
 | **`centinela.sh` no está versionado** | Vive sólo en el nodo (`/srv/azazel/` o `/opt/azazel-luna/`) y las tres copias divergen. Ya lleva lógica que costó un incidente —el freno— y no hay forma de revisarla, ni de saber si los tres nodos tienen la misma. Debería estar en `deploy/` con lo específico de cada nodo en variables |
 | **La caché de extracción es por PROCESO** | Con 4 workers, un 7z de 130 GB puede llegar a ocupar ~520 GB en `/tmp` a la vez. Cabe en este nodo (5,4 TB libres) y no en uno más chico. Una caché compartida entre workers, o un tope que cuente el total y no lo de cada proceso, lo acotaría |
 
