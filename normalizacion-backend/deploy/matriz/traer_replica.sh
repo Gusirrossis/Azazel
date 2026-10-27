@@ -207,7 +207,7 @@ ps = re.compile(re.escape(emisor) + r"-\d{8}-\d{6}")
 indices = list(datos.get("indices", {}))
 snaps = [str(s.get("name", "")) for s in datos.get("snapshots", [])]
 malos = [i for i in indices if not pi.fullmatch(i)] + [s for s in snaps if not ps.fullmatch(s)]
-print(f"   repositorio: {len(snaps)} snapshots, {len(indices)} indices de {emisor}")
+print(f"   repositorio: {len(snaps)} snapshots, {len(indices)} indices")
 if malos or not snaps:
     print(f"   RECHAZADO: {len(malos)} nombres que no son de {emisor}" if malos else "   RECHAZADO: sin snapshots")
     for x in malos[:10]:
